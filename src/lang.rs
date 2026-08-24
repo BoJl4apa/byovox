@@ -90,7 +90,7 @@ impl LanguagePolicy {
         for (k, v) in &c.by_layout {
             by_layout.insert(
                 parse_or_bail(k, "language.by_layout key")?,
-                parse_or_bail(v, "language.by_layout value")?,
+                parse_or_bail(v, &format!("language.by_layout.{k}"))?,
             );
         }
         Ok(Self {
@@ -138,10 +138,22 @@ mod tests {
 
     #[test]
     fn mapped_layout_is_explicit() {
-        let p = LanguagePolicy::from_config(&cfg("auto", &["en", "ru"], &[("he", "he")])).unwrap();
+        // A non-identity mapping, so returning the layout instead of the mapped language fails.
+        let p = LanguagePolicy::from_config(&cfg("auto", &["en", "ru"], &[("ru", "en")])).unwrap();
         assert_eq!(
-            p.resolve(Lang::parse("he")),
-            SttLanguage::Explicit(Lang::parse("he").unwrap())
+            p.resolve(Lang::parse("ru")),
+            SttLanguage::Explicit(Lang::parse("en").unwrap())
+        );
+    }
+
+    #[test]
+    fn mapped_layout_beats_an_explicit_default() {
+        let p = LanguagePolicy::from_config(&cfg("en", &[], &[("he", "he")])).unwrap();
+        let he = Lang::parse("he").unwrap();
+        assert_eq!(p.resolve(Some(he)), SttLanguage::Explicit(he));
+        assert_eq!(
+            p.resolve(None),
+            SttLanguage::Explicit(Lang::parse("en").unwrap())
         );
     }
 
@@ -189,10 +201,39 @@ mod tests {
     }
 
     #[test]
+    fn label_is_the_log_line_form() {
+        let auto = SttLanguage::Auto {
+            candidates: vec![Lang::parse("en").unwrap()],
+        };
+        assert_eq!(auto.label(), "auto");
+        assert_eq!(
+            SttLanguage::Explicit(Lang::parse("he").unwrap()).label(),
+            "he"
+        );
+    }
+
+    #[test]
     fn bad_codes_are_rejected_at_load() {
         assert!(Lang::parse("eng").is_none());
         assert!(Lang::parse("E1").is_none());
+        assert!(Lang::parse("HE").is_none());
+        assert!(Lang::parse("").is_none());
+        assert!(Lang::parse("é").is_none());
+
+        for bad in ["", "EN"] {
+            let err = LanguagePolicy::from_config(&cfg(bad, &[], &[]))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("language.default"), "{err}");
+        }
         assert!(LanguagePolicy::from_config(&cfg("auto", &["english"], &[])).is_err());
         assert!(LanguagePolicy::from_config(&cfg("auto", &[], &[("hebrew", "he")])).is_err());
+
+        // "auto" is a config-level default, never a per-layout language.
+        let err = LanguagePolicy::from_config(&cfg("auto", &[], &[("he", "auto")]))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("language.by_layout.he"), "{err}");
+        assert!(LanguagePolicy::from_config(&cfg("auto", &[], &[("he", "en")])).is_ok());
     }
 }
