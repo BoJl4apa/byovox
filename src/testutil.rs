@@ -120,19 +120,53 @@ pub mod fakes {
     use crate::inject::Inject;
     use crate::lang::{Lang, SttLanguage};
     use crate::layout::Layout;
+    use crate::pipeline::{DictationRecord, Recorder};
     use crate::polish::Polisher;
     use crate::stt::Transcriber;
 
+    /// Counts every open and close so a test can pin the "never leave the microphone
+    /// open" invariant; the counters are shared, so a clone observes the pipeline's copy.
+    #[derive(Clone)]
     pub struct FakeCapture {
         pub samples: usize,
-        pub started: usize,
+        pub start_fails: bool,
+        pub stop_fails: bool,
+        pub starts: Arc<Mutex<usize>>,
+        pub stops: Arc<Mutex<usize>>,
+    }
+    impl FakeCapture {
+        pub fn new(samples: usize) -> Self {
+            Self {
+                samples,
+                start_fails: false,
+                stop_fails: false,
+                starts: Default::default(),
+                stops: Default::default(),
+            }
+        }
+
+        pub fn starts(&self) -> usize {
+            *self.starts.lock().unwrap()
+        }
+
+        pub fn stops(&self) -> usize {
+            *self.stops.lock().unwrap()
+        }
     }
     impl Capture for FakeCapture {
         fn start(&mut self) -> Result<(), String> {
-            self.started += 1;
+            *self.starts.lock().unwrap() += 1;
+            if self.start_fails {
+                return Err("mic open: device in use".into());
+            }
             Ok(())
         }
+        /// A failed stop still counts: the microphone was asked to close.
         fn stop(&mut self) -> Result<Audio, String> {
+            *self.stops.lock().unwrap() += 1;
+            if self.stop_fails {
+                return Err("mic stop: stream ended early".into());
+            }
             Ok(Audio {
                 samples: vec![1000; self.samples],
             })
@@ -242,6 +276,36 @@ pub mod fakes {
     impl Indicator for FakeIndicator {
         fn set(&mut self, state: IndicatorState) {
             self.0.lock().unwrap().push(state);
+        }
+    }
+
+    /// An owned copy of one `DictationRecord`, since the record itself only borrows.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct RecordedDictation {
+        pub samples: usize,
+        pub language: String,
+        pub raw: String,
+        pub polished: Option<String>,
+        pub rung: Option<&'static str>,
+        pub stt_ms: u128,
+        pub polish_ms: u128,
+        pub inject_ms: u128,
+    }
+
+    #[derive(Clone, Default)]
+    pub struct FakeRecorder(pub Arc<Mutex<Vec<RecordedDictation>>>);
+    impl Recorder for FakeRecorder {
+        fn record(&mut self, r: &DictationRecord<'_>) {
+            self.0.lock().unwrap().push(RecordedDictation {
+                samples: r.audio.samples.len(),
+                language: r.language.label(),
+                raw: r.raw.to_string(),
+                polished: r.polished.map(str::to_string),
+                rung: r.rung,
+                stt_ms: r.stt_ms,
+                polish_ms: r.polish_ms,
+                inject_ms: r.inject_ms,
+            });
         }
     }
 }

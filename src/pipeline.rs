@@ -24,13 +24,25 @@ pub struct PipelineConfig {
 }
 
 /// What `byovox status` / `byovox last` read; written by the pipeline thread.
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct Shared {
     pub state: &'static str,
     /// The tray's Enable/Disable toggle; a disabled pipeline ignores every hotkey event.
     pub enabled: bool,
     pub last_transcript: Option<String>,
     pub last_error: Option<String>,
+}
+
+impl Default for Shared {
+    /// A fresh pipeline is idle and listening; `bool::default()` would make it deaf.
+    fn default() -> Shared {
+        Shared {
+            state: "idle",
+            enabled: true,
+            last_transcript: None,
+            last_error: None,
+        }
+    }
 }
 
 /// One finished dictation, for the opt-in capture log.
@@ -58,7 +70,16 @@ pub enum Outcome {
     },
     /// Every rung failed; the text is in `Shared::last_transcript`.
     Held,
+    /// The microphone could not be closed; no audio, so no request was made.
+    CaptureFailed(String),
     SttFailed(String),
+}
+
+/// The head of a stage error, for WARN and above: everything before the first `:`.
+/// Stage errors carry a response-body prefix after the colon, which can be transcript
+/// text — the full string goes to `debug!`, this summary goes on the visible line.
+fn summary(e: &str) -> &str {
+    e.split_once(':').map_or(e, |(head, _)| head).trim()
 }
 
 enum State {
@@ -96,11 +117,7 @@ impl Pipeline {
         indicator: Box<dyn Indicator>,
         recorder: Option<Box<dyn Recorder>>,
     ) -> Pipeline {
-        let shared = Arc::new(Mutex::new(Shared {
-            state: "idle",
-            enabled: true,
-            ..Default::default()
-        }));
+        let shared = Arc::new(Mutex::new(Shared::default()));
         Pipeline {
             cfg,
             capture,
@@ -121,11 +138,19 @@ impl Pipeline {
     }
 
     pub fn handle(&mut self, ev: HotkeyEvent, now: Instant) -> Option<Outcome> {
-        // The tray flips `enabled` from another thread; a disabled pipeline is deaf.
+        let recording = matches!(self.state, State::Recording { .. });
+        // The tray flips `enabled` from another thread, possibly mid-dictation. A disabled
+        // pipeline is deaf, but it never leaves the microphone open: the first event to
+        // arrive during a recording closes it and drops the audio.
         if !self.shared.lock().unwrap().enabled {
+            if recording {
+                let _ = self.capture.stop();
+                self.set_state(State::Idle, IndicatorState::Idle);
+                tracing::info!("dictation discarded: byovox was disabled mid-recording");
+                return Some(Outcome::Discarded);
+            }
             return None;
         }
-        let recording = matches!(self.state, State::Recording { .. });
         // In toggle mode a physical press is a toggle and releases are ignored, so a
         // backend that only knows press/release still drives both modes.
         match (ev, self.cfg.mode, recording) {
@@ -151,7 +176,8 @@ impl Pipeline {
     fn begin(&mut self, now: Instant) {
         let language = self.policy.resolve(self.layout.current());
         if let Err(e) = self.capture.start() {
-            tracing::error!(error = %e, "microphone open failed");
+            tracing::debug!(error = %e, "microphone open error");
+            tracing::error!(error = summary(&e), "microphone open failed");
             self.fail(e);
             return;
         }
@@ -172,9 +198,10 @@ impl Pipeline {
         let audio = match self.capture.stop() {
             Ok(a) => a,
             Err(e) => {
-                tracing::error!(error = %e, "microphone stop failed");
+                tracing::debug!(error = %e, "microphone stop error");
+                tracing::error!(error = summary(&e), "microphone stop failed");
                 self.fail(e.clone());
-                return Outcome::SttFailed(e);
+                return Outcome::CaptureFailed(e);
             }
         };
         if now.duration_since(since) < self.cfg.min_hold {
@@ -185,14 +212,17 @@ impl Pipeline {
         self.indicator.set(IndicatorState::Working);
         self.shared.lock().unwrap().state = "working";
 
+        // Encoding is byovox's own cost; `stt_ms` reports the server round-trip alone.
+        let wav = audio.to_wav();
         let t = Instant::now();
         let raw = match self
             .stt
-            .transcribe(&audio.to_wav(), &language, self.cfg.prompt.as_deref())
+            .transcribe(&wav, &language, self.cfg.prompt.as_deref())
         {
             Ok(t) => t,
             Err(e) => {
-                tracing::error!(error = %e, "stt failed");
+                tracing::debug!(error = %e, "stt error");
+                tracing::error!(error = summary(&e), "stt failed");
                 self.fail(e.clone());
                 return Outcome::SttFailed(e);
             }
@@ -211,7 +241,11 @@ impl Pipeline {
             Some(p) if word_count(&raw) >= self.cfg.polish_min_words => match p.polish(&raw) {
                 Ok(text) => Some(text),
                 Err(e) => {
-                    tracing::warn!(error = %e, "polish failed; inserting raw transcript");
+                    tracing::debug!(error = %e, "polish error");
+                    tracing::warn!(
+                        error = summary(&e),
+                        "polish failed; inserting raw transcript"
+                    );
                     self.shared.lock().unwrap().last_error = Some(e);
                     errored = true;
                     None
@@ -236,7 +270,14 @@ impl Pipeline {
                     rung_used = Some(rung.name());
                     break;
                 }
-                Err(e) => tracing::warn!(rung = rung.name(), error = %e, "inject rung failed"),
+                Err(e) => {
+                    tracing::debug!(rung = rung.name(), error = %e, "inject rung error");
+                    tracing::warn!(
+                        rung = rung.name(),
+                        error = summary(&e),
+                        "inject rung failed"
+                    );
+                }
             }
         }
         let inject_ms = t.elapsed().as_millis();
@@ -267,7 +308,7 @@ impl Pipeline {
                 Outcome::Inserted { rung }
             }
             None => {
-                tracing::warn!(lang = %language.label(), stt_ms, polish_ms, "no inject rung worked; transcript held for `byovox last`");
+                tracing::warn!(lang = %language.label(), stt_ms, polish_ms, inject_ms, total_ms, "no inject rung worked; transcript held for `byovox last`");
                 self.fail("no inject rung worked; run `byovox last`".into());
                 Outcome::Held
             }
@@ -301,14 +342,32 @@ mod tests {
 
     struct Rig {
         p: Pipeline,
+        cap: FakeCapture,
         stt: FakeTranscriber,
         polish: FakePolisher,
         rung1: FakeInject,
         rung2: FakeInject,
         ind: FakeIndicator,
+        rec: FakeRecorder,
     }
 
     fn rig(
+        stt: FakeTranscriber,
+        polish: Option<FakePolisher>,
+        rung1_fails: bool,
+        rung2_fails: bool,
+    ) -> Rig {
+        rig_with_capture(
+            FakeCapture::new(16_000),
+            stt,
+            polish,
+            rung1_fails,
+            rung2_fails,
+        )
+    }
+
+    fn rig_with_capture(
+        cap: FakeCapture,
         stt: FakeTranscriber,
         polish: Option<FakePolisher>,
         rung1_fails: bool,
@@ -324,6 +383,7 @@ mod tests {
         let rung1 = FakeInject::new("type", rung1_fails);
         let rung2 = FakeInject::new("paste", rung2_fails);
         let ind = FakeIndicator::default();
+        let rec = FakeRecorder::default();
         let cfg = PipelineConfig {
             mode: HotkeyMode::Hold,
             min_hold: Duration::from_millis(250),
@@ -333,25 +393,24 @@ mod tests {
         };
         let p = Pipeline::new(
             cfg,
-            Box::new(FakeCapture {
-                samples: 16_000,
-                started: 0,
-            }),
+            Box::new(cap.clone()),
             Box::new(FakeLayout(Lang::parse("he"))),
             policy,
             Box::new(stt.clone()),
             polish.clone().map(|f| Box::new(f) as Box<dyn Polisher>),
             vec![Box::new(rung1.clone()), Box::new(rung2.clone())],
             Box::new(ind.clone()),
-            None,
+            Some(Box::new(rec.clone())),
         );
         Rig {
             p,
+            cap,
             stt,
             polish: polish_fake,
             rung1,
             rung2,
             ind,
+            rec,
         }
     }
 
@@ -381,6 +440,7 @@ mod tests {
             r.ind.0.lock().unwrap().as_slice(),
             [S::Recording, S::Working, S::Idle]
         );
+        assert_eq!((r.cap.starts(), r.cap.stops()), (1, 1));
     }
 
     #[test]
@@ -391,6 +451,7 @@ mod tests {
             Some(Outcome::Discarded)
         );
         assert!(r.stt.calls.lock().unwrap().is_empty());
+        assert_eq!(r.cap.stops(), 1);
     }
 
     #[test]
@@ -406,7 +467,7 @@ mod tests {
             Some(Outcome::Inserted { rung: "type" })
         );
         assert_eq!(r.rung1.texts.lock().unwrap().as_slice(), ["raw words"]);
-        assert!(r.ind.0.lock().unwrap().contains(&S::Error));
+        assert_eq!(r.ind.0.lock().unwrap().last(), Some(&S::Error));
     }
 
     #[test]
@@ -495,6 +556,7 @@ mod tests {
             Some(Outcome::Discarded)
         );
         assert!(r.stt.calls.lock().unwrap().is_empty());
+        assert_eq!(r.cap.stops(), 1);
     }
 
     #[test]
@@ -531,9 +593,117 @@ mod tests {
                 .is_none()
         );
         assert!(r.stt.calls.lock().unwrap().is_empty());
-        // Capture is started only from `begin`, which always sets an indicator state:
-        // an untouched indicator is the proof the microphone was never opened.
+        assert_eq!((r.cap.starts(), r.cap.stops()), (0, 0));
         assert!(r.ind.0.lock().unwrap().is_empty());
         assert_eq!(r.p.shared().lock().unwrap().state, "idle");
+    }
+
+    #[test]
+    fn disabling_mid_recording_closes_the_microphone_and_discards_the_audio() {
+        let mut r = rig(
+            FakeTranscriber::ok("heard while disabled"),
+            None,
+            false,
+            false,
+        );
+        let t0 = Instant::now();
+        assert!(r.p.handle(HotkeyEvent::Pressed, t0).is_none());
+        r.p.shared().lock().unwrap().enabled = false;
+        assert_eq!(
+            r.p.handle(HotkeyEvent::Released, t0 + Duration::from_secs(1)),
+            Some(Outcome::Discarded)
+        );
+        assert_eq!(r.cap.stops(), 1, "the microphone must not be left open");
+        assert_eq!(r.p.shared().lock().unwrap().state, "idle");
+        assert!(r.stt.calls.lock().unwrap().is_empty());
+        assert_eq!(r.ind.0.lock().unwrap().last(), Some(&S::Idle));
+
+        // Re-enabling recovers the next press; the audio captured while disabled is gone.
+        r.p.shared().lock().unwrap().enabled = true;
+        assert_eq!(
+            dictate(&mut r, Duration::from_secs(1)),
+            Some(Outcome::Inserted { rung: "type" })
+        );
+        assert_eq!(r.cap.starts(), 2);
+        assert_eq!(r.cap.stops(), 2);
+        assert_eq!(r.stt.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn microphone_open_failure_ends_in_error_without_a_request() {
+        let mut cap = FakeCapture::new(16_000);
+        cap.start_fails = true;
+        let mut r = rig_with_capture(cap, FakeTranscriber::ok("hi"), None, false, false);
+        let t0 = Instant::now();
+        assert!(r.p.handle(HotkeyEvent::Pressed, t0).is_none());
+        assert_eq!(r.ind.0.lock().unwrap().last(), Some(&S::Error));
+        assert_eq!(r.p.shared().lock().unwrap().state, "idle");
+        assert_eq!(r.cap.stops(), 0, "a mic that never opened is never closed");
+        assert!(r.stt.calls.lock().unwrap().is_empty());
+        // The state machine is back at Idle, so the matching release is a no-op.
+        assert!(
+            r.p.handle(HotkeyEvent::Released, t0 + Duration::from_secs(1))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn microphone_stop_failure_is_its_own_outcome() {
+        let mut cap = FakeCapture::new(16_000);
+        cap.stop_fails = true;
+        let mut r = rig_with_capture(cap, FakeTranscriber::ok("hi"), None, false, false);
+        assert_eq!(
+            dictate(&mut r, Duration::from_secs(1)),
+            Some(Outcome::CaptureFailed(
+                "mic stop: stream ended early".into()
+            ))
+        );
+        assert_eq!(r.cap.stops(), 1);
+        assert!(r.stt.calls.lock().unwrap().is_empty());
+        assert!(r.rung1.texts.lock().unwrap().is_empty());
+        assert_eq!(r.ind.0.lock().unwrap().last(), Some(&S::Error));
+        assert_eq!(r.p.shared().lock().unwrap().state, "idle");
+    }
+
+    #[test]
+    fn the_recorder_sees_the_finished_dictation() {
+        let mut r = rig(
+            FakeTranscriber::ok("um hello"),
+            Some(FakePolisher::ok("Hello.")),
+            false,
+            false,
+        );
+        dictate(&mut r, Duration::from_secs(1));
+        let recs = r.rec.0.lock().unwrap();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].samples, 16_000);
+        assert_eq!(recs[0].language, "he");
+        assert_eq!(recs[0].raw, "um hello");
+        assert_eq!(recs[0].polished.as_deref(), Some("Hello."));
+        assert_eq!(recs[0].rung, Some("type"));
+        // Wall-clock timings: only a sanity bound is non-flaky, but it pins them as wired.
+        for ms in [recs[0].stt_ms, recs[0].polish_ms, recs[0].inject_ms] {
+            assert!(
+                ms < 60_000,
+                "{ms} ms is not a plausible fake-backend timing"
+            );
+        }
+    }
+
+    #[test]
+    fn summary_drops_the_response_body_from_a_stage_error() {
+        assert_eq!(
+            summary("stt HTTP 500: {\"error\":\"SECRET TRANSCRIPT\"}"),
+            "stt HTTP 500"
+        );
+        assert_eq!(
+            summary("polish response has no content field: SECRET TRANSCRIPT"),
+            "polish response has no content field"
+        );
+        assert_eq!(
+            summary("polish transport: connection refused"),
+            "polish transport"
+        );
+        assert_eq!(summary("no colon at all"), "no colon at all");
     }
 }
