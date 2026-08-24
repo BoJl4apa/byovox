@@ -226,7 +226,7 @@ on every request.
 
 ## Configuration
 
-TOML at the platform config dir: `%APPDATA%\byovox\config.toml`,
+TOML at the platform config dir: `%APPDATA%\byovox\config\config.toml`,
 `~/.config/byovox/config.toml`, `~/Library/Application Support/byovox/config.toml`.
 Every key has a default, so a partial file is valid; unknown keys are a hard error so
 typos fail loudly. Secrets never enter the file: both stages take a bearer token from an
@@ -273,7 +273,7 @@ cue  = true
 
 [capture_log]
 enabled = false
-dir     = ""                    # empty = <platform data dir>/byovox/capture
+dir     = ""                    # empty = byovox's data dir + capture, e.g. %APPDATA%\byovox\data\capture
 
 [logging]
 level = "info"                  # file in <platform log dir>/byovox, daily rotation, 7 kept

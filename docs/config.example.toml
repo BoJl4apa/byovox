@@ -4,7 +4,7 @@
 # change. Unknown keys are an error, so a typo fails loudly instead of silently doing
 # nothing. Secrets never go in this file: name an environment variable instead.
 #
-# Location: %APPDATA%\byovox\config.toml (Windows), ~/.config/byovox/config.toml
+# Location: %APPDATA%\byovox\config\config.toml (Windows), ~/.config/byovox/config.toml
 # (Linux), ~/Library/Application Support/byovox/config.toml (macOS).
 # `byovox config` prints the effective value of every key and where it came from.
 
@@ -87,7 +87,9 @@ cue = true
 # Keep every dictation as a WAV plus a JSONL row (raw text, polished text, language sent,
 # per-stage latency) — training data for your own correction rules. Off by default.
 enabled = false
-# Directory; empty = <platform data dir>/byovox/capture.
+# Directory; empty = byovox's data directory + `capture`: %APPDATA%\byovox\data\capture
+# (Windows), ~/.local/share/byovox/capture (Linux),
+# ~/Library/Application Support/byovox/capture (macOS).
 dir = ""
 
 [logging]

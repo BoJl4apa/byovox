@@ -147,7 +147,8 @@ impl Default for IndicatorConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct CaptureLogConfig {
     pub enabled: bool,
-    /// empty = <platform data dir>/byovox/capture
+    /// empty = `data_dir()` + `capture`, i.e. `%APPDATA%\byovox\data\capture` on Windows,
+    /// `~/.local/share/byovox/capture` on Linux.
     pub dir: String,
 }
 
@@ -178,22 +179,23 @@ pub fn data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Missing file = all defaults (a fresh install works before `config --init`).
+/// Missing file = all defaults (a fresh install works before `config --init`). Any other
+/// read failure is reported, never silently treated as "absent".
 pub fn load(path: &Path) -> Result<Config> {
-    if !path.exists() {
-        return Ok(Config::default());
-    }
-    let text =
-        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
     toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
 }
 
 /// Every leaf key in dotted form with "file" if the file sets it, else "default".
 pub fn provenance(path: &Path) -> Result<Vec<(String, &'static str)>> {
-    let file_table: toml::Table = if path.exists() {
-        toml::from_str(&std::fs::read_to_string(path)?)?
-    } else {
-        toml::Table::new()
+    let file_table: toml::Table = match std::fs::read_to_string(path) {
+        Ok(text) => toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
     let defaults: toml::Table = toml::Table::try_from(Config::default())?;
     let mut out = Vec::new();
@@ -213,6 +215,18 @@ fn walk(
         } else {
             format!("{prefix}.{k}")
         };
+        // A table with no default entries (`language.by_layout`) is an open-ended map: only
+        // the file can name its leaves, so union them in. Nothing from the file = one row
+        // for the map itself, so the key is never invisible.
+        if matches!(v, toml::Value::Table(t) if t.is_empty()) {
+            match file.get(k) {
+                Some(toml::Value::Table(ft)) if !ft.is_empty() => {
+                    out.extend(ft.keys().map(|fk| (format!("{dotted}.{fk}"), "file")));
+                }
+                _ => out.push((dotted, "default")),
+            }
+            continue;
+        }
         match (v, file.get(k)) {
             (toml::Value::Table(dt), Some(toml::Value::Table(ft))) => walk(dt, ft, &dotted, out),
             (toml::Value::Table(dt), _) => walk(dt, &toml::Table::new(), &dotted, out),
@@ -245,20 +259,71 @@ mod tests {
     fn example_file_is_exactly_the_defaults() {
         let from_example: Config = toml::from_str(EXAMPLE).expect("example parses");
         assert_eq!(from_example, Config::default());
+        // Table-level too: a key added to the schema but left out of the example file
+        // deserialises to its default and would slip past the struct comparison above.
+        assert_eq!(
+            toml::from_str::<toml::Table>(EXAMPLE).unwrap(),
+            toml::Table::try_from(Config::default()).unwrap()
+        );
     }
 
     #[test]
     fn provenance_marks_file_keys() {
-        let dir = tempfile_dir();
+        let dir = tempfile_dir("marks_file_keys");
         let path = dir.join("config.toml");
         std::fs::write(&path, "[polish]\nmodel = \"x\"\n").unwrap();
         let prov = provenance(&path).unwrap();
         assert!(prov.contains(&("polish.model".to_string(), "file")));
         assert!(prov.contains(&("polish.enabled".to_string(), "default")));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    fn tempfile_dir() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("byovox-test-{}", std::process::id()));
+    #[test]
+    fn provenance_lists_file_supplied_map_entries() {
+        let dir = tempfile_dir("map_entries");
+
+        let with = dir.join("with.toml");
+        std::fs::write(&with, "[language.by_layout]\nhe = \"he\"\n").unwrap();
+        let prov = provenance(&with).unwrap();
+        assert!(
+            prov.contains(&("language.by_layout.he".to_string(), "file")),
+            "{prov:?}"
+        );
+
+        let without = dir.join("without.toml");
+        std::fs::write(&without, "[polish]\nmodel = \"x\"\n").unwrap();
+        let prov = provenance(&without).unwrap();
+        assert!(
+            prov.contains(&("language.by_layout".to_string(), "default")),
+            "{prov:?}"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn missing_file_loads_the_defaults() {
+        let dir = tempfile_dir("missing_file");
+        let path = dir.join("config.toml");
+        assert_eq!(load(&path).unwrap(), Config::default());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unparsable_file_names_the_path() {
+        let dir = tempfile_dir("unparsable");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "not = [toml").unwrap();
+        let err = load(&path).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains(&path.display().to_string()), "{msg}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A directory unique to this process *and* this test, so tests running in parallel
+    /// never share a file. Each caller removes it once it is done.
+    fn tempfile_dir(test: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("byovox-test-{}-{test}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         d
     }
