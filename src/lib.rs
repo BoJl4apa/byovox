@@ -5,3 +5,7 @@
 pub mod audio;
 pub mod config;
 pub mod lang;
+pub mod multipart;
+pub mod stt;
+#[cfg(test)]
+pub mod testutil;
