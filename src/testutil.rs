@@ -1,6 +1,7 @@
 //! Test doubles for the HTTP boundary: a one-thread server that records the raw
 //! requests it receives and replays canned (or deliberately malformed) responses.
-//! Fakes for the platform traits will be added alongside it in Task 7.
+//! `fakes` holds the in-process doubles for the platform traits — capture, layout,
+//! transcriber, polisher, inject rungs and indicator — that the pipeline is driven with.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -107,5 +108,140 @@ impl MockServer {
             }
         });
         MockServer { url, requests }
+    }
+}
+
+pub mod fakes {
+    use std::sync::{Arc, Mutex};
+
+    use crate::audio::Audio;
+    use crate::capture::Capture;
+    use crate::indicator::{Indicator, IndicatorState};
+    use crate::inject::Inject;
+    use crate::lang::{Lang, SttLanguage};
+    use crate::layout::Layout;
+    use crate::polish::Polisher;
+    use crate::stt::Transcriber;
+
+    pub struct FakeCapture {
+        pub samples: usize,
+        pub started: usize,
+    }
+    impl Capture for FakeCapture {
+        fn start(&mut self) -> Result<(), String> {
+            self.started += 1;
+            Ok(())
+        }
+        fn stop(&mut self) -> Result<Audio, String> {
+            Ok(Audio {
+                samples: vec![1000; self.samples],
+            })
+        }
+    }
+
+    pub struct FakeLayout(pub Option<Lang>);
+    impl Layout for FakeLayout {
+        fn current(&self) -> Option<Lang> {
+            self.0
+        }
+    }
+
+    /// One recorded `transcribe` call: the language's form fields, and the prompt.
+    pub type TranscribeCall = (Vec<(&'static str, String)>, Option<String>);
+
+    #[derive(Clone)]
+    pub struct FakeTranscriber {
+        pub result: Result<String, String>,
+        pub calls: Arc<Mutex<Vec<TranscribeCall>>>,
+    }
+    impl FakeTranscriber {
+        pub fn ok(text: &str) -> Self {
+            Self {
+                result: Ok(text.into()),
+                calls: Default::default(),
+            }
+        }
+        pub fn err(e: &str) -> Self {
+            Self {
+                result: Err(e.into()),
+                calls: Default::default(),
+            }
+        }
+    }
+    impl Transcriber for FakeTranscriber {
+        fn transcribe(
+            &self,
+            _wav: &[u8],
+            language: &SttLanguage,
+            prompt: Option<&str>,
+        ) -> Result<String, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((language.form_fields(), prompt.map(str::to_string)));
+            self.result.clone()
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct FakePolisher {
+        pub result: Result<String, String>,
+        pub calls: Arc<Mutex<Vec<String>>>,
+    }
+    impl FakePolisher {
+        pub fn ok(text: &str) -> Self {
+            Self {
+                result: Ok(text.into()),
+                calls: Default::default(),
+            }
+        }
+        pub fn err(e: &str) -> Self {
+            Self {
+                result: Err(e.into()),
+                calls: Default::default(),
+            }
+        }
+    }
+    impl Polisher for FakePolisher {
+        fn polish(&self, raw: &str) -> Result<String, String> {
+            self.calls.lock().unwrap().push(raw.to_string());
+            self.result.clone()
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct FakeInject {
+        pub name: &'static str,
+        pub fail: bool,
+        pub texts: Arc<Mutex<Vec<String>>>,
+    }
+    impl FakeInject {
+        pub fn new(name: &'static str, fail: bool) -> Self {
+            Self {
+                name,
+                fail,
+                texts: Default::default(),
+            }
+        }
+    }
+    impl Inject for FakeInject {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn inject(&mut self, text: &str) -> Result<(), String> {
+            if self.fail {
+                return Err(format!("{} failed", self.name));
+            }
+            self.texts.lock().unwrap().push(text.to_string());
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Default)]
+    pub struct FakeIndicator(pub Arc<Mutex<Vec<IndicatorState>>>);
+    impl Indicator for FakeIndicator {
+        fn set(&mut self, state: IndicatorState) {
+            self.0.lock().unwrap().push(state);
+        }
     }
 }
