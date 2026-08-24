@@ -1,7 +1,4 @@
-//! byovox — push-to-talk dictation against a speech-to-text server you run.
-
-#[allow(dead_code)] // no caller until the CLI is wired up
-mod config;
+//! The byovox binary; the modules it drives live in the `byovox` library crate.
 
 fn main() {
     println!("byovox");
