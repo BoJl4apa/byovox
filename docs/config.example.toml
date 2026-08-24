@@ -1,0 +1,95 @@
+# byovox configuration.
+#
+# Every key is optional and shown here at its default; delete anything you do not
+# change. Unknown keys are an error, so a typo fails loudly instead of silently doing
+# nothing. Secrets never go in this file: name an environment variable instead.
+#
+# Location: %APPDATA%\byovox\config.toml (Windows), ~/.config/byovox/config.toml
+# (Linux), ~/Library/Application Support/byovox/config.toml (macOS).
+# `byovox config` prints the effective value of every key and where it came from.
+
+[stt]
+# OpenAI-compatible base URL; byovox posts to {base_url}/audio/transcriptions.
+base_url = "http://your-whisper-host:8770/v1"
+# Sent as the `model` field. Self-hosted whisper.cpp ignores it; hosted APIs need a real name.
+model = "whisper-1"
+# Name of an environment variable holding a bearer token. Empty = no Authorization header
+# (right for a server that authenticates by network identity).
+api_key_env = ""
+# Vocabulary priming sent as the whisper `prompt` on every request. Names and jargon
+# whisper would otherwise mangle, e.g. "Glossary: Alice, Acme, the dotfiles tool, the password vault".
+prompt = ""
+# Whole-request timeout in seconds (connect is always 5 s).
+timeout_s = 30
+
+[language]
+# Language for layouts not listed in by_layout, or when the layout cannot be read.
+# "auto" = let the server detect (no `language` field is sent). A whisper.cpp server must
+# then run with `-l auto`, or its own default applies. Or an ISO 639-1 code to force one.
+default = "auto"
+# With default = "auto": restrict detection to these ISO 639-1 codes. Sent as the
+# whisper.cpp-server extension field `language_candidates`; servers without it ignore
+# the field. Empty = not sent.
+candidates = []
+# Keyboard layout language (ISO 639-1) -> explicit STT language. The layout of the
+# window you are dictating into is read when you press the key.
+# Example: switch to a Hebrew layout and whisper is told `language=he`.
+[language.by_layout]
+# he = "he"
+
+[polish]
+# Send the transcript through a chat model that adds punctuation and removes fillers.
+# If this stage fails for any reason the raw transcript is typed instead.
+enabled = true
+# OpenAI-compatible base URL; byovox posts to {base_url}/chat/completions.
+base_url = "http://your-llm-gateway:4000/v1"
+model = "your-cleanup-alias"
+# Environment variable holding the bearer token for the gateway.
+api_key_env = ""
+# Optional KEY=VALUE file consulted for that variable name when it is unset in the
+# environment (a place to keep one token shared with other tools).
+api_key_file = ""
+# Skip polish for utterances shorter than this many words (0 = always polish).
+min_words = 0
+# Path to a file replacing the built-in system prompt. Empty = built-in.
+prompt_file = ""
+timeout_s = 20
+
+[hotkey]
+# W3C UI Events `code` name. Bare modifiers work on Windows and on Linux via evdev:
+# ControlRight, ControlLeft, AltRight, ShiftRight, CapsLock, ScrollLock, Pause, F13..F24.
+key = "ControlRight"
+# "hold": press = record, release = send. "toggle": press to start, press again to send.
+mode = "hold"
+# A hold shorter than this is an accidental tap: discarded, no request made.
+min_hold_ms = 250
+# Pressing this while recording discards the recording.
+cancel_key = "Escape"
+
+[inject]
+# How text reaches the focused window.
+#   auto           first working method for this platform (type on Windows)
+#   type           synthesise keystrokes (Windows: SendInput unicode)
+#   paste          put the text on the clipboard, send Ctrl+V, restore the clipboard
+#   clipboard-only put the text on the clipboard and play the done cue; you paste
+# Naming a method the platform cannot provide is a startup error.
+mode = "auto"
+# Append a space after the inserted text.
+trailing_space = false
+
+[indicator]
+# Small always-on-top "recording / working" pill near the cursor (Windows, X11, macOS).
+pill = true
+# Short tones on start, done and error.
+cue = true
+
+[capture_log]
+# Keep every dictation as a WAV plus a JSONL row (raw text, polished text, language sent,
+# per-stage latency) — training data for your own correction rules. Off by default.
+enabled = false
+# Directory; empty = <platform data dir>/byovox/capture.
+dir = ""
+
+[logging]
+# trace | debug | info | warn | error. Transcript text appears only at debug.
+level = "info"
