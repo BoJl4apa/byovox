@@ -16,7 +16,7 @@ pub const BUILT_IN_PROMPT: &str = r#"You turn a raw speech transcript into clean
 
 Rules:
 1. Add punctuation and capitalisation where the speech pauses or clauses end.
-2. Remove filler words (um, uh, like, you know, ну, короче, аה, אה), false starts and accidental repetitions.
+2. Remove filler words (um, uh, like, you know, ну, короче, אה), false starts and accidental repetitions.
 3. If the speaker enumerates items (first/second/third, во-первых/во-вторых, ראשית/שנית), format them as a numbered list, one item per line.
 4. Preserve the speaker's language exactly, including mixed languages. Never translate.
 5. Preserve every technical term, product name, proper noun, number and code identifier exactly as transcribed.
@@ -86,22 +86,31 @@ impl Polisher for PolishClient {
             .read_to_string()
             .map_err(|e| format!("polish body: {e}"))?;
         if !(200..300).contains(&status) {
-            return Err(format!(
-                "polish HTTP {status}: {}",
-                text.chars().take(200).collect::<String>()
-            ));
+            return Err(format!("polish HTTP {status}: {}", body_prefix(&text)));
         }
         let v: serde_json::Value =
             serde_json::from_str(&text).map_err(|e| format!("polish JSON: {e}"))?;
+        // Absent-or-not-a-string and blank are different failures: the first is a reply
+        // shaped wrong, the second a model that returned nothing to type.
         let content = v["choices"][0]["message"]["content"]
             .as_str()
-            .unwrap_or("")
+            .ok_or_else(|| {
+                format!(
+                    "polish response has no content field: {}",
+                    body_prefix(&text)
+                )
+            })?
             .trim();
         if content.is_empty() {
             return Err("polish returned empty content".into());
         }
         Ok(content.to_string())
     }
+}
+
+/// The leading 200 characters of a response body, for error messages.
+fn body_prefix(body: &str) -> String {
+    body.chars().take(200).collect()
 }
 
 pub fn word_count(s: &str) -> usize {
@@ -149,11 +158,29 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(body).unwrap();
         assert_eq!(v["model"], "dictate");
         assert_eq!(v["temperature"], 0.3);
+        assert_eq!(v["max_tokens"], 1024);
         assert_eq!(v["messages"][0]["role"], "system");
+        assert_eq!(v["messages"][0]["content"], BUILT_IN_PROMPT);
+        assert_eq!(v["messages"][1]["role"], "user");
         assert_eq!(
             v["messages"][1]["content"],
             "<transcription>um hello world</transcription>"
         );
+    }
+
+    #[test]
+    fn no_authorization_header_without_a_key() {
+        let srv = MockServer::start(200, r#"{"choices":[{"message":{"content":"x"}}]}"#);
+        let c = PolishClient::new(
+            srv.url(),
+            "dictate",
+            None,
+            Duration::from_secs(5),
+            BUILT_IN_PROMPT.to_string(),
+        );
+        assert_eq!(c.polish("hi").unwrap(), "x");
+        let req = srv.requests().remove(0);
+        assert_eq!(auth_header(&req), None, "{req}");
     }
 
     #[test]
@@ -167,6 +194,18 @@ mod tests {
                 .unwrap_err()
                 .contains("empty")
         );
+    }
+
+    #[test]
+    fn a_2xx_without_a_content_field_is_an_error() {
+        let srv = MockServer::start(200, r#"{"choices":[{"message":{"role":"assistant"}}]}"#);
+        let err = client(srv.url()).polish("hi").unwrap_err();
+        assert!(
+            err.contains("polish response has no content field"),
+            "{err}"
+        );
+        // The body prefix comes along, so the reply that broke it is visible.
+        assert!(err.contains("assistant"), "{err}");
     }
 
     #[test]

@@ -180,7 +180,8 @@ pub fn data_dir() -> PathBuf {
 }
 
 /// Bearer token: the named env var, else `NAME=VALUE` in `file` (quotes stripped).
-/// Empty `env_name` = no token. The value is never logged.
+/// Empty `env_name` = no token, so a bare `=VALUE` line can never supply one. A value left
+/// blank once quotes and padding come off is `None`, never an empty `Bearer`. Never logged.
 pub fn resolve_token(env_name: &str, file: &str) -> Option<String> {
     if env_name.is_empty() {
         return None;
@@ -195,10 +196,14 @@ pub fn resolve_token(env_name: &str, file: &str) -> Option<String> {
     }
     let path = expand_home(file);
     let text = std::fs::read_to_string(&path).ok()?;
-    text.lines().find_map(|line| {
+    // The first line naming the key wins; its value is then normalised the same way the
+    // env var is, so padding or empty quotes cannot become an empty `Bearer`.
+    let raw = text.lines().find_map(|line| {
         let (k, v) = line.split_once('=')?;
-        (k.trim() == env_name).then(|| v.trim().trim_matches('"').trim_matches('\'').to_string())
-    })
+        (k.trim() == env_name).then_some(v)
+    })?;
+    let value = raw.trim().trim_matches('"').trim_matches('\'').trim();
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 /// `~/x` → home-relative; anything else unchanged.
@@ -356,14 +361,18 @@ mod tests {
     fn resolve_token_prefers_env_then_file() {
         let dir = tempfile_dir("resolve_token");
         let f = dir.join("env");
-        std::fs::write(&f, "OTHER=1\nMY_TOKEN=\"from-file\"\n").unwrap();
-        // SAFETY: test-only, single-threaded use of the process environment.
+        std::fs::write(&f, "OTHER=1\n=leaked\nMY_TOKEN=\"from-file\"\n").unwrap();
+        // SAFETY: no other test reads or writes `MY_TOKEN`, and the environment API these
+        // calls wrap is internally synchronised on Windows.
         unsafe { std::env::remove_var("MY_TOKEN") };
         assert_eq!(
             resolve_token("MY_TOKEN", f.to_str().unwrap()),
             Some("from-file".into())
         );
-        // SAFETY: test-only, single-threaded use of the process environment.
+        // An empty name matches nothing, so the bare `=leaked` line cannot hand back a
+        // token the user never named.
+        assert_eq!(resolve_token("", f.to_str().unwrap()), None);
+        // SAFETY: as above.
         unsafe { std::env::set_var("MY_TOKEN", "from-env") };
         assert_eq!(
             resolve_token("MY_TOKEN", f.to_str().unwrap()),
@@ -371,6 +380,27 @@ mod tests {
         );
         assert_eq!(resolve_token("", ""), None);
         assert_eq!(resolve_token("NOPE_UNSET", ""), None);
+        // SAFETY: as above.
+        unsafe { std::env::remove_var("MY_TOKEN") };
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_token_normalises_the_file_value() {
+        let dir = tempfile_dir("resolve_token_value");
+
+        let padded = dir.join("padded");
+        std::fs::write(&padded, "PADDED_TOKEN=\" from-file \"\n").unwrap();
+        assert_eq!(
+            resolve_token("PADDED_TOKEN", padded.to_str().unwrap()),
+            Some("from-file".into())
+        );
+
+        // Empty quotes must not become an empty `Bearer` header.
+        let blank = dir.join("blank");
+        std::fs::write(&blank, "BLANK_TOKEN=\"\"\n").unwrap();
+        assert_eq!(resolve_token("BLANK_TOKEN", blank.to_str().unwrap()), None);
+
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
