@@ -179,6 +179,38 @@ pub fn data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Bearer token: the named env var, else `NAME=VALUE` in `file` (quotes stripped).
+/// Empty `env_name` = no token. The value is never logged.
+pub fn resolve_token(env_name: &str, file: &str) -> Option<String> {
+    if env_name.is_empty() {
+        return None;
+    }
+    if let Ok(v) = std::env::var(env_name)
+        && !v.trim().is_empty()
+    {
+        return Some(v.trim().to_string());
+    }
+    if file.is_empty() {
+        return None;
+    }
+    let path = expand_home(file);
+    let text = std::fs::read_to_string(&path).ok()?;
+    text.lines().find_map(|line| {
+        let (k, v) = line.split_once('=')?;
+        (k.trim() == env_name).then(|| v.trim().trim_matches('"').trim_matches('\'').to_string())
+    })
+}
+
+/// `~/x` → home-relative; anything else unchanged.
+pub fn expand_home(p: &str) -> PathBuf {
+    if let Some(rest) = p.strip_prefix("~/").or_else(|| p.strip_prefix("~\\"))
+        && let Some(home) = directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf())
+    {
+        return home.join(rest);
+    }
+    PathBuf::from(p)
+}
+
 /// Missing file = all defaults (a fresh install works before `config --init`). Any other
 /// read failure is reported, never silently treated as "absent".
 pub fn load(path: &Path) -> Result<Config> {
@@ -317,6 +349,28 @@ mod tests {
         let err = load(&path).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains(&path.display().to_string()), "{msg}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_token_prefers_env_then_file() {
+        let dir = tempfile_dir("resolve_token");
+        let f = dir.join("env");
+        std::fs::write(&f, "OTHER=1\nMY_TOKEN=\"from-file\"\n").unwrap();
+        // SAFETY: test-only, single-threaded use of the process environment.
+        unsafe { std::env::remove_var("MY_TOKEN") };
+        assert_eq!(
+            resolve_token("MY_TOKEN", f.to_str().unwrap()),
+            Some("from-file".into())
+        );
+        // SAFETY: test-only, single-threaded use of the process environment.
+        unsafe { std::env::set_var("MY_TOKEN", "from-env") };
+        assert_eq!(
+            resolve_token("MY_TOKEN", f.to_str().unwrap()),
+            Some("from-env".into())
+        );
+        assert_eq!(resolve_token("", ""), None);
+        assert_eq!(resolve_token("NOPE_UNSET", ""), None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
