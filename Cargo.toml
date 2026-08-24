@@ -1,0 +1,35 @@
+[package]
+name = "byovox"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+arboard = "3.6.1"
+clap = { version = "4.6.6", features = ["derive"] }
+cpal = "0.18.2"
+directories = "6.0.0"
+fontdue = "0.9.4"
+hound = "3.5.1"
+interprocess = "2.4.3"
+muda = "0.19.3"
+rodio = "0.22.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+softbuffer = "0.4.8"
+toml = "1.1.4"
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+tray-icon = "0.24.2"
+ureq = "3.4.0"
+winit = "0.30.13"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_System_Threading",
+] }
+winreg = "0.55"
