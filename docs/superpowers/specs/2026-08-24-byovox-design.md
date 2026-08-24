@@ -286,8 +286,12 @@ effective value of every key tagged `default` / `file` / `env`. One place to edi
 ## Operations
 
 **Single instance.** A named pipe (`\\.\pipe\byovox`) or a Unix socket in
-`$XDG_RUNTIME_DIR`. Protocol: one text line in (`toggle`, `quit`, `status`), one line out
-(`ok` or `err <message>`).
+`$XDG_RUNTIME_DIR`. Protocol: one JSON object per line each way. Request
+`{"cmd": "toggle" | "quit" | "status" | "last"}`; reply `{"ok": true, ...}` or
+`{"ok": false, "error": "<message>"}`. `status` replies with the pipeline state and the
+last error; `last` replies `{"ok": true, "text": "<transcript>"}` — JSON escaping
+carries newlines, so a polished list arrives intact — or `ok: false` when nothing is
+held. Anything unparseable gets `ok: false` and the connection closes.
 
 **Errors — loud, never silent, never lossy:**
 
