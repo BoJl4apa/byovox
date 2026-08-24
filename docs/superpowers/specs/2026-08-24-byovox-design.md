@@ -25,9 +25,10 @@ which language you are about to speak. No existing client does the second thing 
   auto-detection, which is what they would have done anyway.
 - **Never lossy.** A dictation that reached the STT server is inserted even if every later
   stage fails.
-- **Multiplatform with honest degradation.** Windows and Linux (Wayland: GNOME, KDE; X11)
-  exercised; macOS written to the same seams, best-effort until someone runs it. Every
-  platform capability degrades one rung at a time and reports which rung it is on.
+- **Multiplatform with honest degradation.** Windows and Linux on KDE Plasma (Wayland)
+  are exercised for v1; GNOME, X11 and macOS are written to the same seams and marked
+  best-effort until someone runs them. Every platform capability degrades one rung at a
+  time and reports which rung it is on.
 - **Documented config.** The config schema *is* the documentation: one source renders the
   commented default file, the README reference, and the effective-config printout.
 - **Lean.** Tray + indicator only. No settings window, no auto-update, no account.
