@@ -19,8 +19,10 @@ which language you are about to speak. No existing client does the second thing 
   the hotkey is pressed and map it to the STT request: an explicit `language` for layouts
   you configure, auto-detection restricted to a candidate list for the rest.
 - **Endpoint-faithful.** Any OpenAI-compatible `/v1/audio/transcriptions` and
-  `/v1/chat/completions` work. The extra fields byovox sends (`prompt`,
-  `language_candidates`) are harmless to servers that ignore them.
+  `/v1/chat/completions` work. `language` and `prompt` are standard fields.
+  `language_candidates` is a whisper.cpp-server extension (the maintainer's fork; upstream
+  PR pending) — servers that lack it ignore the field and fall back to unconstrained
+  auto-detection, which is what they would have done anyway.
 - **Never lossy.** A dictation that reached the STT server is inserted even if every later
   stage fails.
 - **Multiplatform with honest degradation.** Windows and Linux (Wayland: GNOME, KDE; X11)
@@ -57,8 +59,13 @@ One binary; the daemon plus five subcommands:
 Idle ──press──▶ Recording ──release──▶ Transcribing ──▶ Polishing ──▶ Inserting ──▶ Idle
                     │ held < min_hold_ms → discard (no request)
                     │ cancel key → discard
-                    └ any stage error → Idle, error indication, logged
+Transcribing error → Idle, nothing inserted, error indication, logged
+Polishing error    → Inserting with the RAW transcript, error indication, logged
+Inserting error    → next inject rung (…→ clipboard-only → none), error indication, logged
 ```
+
+Once a transcript exists, every later failure still ends in an insert attempt — that is
+the never-lossy guarantee, and the unit tests pin it.
 
 In `toggle` mode a press toggles between Idle and Recording; releases are ignored. A press
 while Transcribing/Polishing/Inserting is ignored.
@@ -112,25 +119,36 @@ Single crate. No workspace until a second binary needs one.
 
 | Trait | Windows | Linux — Wayland (GNOME / KDE) | Linux — X11 | macOS |
 |---|---|---|---|---|
-| Hotkey | ✅ `WH_KEYBOARD_LL` hook on a message-pump thread; press/release for any key including a bare modifier | ✅ evdev (needs `input` group; one udev rule documented) · ⚠️ GlobalShortcuts portal via `ashpd` (`Activated`/`Deactivated`; KDE ships it, GNOME landing) | ✅ evdev · ⚠️ `global-hotkey` (X11) | ⚠️ `CGEventTap`, Accessibility permission |
+| Hotkey | ✅ `WH_KEYBOARD_LL` hook on a message-pump thread; press/release for any key including a bare modifier | ✅ evdev (needs `input` group; one udev rule documented) · ⚠️ GlobalShortcuts portal via `ashpd` (`Activated`/`Deactivated`; KDE ships it, GNOME landing). **Portal shortcuts are modifier+key combos** — a bare modifier such as `ControlRight` cannot be bound, so this rung is skipped for bare-modifier keys. Needs an app id registered via `org.freedesktop.host.portal.Registry` on xdg-desktop-portal ≥ 1.21 | ✅ evdev · ⚠️ `global-hotkey` (X11) | ⚠️ `CGEventTap`, Accessibility permission |
 | Capture | ✅ `cpal`/WASAPI | ✅ `cpal`/ALSA-over-PipeWire | ✅ same | ⚠️ `cpal`/CoreAudio |
-| Layout | ✅ `GetForegroundWindow` → `GetWindowThreadProcessId` → `GetKeyboardLayout` → LANGID | ⚠️ GNOME: IBus D-Bus `GlobalEngine` · ⚠️ KDE: `org.kde.keyboard /Layouts getLayout` | ⚠️ XKB group of focused window | ⚠️ `TISCopyCurrentKeyboardInputSource` |
-| Inject | ✅ `SendInput` + `KEYEVENTF_UNICODE`; optional paste mode (save clipboard → set → Ctrl+V → restore) | ⚠️ clipboard (`ext-data-control`: KDE ✅, recent Mutter ⚠️) + Ctrl+V chord via libei (RemoteDesktop portal, restore token) | ⚠️ XTest; clipboard fallback | ⚠️ `CGEventKeyboardSetUnicodeString` |
+| Layout | ✅ `GetForegroundWindow` → `GetWindowThreadProcessId` → `GetKeyboardLayout` → LANGID | ⚠️ GNOME: IBus D-Bus `GlobalEngine` · ⚠️ KDE: `org.kde.keyboard /Layouts getLayout` returns a **uint index**; the code comes from `getLayoutsList()[index].shortName` (`il`) | ⚠️ XKB group of focused window | ⚠️ `TISCopyCurrentKeyboardInputSource` |
+| Inject | ✅ `SendInput` + `KEYEVENTF_UNICODE`; optional paste mode (save clipboard → set → Ctrl+V → restore) | ⚠️ **RemoteDesktop portal keysym typing** (`NotifyKeyboardKeysym` with Unicode keysyms; one permission dialog, restore token; GNOME ≥ 46, KDE ≥ 6.1). ⚠️ KDE only: `ext-data-control` clipboard + portal Ctrl+V. ⚠️ XWayland-side clipboard set (the compositor syncs X selections) + portal Ctrl+V. Mutter implements neither `wlr-` nor `ext-data-control`, so no native clipboard rung exists on GNOME | ⚠️ XTest; clipboard fallback | ⚠️ `CGEventKeyboardSetUnicodeString` |
 | Indicator | ✅ tray (`tray-icon`) · ✅ pill (`winit`+`softbuffer`) · ✅ cue (`rodio`) | tray via SNI (KDE ✅, GNOME needs AppIndicator extension ⚠️) · pill off (no always-on-top; layer-shell on KDE later) · cue ✅ | ✅ all three | tray ✅ · pill ⚠️ · cue ✅ |
 
-Why libei is used only for a chord: typing arbitrary Unicode through libei means keymap
-juggling, which is where every crate that tried it has bugs. Setting the clipboard and
-sending one Ctrl+V keeps the libei surface to two keycodes.
+Why the portal's own keysym method and not libei: `NotifyKeyboardKeysym` takes a keysym,
+and XKB defines a Unicode keysym for every code point, so the compositor does the
+keymap work (Mutter and KWin reserve spare keycodes for keysyms outside the active
+layout — the one claim here to verify first on real hardware). libei carries keycodes
+only, which is exactly the keymap juggling that every crate attempting Wayland typing
+has bugs in. No libei dependency.
 
 **Universal fallbacks.** Hotkey → `byovox toggle` bound to an OS shortcut. Inject →
 `clipboard-only`: the text is placed on the clipboard, the done cue plays, the user
-pastes. Layout → `None` → default policy. A missing backend never fails a dictation; it
-degrades one rung and logs which.
+pastes — where the clipboard is settable at all; on GNOME Wayland the last rung is
+**none**: the transcript is kept in the log and shown as a desktop notification, and
+`check` says so in those words. Layout → `None` → default policy. A missing backend never
+fails a dictation; it degrades one rung and logs which.
 
-**`platform::detect()` order.** Linux hotkey: evdev → portal → `global-hotkey` (X11) →
-toggle-only. Linux inject: portal + libei → XTest (X11) → clipboard-only. Linux layout:
-KDE D-Bus if KDE, IBus if GNOME, XKB if X11, else none. Windows and macOS have one rung
-each plus the universal fallbacks.
+**`platform::detect()` order.** Linux hotkey: evdev → portal (only when `hotkey.key` is a
+modifier+key combo) → `global-hotkey` (X11) → toggle-only. Linux inject: portal keysym
+typing → clipboard (`ext-data-control`, or XWayland selection sync) + portal Ctrl+V →
+XTest (X11) → clipboard-only → none. Linux layout: KDE D-Bus if KDE, IBus if GNOME, XKB
+if X11, else none. Windows and macOS have one rung each plus the universal fallbacks.
+
+`inject.mode` is a *preference* that `detect()` honours: `auto` (default) walks the order
+above; `type`, `paste` or `clipboard-only` pins the corresponding rung and is a startup
+error — naming the rungs the platform does offer — if that rung is unavailable. It never
+silently becomes something else.
 
 ## Pipeline detail
 
@@ -141,8 +159,9 @@ each plus the universal fallbacks.
 3. **Encode.** Downmix to mono by averaging, resample to 16 kHz with a windowed-sinc
    resampler (`rubato`), encode 16-bit PCM WAV in memory (`hound`).
 4. **Transcribe.** Multipart POST to `{stt.base_url}/audio/transcriptions`: `file`,
-   `response_format=json`, `model` (sent, ignored by most self-hosted servers), and the
-   language policy fields (below). Timeouts: connect 5 s, total `stt.timeout_s` (30).
+   `response_format=json`, `model` (sent, ignored by most self-hosted servers), the
+   language policy fields (below), and `Authorization: Bearer` when `stt.api_key_env`
+   resolves. Timeouts: connect 5 s, total `stt.timeout_s` (30).
    One retry on connection error only; HTTP errors are never retried — they are
    configuration problems and retrying hides them. Response `text` is trimmed.
 5. **Empty transcript** → Idle, logged at INFO, no cue.
@@ -179,25 +198,37 @@ he = "he"
 ```
 
 Each `Layout` backend normalises its native identifier to ISO 639-1 before the pipeline
-sees it (Windows LANGID `0x040D` → `he`; IBus `xkb:il::heb` → `he`; KDE `il` → `he`;
-macOS `com.apple.keylayout.Hebrew` → `he`; unknown → `None`). The tables live next to
-each backend and are unit-tested. An explicit language sends `language=<code>` and no
-candidates; auto sends `language=auto` plus `language_candidates=<comma list>` if
-non-empty. `stt.prompt`, if set, rides on every request.
+sees it (Windows LANGID `0x040D` → `he`; IBus `xkb:il::heb` → `he`; KDE
+`getLayoutsList()[getLayout()].shortName` = `il` → `he`; macOS
+`com.apple.keylayout.Hebrew` → `he`; unknown → `None`). The tables live next to each
+backend and are unit-tested.
+
+On the wire: an explicit language sends `language=<ISO 639-1>` and no candidates. Auto
+sends **no `language` field at all** — that is auto-detection in OpenAI semantics, and
+`auto` is not a valid ISO code, so sending it would 4xx on strict servers (a whisper.cpp
+server must run with `-l auto` for the omitted field to mean detection; the maintainer's
+deployment does, and the config reference says so). With auto, `language_candidates=
+<comma list>` is added when `language.candidates` is non-empty; it is the whisper.cpp
+extension named under Goals and is simply ignored elsewhere. `stt.prompt`, if set, rides
+on every request.
 
 ## Configuration
 
 TOML at the platform config dir: `%APPDATA%\byovox\config.toml`,
 `~/.config/byovox/config.toml`, `~/Library/Application Support/byovox/config.toml`.
 Every key has a default, so a partial file is valid; unknown keys are a hard error so
-typos fail loudly. Secrets never enter the file.
+typos fail loudly. Secrets never enter the file: both stages take a bearer token from an
+environment variable named in the config, and polish may additionally name a
+`KEY=VALUE` file to read when the variable is unset (the maintainer's deployment points
+it at the same file the rest of that toolchain uses). Token values are never logged.
 
 ```toml
 [stt]
-base_url  = "http://your-whisper-host:8770/v1"
-model     = "whisper-1"
-prompt    = ""             # vocabulary priming, e.g. "Glossary: Alice, Acme, the dotfiles tool"
-timeout_s = 30
+base_url    = "http://your-whisper-host:8770/v1"
+model       = "whisper-1"
+api_key_env = ""           # env var holding a bearer token; empty = no Authorization header
+prompt      = ""           # vocabulary priming, e.g. "Glossary: Alice, Acme, the dotfiles tool"
+timeout_s   = 30
 
 [language]                 # see Language policy
 default    = "auto"
@@ -208,7 +239,8 @@ candidates = []
 enabled     = true
 base_url    = "http://your-llm-gateway:4000/v1"
 model       = "your-cleanup-alias"
-api_key_env = "EXAMPLE_API_KEY"   # env var; falls back to KEY=VALUE lines in ~/.config/example/env
+api_key_env = ""                # env var holding the bearer token
+api_key_file = ""               # optional KEY=VALUE file consulted when the env var is unset
 min_words   = 0                 # 0 = always polish
 prompt_file = ""                # empty = built-in prompt
 timeout_s   = 20
@@ -220,7 +252,7 @@ min_hold_ms = 250
 cancel_key  = "Escape"
 
 [inject]
-mode           = "type"         # type | paste | clipboard-only
+mode           = "auto"         # auto | type | paste | clipboard-only — see detect()
 trailing_space = false
 
 [indicator]
@@ -313,18 +345,23 @@ Public defaults are neutral placeholders; `check` reports what is unset.
 Validated at plan time, not assumed: `clap`, `serde` + `toml`, `directories`, `tracing`
 + `tracing-appender`, `ureq` (hand-rolled multipart), `cpal`, `hound`, `rubato`,
 `tray-icon` + `muda`, `winit` + `softbuffer`, `rodio`, `arboard`, `windows` (Win32),
-`evdev`, `zbus`, `ashpd`, `reis` (libei), `enigo` (X11 only), `objc2`/`core-foundation`
-(macOS).
+`evdev`, `zbus`, `ashpd` (GlobalShortcuts, RemoteDesktop), `x11rb` (XTest, XWayland
+selection), `notify-rust`, `objc2`/`core-foundation` (macOS).
 
 ## Risks
 
-- **Wayland portals are young.** libei handoff from `ashpd`'s RemoteDesktop session and
-  the GNOME GlobalShortcuts backend are the two places the design may need a rung swapped
-  during implementation. The fallbacks (evdev, clipboard-only) are v1-acceptable.
-- **GNOME clipboard.** `ext-data-control` support in Mutter is recent; on older GNOME the
-  Wayland path degrades to clipboard-only-with-cue only if the clipboard itself is
-  settable — otherwise to nothing, and `check` must say so plainly.
-- **Bare-modifier hotkeys** reach the focused app too (they cannot be swallowed on evdev).
-  A bare Right Ctrl does nothing on its own in almost every app; documented.
+- **Wayland portals are young.** Two claims get verified on hardware before anything is
+  built on them: that Mutter/KWin type Unicode keysyms outside the active layout through
+  `NotifyKeyboardKeysym` (keycode reservation), and that the GNOME GlobalShortcuts
+  backend delivers `Deactivated`. Each has a rung below it (XWayland clipboard sync;
+  evdev) that is v1-acceptable.
+- **GNOME has no native clipboard rung.** Mutter implements neither `wlr-` nor
+  `ext-data-control` (still true on GNOME 50), so a surfaceless process cannot set the
+  Wayland clipboard. If portal typing and the XWayland selection route both fail, GNOME's
+  last rung is *none* — log plus notification — and `check` reports exactly that.
+- **Bare-modifier hotkeys** reach the focused app too (they cannot be swallowed on evdev)
+  and cannot be bound through the GlobalShortcuts portal at all. A bare Right Ctrl does
+  nothing on its own in almost every app; without `input` group membership a Linux user
+  must pick a modifier+key combo or use toggle mode. Documented in the config reference.
 - **macOS is unexercised.** Every backend there is written to the seam and marked ⚠️ until
   someone runs it.
