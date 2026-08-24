@@ -49,6 +49,7 @@ One binary; the daemon plus five subcommands:
 | `byovox` | Run the daemon: tray icon, hotkey listener, pipeline. Single instance. |
 | `byovox toggle` | Signal the running daemon to start/stop recording. The path for OS-bound shortcuts and for setups without an in-process hotkey. |
 | `byovox quit` | Stop the daemon. |
+| `byovox last` | Print the most recent transcript held by the daemon (memory only, cleared on quit) — the retrieval path when no inject rung worked. |
 | `byovox check` | Self-test every stage and print the rung chosen per backend. |
 | `byovox config [--init]` | Print the effective config with value provenance, or write a fully commented default file. |
 | `byovox autostart --enable\|--disable` | Register/unregister with the OS's per-user autostart. |
@@ -122,28 +123,37 @@ Single crate. No workspace until a second binary needs one.
 | Hotkey | ✅ `WH_KEYBOARD_LL` hook on a message-pump thread; press/release for any key including a bare modifier | ✅ evdev (needs `input` group; one udev rule documented) · ⚠️ GlobalShortcuts portal via `ashpd` (`Activated`/`Deactivated`; KDE ships it, GNOME landing). **Portal shortcuts are modifier+key combos** — a bare modifier such as `ControlRight` cannot be bound, so this rung is skipped for bare-modifier keys. Needs an app id registered via `org.freedesktop.host.portal.Registry` on xdg-desktop-portal ≥ 1.21 | ✅ evdev · ⚠️ `global-hotkey` (X11) | ⚠️ `CGEventTap`, Accessibility permission |
 | Capture | ✅ `cpal`/WASAPI | ✅ `cpal`/ALSA-over-PipeWire | ✅ same | ⚠️ `cpal`/CoreAudio |
 | Layout | ✅ `GetForegroundWindow` → `GetWindowThreadProcessId` → `GetKeyboardLayout` → LANGID | ⚠️ GNOME: IBus D-Bus `GlobalEngine` · ⚠️ KDE: `org.kde.keyboard /Layouts getLayout` returns a **uint index**; the code comes from `getLayoutsList()[index].shortName` (`il`) | ⚠️ XKB group of focused window | ⚠️ `TISCopyCurrentKeyboardInputSource` |
-| Inject | ✅ `SendInput` + `KEYEVENTF_UNICODE`; optional paste mode (save clipboard → set → Ctrl+V → restore) | ⚠️ **RemoteDesktop portal keysym typing** (`NotifyKeyboardKeysym` with Unicode keysyms; one permission dialog, restore token; GNOME ≥ 46, KDE ≥ 6.1). ⚠️ KDE only: `ext-data-control` clipboard + portal Ctrl+V. ⚠️ XWayland-side clipboard set (the compositor syncs X selections) + portal Ctrl+V. Mutter implements neither `wlr-` nor `ext-data-control`, so no native clipboard rung exists on GNOME | ⚠️ XTest; clipboard fallback | ⚠️ `CGEventKeyboardSetUnicodeString` |
+| Inject | ✅ `SendInput` + `KEYEVENTF_UNICODE`; optional paste mode (save clipboard → set → Ctrl+V → restore) | ⚠️ **Clipboard + Ctrl+V through the RemoteDesktop portal** (`NotifyKeyboardKeysym` for `Control_L`/`v`, which every keymap has; one permission dialog, restore token; GNOME ≥ 46, KDE ≥ 6.1). The clipboard is set natively via `ext-data-control` where the compositor offers it (KDE), else through the **XWayland selection bridge** (an X11 client sets `CLIPBOARD`; the compositor mirrors it). ⚠️ Portal **keysym typing** only for text whose every character maps to a keysym present in the current keymap (`xkbcommon` lookup) — Mutter's Wayland path drops keysyms it cannot find. No libei | ⚠️ XTest; clipboard fallback | ⚠️ `CGEventKeyboardSetUnicodeString` |
 | Indicator | ✅ tray (`tray-icon`) · ✅ pill (`winit`+`softbuffer`) · ✅ cue (`rodio`) | tray via SNI (KDE ✅, GNOME needs AppIndicator extension ⚠️) · pill off (no always-on-top; layer-shell on KDE later) · cue ✅ | ✅ all three | tray ✅ · pill ⚠️ · cue ✅ |
 
-Why the portal's own keysym method and not libei: `NotifyKeyboardKeysym` takes a keysym,
-and XKB defines a Unicode keysym for every code point, so the compositor does the
-keymap work (Mutter and KWin reserve spare keycodes for keysyms outside the active
-layout — the one claim here to verify first on real hardware). libei carries keycodes
-only, which is exactly the keymap juggling that every crate attempting Wayland typing
-has bugs in. No libei dependency.
+Why paste-first on Wayland: the portal's `NotifyKeyboardKeysym` is the only sanctioned
+injection on GNOME and KDE, but Mutter's Wayland implementation injects a keysym only if
+it is already in the keymap (its X11 path adds temporary keycodes; the Wayland path does
+not), and layouts store language keysyms (`hebrew_aleph`), not Unicode keysyms. A
+Ctrl+V chord is two keysyms every keymap has, so delivering the *text* via the clipboard
+and only the *chord* via the portal is the path that cannot lose characters. Keysym
+typing is kept for the case it is provably safe — every character resolves through
+`xkbcommon` against the current keymap — because it avoids touching the clipboard. libei
+is not used: it carries keycodes only, which is the keymap juggling every crate attempting
+Wayland typing has bugs in.
 
 **Universal fallbacks.** Hotkey → `byovox toggle` bound to an OS shortcut. Inject →
 `clipboard-only`: the text is placed on the clipboard, the done cue plays, the user
-pastes — where the clipboard is settable at all; on GNOME Wayland the last rung is
-**none**: the transcript is kept in the log and shown as a desktop notification, and
-`check` says so in those words. Layout → `None` → default policy. A missing backend never
-fails a dictation; it degrades one rung and logs which.
+pastes — where the clipboard is settable at all. Where it is not (GNOME Wayland with the
+XWayland bridge unavailable) the last rung is **none**: the transcript is held in the
+daemon's memory for `byovox last` (and the tray's "Show last transcript"), the error cue
+plays, a desktop notification says *only* that insertion failed and how to retrieve the
+text — never the text itself — and `check` reports the rung as `none` in those words.
+Layout → `None` → default policy. A missing backend never fails a dictation; it degrades
+one rung and logs which.
 
 **`platform::detect()` order.** Linux hotkey: evdev → portal (only when `hotkey.key` is a
-modifier+key combo) → `global-hotkey` (X11) → toggle-only. Linux inject: portal keysym
-typing → clipboard (`ext-data-control`, or XWayland selection sync) + portal Ctrl+V →
-XTest (X11) → clipboard-only → none. Linux layout: KDE D-Bus if KDE, IBus if GNOME, XKB
-if X11, else none. Windows and macOS have one rung each plus the universal fallbacks.
+modifier+key combo) → `global-hotkey` (X11) → toggle-only. Linux inject on Wayland:
+clipboard (`ext-data-control`, else XWayland selection bridge) + portal Ctrl+V → portal
+keysym typing (keymap-safe text only) → clipboard-only → none. Linux inject on X11:
+XTest → clipboard + XTest Ctrl+V → clipboard-only. Linux layout: KDE D-Bus if KDE, IBus
+if GNOME, XKB if X11, else none. Windows and macOS have one rung each plus the universal
+fallbacks.
 
 `inject.mode` is a *preference* that `detect()` honours: `auto` (default) walks the order
 above; `type`, `paste` or `clipboard-only` pins the corresponding rung and is a startup
@@ -176,7 +186,8 @@ silently becomes something else.
    layout, language fields sent, raw text, polished text, per-stage latency, polish model.
 
 Every dictation emits one INFO line: `lang=auto→ru stt=612ms polish=480ms inject=12ms
-total=1.1s`. Transcript content is logged at DEBUG only.
+total=1.1s`. Transcript content is logged at DEBUG only — this holds on every path,
+including the `none` inject rung, which logs the failure at WARN without the text.
 
 ### Built-in polish prompt
 
@@ -286,7 +297,7 @@ effective value of every key tagged `default` / `file` / `env`. One place to edi
 | Backend cannot initialise | degrade one rung, WARN with the rung chosen; `check` shows it |
 | STT fails | error cue, tray tooltip carries the last error, ERROR log; nothing inserted |
 | Polish fails | raw transcript inserted, error cue, WARN |
-| Inject fails | clipboard-only, cue, WARN |
+| Inject fails | next inject rung, down to `none`: transcript held for `byovox last`, error cue, notification without the text, WARN (event only, no content) |
 
 **Logging.** `tracing` to a rotated file in the platform log dir plus stderr when run
 from a terminal. Levels per the usual contract: ERROR operation failed, WARN unexpected
@@ -298,8 +309,9 @@ one second and print the peak level → read the layout and print the policy it 
 to → post that second of audio to STT with latency → 1-token polish round-trip with
 latency → inject dry-run. Non-zero exit if a required stage fails.
 
-**Tray menu.** Status line (last error if any) · Enable/Disable · Mode hold/toggle · Open
-config · Open logs · Run check · Quit. Icons: idle, recording, working, error (3 s).
+**Tray menu.** Status line (last error if any) · Enable/Disable · Mode hold/toggle · Show
+last transcript · Open config · Open logs · Run check · Quit. Icons: idle, recording,
+working, error (3 s).
 
 **Indicator.** Pill: a small frameless always-on-top window near the cursor showing
 "● recording" / "… working", hidden when idle; disabled on Wayland in v1. Cues: three
@@ -321,7 +333,9 @@ protocol parsing; capture-log row shape.
 
 **Manual per-OS checklist** (`docs/testing.md`): hold/release/tap/cancel; layout switch →
 language; injection into an editor, a browser field, a terminal, an elevated window
-(expected to degrade to clipboard-only); pill, tray, cue; autostart; `check`.
+(expected to degrade one rung — on Windows UIPI blocks `SendInput` into elevated windows,
+so paste is blocked too and the outcome is clipboard-only); the `none` rung on GNOME
+Wayland with `byovox last` retrieval; pill, tray, cue; autostart; `check`.
 
 **Corpus evaluation stays private.** The maintainer's recorded corpus, references and
 scoring live in the maintainer's own repo, scored with knowledge-arm's `score_transcript`.
@@ -346,19 +360,22 @@ Validated at plan time, not assumed: `clap`, `serde` + `toml`, `directories`, `t
 + `tracing-appender`, `ureq` (hand-rolled multipart), `cpal`, `hound`, `rubato`,
 `tray-icon` + `muda`, `winit` + `softbuffer`, `rodio`, `arboard`, `windows` (Win32),
 `evdev`, `zbus`, `ashpd` (GlobalShortcuts, RemoteDesktop), `x11rb` (XTest, XWayland
-selection), `notify-rust`, `objc2`/`core-foundation` (macOS).
+selection), `xkbcommon` (keymap-safe keysym lookup), `notify-rust`,
+`objc2`/`core-foundation` (macOS).
 
 ## Risks
 
 - **Wayland portals are young.** Two claims get verified on hardware before anything is
-  built on them: that Mutter/KWin type Unicode keysyms outside the active layout through
-  `NotifyKeyboardKeysym` (keycode reservation), and that the GNOME GlobalShortcuts
-  backend delivers `Deactivated`. Each has a rung below it (XWayland clipboard sync;
-  evdev) that is v1-acceptable.
+  built on them: that the XWayland selection bridge mirrors an X11 `CLIPBOARD` set by a
+  surfaceless client into the Wayland clipboard on GNOME 50 and current KDE, and that the
+  GNOME GlobalShortcuts backend delivers `Deactivated`. Each has a rung below it
+  (keymap-safe keysym typing; evdev) that is v1-acceptable.
 - **GNOME has no native clipboard rung.** Mutter implements neither `wlr-` nor
   `ext-data-control` (still true on GNOME 50), so a surfaceless process cannot set the
-  Wayland clipboard. If portal typing and the XWayland selection route both fail, GNOME's
-  last rung is *none* — log plus notification — and `check` reports exactly that.
+  Wayland clipboard directly, and its Wayland `NotifyKeyboardKeysym` drops keysyms absent
+  from the keymap. If the XWayland bridge and keymap-safe typing both fail, GNOME's last
+  rung is *none* — `byovox last` plus a text-free notification — and `check` reports
+  exactly that.
 - **Bare-modifier hotkeys** reach the focused app too (they cannot be swallowed on evdev)
   and cannot be bound through the GlobalShortcuts portal at all. A bare Right Ctrl does
   nothing on its own in almost every app; without `input` group membership a Linux user

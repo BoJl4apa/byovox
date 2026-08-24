@@ -16,7 +16,8 @@ setting.
   understands the field; everything else is standard.
 - Windows and Linux (Wayland and X11); macOS best-effort.
 - A dictation that reached the server is never lost: if cleanup fails, the raw text is
-  typed instead.
+  typed instead; if no injection path works on your desktop (possible on GNOME
+  Wayland), `byovox last` hands it back.
 
 Status: **design complete, implementation starting.** The design is in
 [`docs/superpowers/specs/2026-08-24-byovox-design.md`](docs/superpowers/specs/2026-08-24-byovox-design.md).
