@@ -74,8 +74,11 @@ fn downmix(input: &[f32], channels: usize) -> Vec<f32> {
 
 // ponytail: box prefilter + linear interpolation. Whisper is tolerant of this; swap in
 // rubato (windowed sinc) if accuracy on 44.1 kHz microphones ever disappoints.
+// The prefilter window is `[i - win/2, i + win/2]` inclusive, so `2*(win/2)+1` taps — 3 for
+// 48k→16k and 44.1k→16k, 7 for 96k→16k — and any ratio below 1.5 (22.05k→16k, say) rounds
+// `win` to 1 and is therefore not prefiltered at all.
 fn resample(mono: &[f32], from: u32, to: u32) -> Vec<f32> {
-    if from == to || mono.is_empty() {
+    if from == to || from == 0 || mono.is_empty() {
         return mono.to_vec();
     }
     let filtered: Vec<f32> = if from > to {
@@ -124,6 +127,13 @@ mod tests {
         let a = Audio::from_f32(&sine(48_000, 2, 1.0, 440.0, 0.5), 2, 48_000);
         assert_eq!(a.samples.len(), 16_000);
         assert!((a.duration_secs() - 1.0).abs() < 0.001);
+        assert!((a.peak_dbfs() - (-6.0)).abs() < 1.0, "{}", a.peak_dbfs());
+    }
+
+    #[test]
+    fn a_zero_rate_does_not_panic() {
+        let a = Audio::from_f32(&[0.1, 0.2, 0.3], 1, 0);
+        assert_eq!(a.samples.len(), 3);
     }
 
     #[test]
