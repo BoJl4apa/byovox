@@ -276,7 +276,7 @@ enabled = false
 dir     = ""                    # empty = byovox's data dir + capture, e.g. %APPDATA%\byovox\data\capture
 
 [logging]
-level = "info"                  # file in <platform log dir>/byovox, daily rotation, 7 kept
+level = "info"                  # file under byovox's local-data dir /logs, daily rotation, 7 kept
 ```
 
 **Documentation from the schema.** Each field carries a doc comment. `byovox config
@@ -304,8 +304,9 @@ held. Anything unparseable gets `ok: false` and the connection closes.
 | Polish fails | raw transcript inserted, error cue, WARN |
 | Inject fails | next inject rung, down to `none`: transcript held for `byovox last`, error cue, notification without the text, WARN (event only, no content) |
 
-**Logging.** `tracing` to a rotated file in the platform log dir plus stderr when run
-from a terminal. Levels per the usual contract: ERROR operation failed, WARN unexpected
+**Logging.** `tracing` to a rotated file under the platform local-data dir
+(`%LOCALAPPDATA%\byovox\data\logs`, `~/.local/share/byovox/logs`,
+`~/Library/Application Support/byovox/logs`) plus stderr when run from a terminal. Levels per the usual contract: ERROR operation failed, WARN unexpected
 but continuing, INFO milestones (one line per dictation), DEBUG detail (the only level
 that carries transcript text).
 
