@@ -139,6 +139,17 @@ fn summary(e: &str) -> &str {
     e.split_once(':').map_or(e, |(head, _)| head).trim()
 }
 
+/// The score that condemns a transcript as silence, if any: `Some(p)` exactly when this
+/// dictation is one the gate drops. A threshold of `0` gates nothing, and a reply the server
+/// did not score is never gated.
+///
+/// The one place the comparison is written. `byovox check` reports what the daemon would do,
+/// so it has to decide the same way, on the same `f32` the daemon narrows the configured
+/// `f64` to — comparing at two widths makes the two disagree over a band one ulp wide.
+pub fn no_speech(prob: Option<f32>, threshold: f32) -> Option<f32> {
+    prob.filter(|p| threshold > 0.0 && *p > threshold)
+}
+
 enum State {
     Idle,
     Recording {
@@ -315,10 +326,7 @@ impl Pipeline {
         // one-word utterance must never be dropped for what it happens to say. The row is
         // still written, because these are the captures the threshold is tuned from; nothing
         // else happens, so `byovox last` cannot hand back something never dictated.
-        if let Some(p) = no_speech_prob
-            && self.cfg.no_speech_threshold > 0.0
-            && p > self.cfg.no_speech_threshold
-        {
+        if let Some(p) = no_speech(no_speech_prob, self.cfg.no_speech_threshold) {
             if let Some(rec) = &mut self.recorder {
                 rec.record(&DictationRecord {
                     audio: &audio,

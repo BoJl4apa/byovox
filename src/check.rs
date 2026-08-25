@@ -10,6 +10,7 @@ use crate::capture::{Capture, CpalCapture, describe_default_device};
 use crate::config::{Config, HotkeyConfig, PolishConfig, SttConfig, expand_home, resolve_token};
 use crate::hotkey::{HotkeyMode, validate_key_name};
 use crate::lang::{LanguagePolicy, SttLanguage};
+use crate::pipeline::no_speech;
 use crate::polish::{BUILT_IN_PROMPT, PolishClient, Polisher};
 use crate::stt::{SttClient, Transcriber};
 
@@ -321,7 +322,7 @@ fn stt_round_trip(
     Ok(format!(
         "{:.2}s  {}\"{}\"",
         t.elapsed().as_secs_f32(),
-        no_speech(transcript.no_speech_prob, cfg.no_speech_threshold),
+        no_speech_row(transcript.no_speech_prob, cfg.no_speech_threshold),
         prefix(&transcript.text)
     ))
 }
@@ -331,14 +332,17 @@ fn stt_round_trip(
 /// text beside it usually invented — the row has to show both, or a clean check looks like a
 /// hallucinating server. Empty when the server did not score the reply: nothing was measured,
 /// and `p_nospeech=0.00` would be a claim.
-fn no_speech(prob: Option<f32>, threshold: f64) -> String {
+///
+/// The verdict comes from `pipeline::no_speech`, and the configured `f64` is narrowed here
+/// exactly as the daemon narrows it: this row's whole job is to say what the daemon would do,
+/// so it must not decide a hair's breadth differently.
+fn no_speech_row(prob: Option<f32>, threshold: f64) -> String {
     let Some(p) = prob else {
         return String::new();
     };
-    let gated = if threshold > 0.0 && f64::from(p) > threshold {
-        " (would be dropped as silence)"
-    } else {
-        ""
+    let gated = match no_speech(prob, threshold as f32) {
+        Some(_) => " (would be dropped as silence)",
+        None => "",
     };
     format!("p_nospeech={p:.2}{gated}  ")
 }
@@ -378,7 +382,7 @@ fn record() -> Result<Audio, String> {
 mod tests {
     use super::{
         Audio, BUILT_IN_PROMPT, HotkeyConfig, PREFIX_CHARS, QUIET_DBFS, SAMPLE_RATE, hotkey_error,
-        no_speech, prefix, prompt_text, stage_token, steady_state, strip_body,
+        no_speech_row, prefix, prompt_text, stage_token, steady_state, strip_body,
     };
 
     /// `check` transcribes a second of room tone, so a high score beside invented text is the
@@ -387,14 +391,30 @@ mod tests {
     /// claims nothing.
     #[test]
     fn the_stt_row_says_what_the_no_speech_gate_would_do() {
-        assert_eq!(no_speech(None, 0.6), "");
-        assert_eq!(no_speech(Some(0.04), 0.6), "p_nospeech=0.04  ");
+        assert_eq!(no_speech_row(None, 0.3), "");
+        assert_eq!(no_speech_row(Some(0.04), 0.3), "p_nospeech=0.04  ");
         assert_eq!(
-            no_speech(Some(0.76), 0.6),
+            no_speech_row(Some(0.76), 0.3),
             "p_nospeech=0.76 (would be dropped as silence)  "
         );
         // With the gate off nothing is dropped, however sure whisper is.
-        assert_eq!(no_speech(Some(0.99), 0.0), "p_nospeech=0.99  ");
+        assert_eq!(no_speech_row(Some(0.99), 0.0), "p_nospeech=0.99  ");
+    }
+
+    /// The row's whole claim is "this is what the daemon would do", so it has to decide on
+    /// the same number the daemon does. A score of exactly the threshold as an `f32` sits
+    /// *above* the same threshold widened to `f64` — comparing there would have `check`
+    /// promise a drop the pipeline does not perform.
+    #[test]
+    fn the_row_and_the_pipeline_agree_at_the_threshold_itself() {
+        let threshold = 0.3_f64;
+        let p = threshold as f32;
+        assert!(
+            f64::from(p) > threshold,
+            "the widths must genuinely differ, or this test proves nothing"
+        );
+        assert_eq!(crate::pipeline::no_speech(Some(p), threshold as f32), None);
+        assert_eq!(no_speech_row(Some(p), threshold), "p_nospeech=0.30  ");
     }
 
     /// A dictation is private: the report shows a prefix, cut on a character boundary so a
