@@ -24,6 +24,9 @@ pub struct PipelineConfig {
     pub polish_min_words: usize,
     pub prompt: Option<String>,
     pub trailing_space: bool,
+    /// Discard a transcript whose `no_speech_prob` is above this; `0.0` keeps every one.
+    /// `config::load` has already refused anything outside `0.0..=1.0`.
+    pub no_speech_threshold: f32,
     /// `polish.model`, recorded on every capture-log row that the polish stage ran for, so
     /// rows from before and after a model change stay distinguishable.
     pub polish_model: String,
@@ -67,6 +70,10 @@ pub struct DictationRecord<'a> {
     pub layout: Option<Lang>,
     pub language: &'a SttLanguage,
     pub raw: &'a str,
+    /// What whisper scored this clip, `None` when the server did not score it. Rows for
+    /// dictations the no-speech gate dropped carry it too — that is the corpus this
+    /// threshold is tuned from, and without the row the evidence is gone.
+    pub no_speech_prob: Option<f32>,
     pub polished: Option<&'a str>,
     /// The polish model, `None` when the stage did not run (disabled, or under min_words).
     pub polish_model: Option<&'a str>,
@@ -295,11 +302,42 @@ impl Pipeline {
             }
         };
         let stt_ms = t.elapsed().as_millis();
+        let no_speech_prob = transcript.no_speech_prob;
         let raw = transcript.text;
         tracing::debug!(raw = %raw, "transcript");
         if raw.trim().is_empty() {
             self.set_state(State::Idle, IndicatorState::Idle);
             tracing::info!(lang = %language.label(), stt_ms, "empty transcript");
+            return Outcome::Empty;
+        }
+        // Over near-silence whisper invents a stock phrase — "Thank you for watching!" — and
+        // reports its own doubt alongside it. The probability decides, never the text: a real
+        // one-word utterance must never be dropped for what it happens to say. The row is
+        // still written, because these are the captures the threshold is tuned from; nothing
+        // else happens, so `byovox last` cannot hand back something never dictated.
+        if let Some(p) = no_speech_prob
+            && self.cfg.no_speech_threshold > 0.0
+            && p > self.cfg.no_speech_threshold
+        {
+            if let Some(rec) = &mut self.recorder {
+                rec.record(&DictationRecord {
+                    audio: &audio,
+                    layout,
+                    language: &language,
+                    raw: &raw,
+                    no_speech_prob,
+                    polished: None,
+                    polish_model: None,
+                    rung: None,
+                    stt_ms,
+                    polish_ms: 0,
+                    inject_ms: 0,
+                });
+            }
+            self.set_state(State::Idle, IndicatorState::Idle);
+            // No text on the line: what whisper made up over silence is still a transcript,
+            // and transcripts appear at debug only.
+            tracing::info!(p = %format!("{p:.2}"), lang = %language.label(), stt_ms, "no speech detected");
             return Outcome::Empty;
         }
 
@@ -363,6 +401,7 @@ impl Pipeline {
                 layout,
                 language: &language,
                 raw: &raw,
+                no_speech_prob,
                 polished: polished.as_deref(),
                 polish_model,
                 rung: rung_used,
@@ -471,6 +510,7 @@ mod tests {
             prompt: Some("Glossary: Acme".into()),
             trailing_space: false,
             polish_model: "cleanup-1".into(),
+            no_speech_threshold: 0.6,
         };
         let p = Pipeline::new(
             cfg,
@@ -625,6 +665,135 @@ mod tests {
                 "{what} would play the done cue: {states:?}"
             );
         }
+    }
+
+    /// Field finding: over a near-silent hold whisper returns a confident stock phrase and
+    /// scores it as silence. Nothing may reach the polisher, the keyboard or `byovox last` —
+    /// but the capture row survives, because that corpus is where the threshold came from.
+    #[test]
+    fn a_transcript_whisper_scored_as_silence_is_dropped() {
+        let mut r = rig(
+            FakeTranscriber::scored("Thank you for watching!", 0.75),
+            Some(FakePolisher::ok("Thank you for watching.")),
+            false,
+            false,
+        );
+        assert_eq!(
+            dictate(&mut r, Duration::from_secs(1)),
+            Some(Outcome::Empty)
+        );
+        assert!(r.polish.calls.lock().unwrap().is_empty());
+        assert!(r.rung1.texts.lock().unwrap().is_empty());
+        assert!(r.rung2.texts.lock().unwrap().is_empty());
+        assert!(
+            r.p.shared().lock().unwrap().last_transcript.is_none(),
+            "`byovox last` would hand back something that was never dictated"
+        );
+        assert_eq!(r.ind.0.lock().unwrap().last(), Some(&S::Idle));
+        let recs = r.rec.0.lock().unwrap();
+        assert_eq!(recs.len(), 1, "the corpus keeps the evidence");
+        assert_eq!(recs[0].raw, "Thank you for watching!");
+        assert_eq!(recs[0].no_speech_prob, Some(0.75));
+        assert_eq!(recs[0].polished, None);
+        assert_eq!(recs[0].rung, None);
+    }
+
+    /// The gate has to be invisible to everything that is not silence: a scored transcript
+    /// under the threshold, an unscored one from a server that sends no segments, and any
+    /// transcript at all once the threshold is 0.
+    #[test]
+    fn only_a_score_above_the_threshold_gates() {
+        for (what, stt, threshold) in [
+            (
+                "real speech scores near zero",
+                FakeTranscriber::scored("hello there", 0.04),
+                0.6,
+            ),
+            (
+                "an unscored server leaves nothing to judge",
+                FakeTranscriber::ok("hello there"),
+                0.6,
+            ),
+            (
+                "exactly at the threshold is not above it",
+                FakeTranscriber::scored("hello there", 0.6),
+                0.6,
+            ),
+            (
+                "0 turns the gate off",
+                FakeTranscriber::scored("Thank you for watching!", 0.99),
+                0.0,
+            ),
+        ] {
+            let mut r = rig(stt, None, false, false);
+            r.p.cfg.no_speech_threshold = threshold;
+            assert_eq!(
+                dictate(&mut r, Duration::from_secs(1)),
+                Some(Outcome::Inserted { rung: "type" }),
+                "{what}"
+            );
+            assert_eq!(r.rung1.texts.lock().unwrap().len(), 1, "{what}");
+        }
+    }
+
+    /// Everything `run` logs at INFO and above, as plain text. `set_default` installs the
+    /// collector on this thread alone, so a test running beside this one neither sees these
+    /// lines nor adds to them.
+    fn logged(run: impl FnOnce()) -> String {
+        use std::io::Write;
+
+        #[derive(Clone, Default)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Sink {
+            type Writer = Sink;
+            fn make_writer(&'a self) -> Sink {
+                self.clone()
+            }
+        }
+
+        let sink = Sink::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(sink.clone())
+            // Colour codes would land between a field name and its value.
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        run();
+        drop(guard);
+        String::from_utf8(sink.0.lock().unwrap().clone()).unwrap()
+    }
+
+    /// The gate's line has to say enough to tune the threshold from — the probability that
+    /// decided it — and no more: what whisper invents over silence is still a transcript, and
+    /// transcripts are a `debug!` thing here, never an `info!` one.
+    #[test]
+    fn the_gated_line_carries_the_probability_and_no_text() {
+        let mut r = rig(
+            FakeTranscriber::scored("Thank you for watching!", 0.75),
+            None,
+            false,
+            false,
+        );
+        let log = logged(|| {
+            assert_eq!(
+                dictate(&mut r, Duration::from_secs(1)),
+                Some(Outcome::Empty)
+            );
+        });
+        assert!(log.contains("no speech detected"), "{log}");
+        assert!(log.contains("p=0.75"), "{log}");
+        assert!(log.contains("lang=he"), "{log}");
+        assert!(!log.contains("Thank you"), "{log}");
     }
 
     #[test]
@@ -802,7 +971,7 @@ mod tests {
     #[test]
     fn the_recorder_sees_the_finished_dictation() {
         let mut r = rig(
-            FakeTranscriber::ok("um hello"),
+            FakeTranscriber::scored("um hello", 0.03),
             Some(FakePolisher::ok("Hello.")),
             false,
             false,
@@ -816,6 +985,7 @@ mod tests {
         assert_eq!(recs[0].layout, Lang::parse("he"));
         assert_eq!(recs[0].language, "he");
         assert_eq!(recs[0].raw, "um hello");
+        assert_eq!(recs[0].no_speech_prob, Some(0.03));
         assert_eq!(recs[0].polished.as_deref(), Some("Hello."));
         assert_eq!(recs[0].polish_model.as_deref(), Some("cleanup-1"));
         assert_eq!(recs[0].rung, Some("type"));
@@ -871,6 +1041,7 @@ mod tests {
                 prompt: None,
                 trailing_space: false,
                 polish_model: String::new(),
+                no_speech_threshold: 0.6,
             },
             Box::new(cap),
             Box::new(FakeLayout(None)),

@@ -294,13 +294,15 @@ pub mod fakes {
         }
     }
 
-    /// An owned copy of one `DictationRecord`, since the record itself only borrows.
-    #[derive(Clone, Debug, PartialEq, Eq)]
+    /// An owned copy of one `DictationRecord`, since the record itself only borrows. Not
+    /// `Eq`: `no_speech_prob` is a float.
+    #[derive(Clone, Debug, PartialEq)]
     pub struct RecordedDictation {
         pub samples: usize,
         pub layout: Option<Lang>,
         pub language: String,
         pub raw: String,
+        pub no_speech_prob: Option<f32>,
         pub polished: Option<String>,
         pub polish_model: Option<String>,
         pub rung: Option<&'static str>,
@@ -318,6 +320,7 @@ pub mod fakes {
                 layout: r.layout,
                 language: r.language.label(),
                 raw: r.raw.to_string(),
+                no_speech_prob: r.no_speech_prob,
                 polished: r.polished.map(str::to_string),
                 polish_model: r.polish_model.map(str::to_string),
                 rung: r.rung,

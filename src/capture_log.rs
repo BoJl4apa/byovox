@@ -53,6 +53,9 @@ impl Recorder for CaptureLog {
             "layout": r.layout.map(|l| l.to_string()),
             "language": r.language.label(),
             "raw": r.raw,
+            // What whisper scored the clip, so a row the no-speech gate dropped can be told
+            // from one it let through — and so the threshold can be re-tuned from the corpus.
+            "no_speech_prob": r.no_speech_prob,
             "polished": r.polished,
             "polish_model": r.polish_model,
             "rung": r.rung,
@@ -104,6 +107,7 @@ mod tests {
             layout: Lang::parse("ru"),
             language: &lang,
             raw: "raw\nline",
+            no_speech_prob: Some(0.04),
             polished: Some("Polished."),
             polish_model: Some("cleanup-1"),
             rung: Some("type"),
@@ -114,6 +118,7 @@ mod tests {
         let jsonl = std::fs::read_to_string(dir.join("dictations.jsonl")).unwrap();
         let row: serde_json::Value = serde_json::from_str(jsonl.lines().next().unwrap()).unwrap();
         assert_eq!(row["raw"], "raw\nline");
+        assert_eq!(row["no_speech_prob"], 0.04_f32);
         assert_eq!(row["polished"], "Polished.");
         // The layout is the question, the language the policy's answer: a row carrying only
         // the answer cannot say which layout routed the dictation.
@@ -144,6 +149,7 @@ mod tests {
                 layout: None,
                 language: &lang,
                 raw,
+                no_speech_prob: None,
                 polished: None,
                 polish_model: None,
                 rung: None,
