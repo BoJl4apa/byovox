@@ -15,6 +15,9 @@ keywords = ["dictation", "speech-to-text", "whisper", "push-to-talk", "hotkey"]
 categories = ["command-line-utilities", "accessibility", "multimedia::audio"]
 
 # `cargo binstall byovox` — fetch the release archive instead of compiling for two minutes.
+# Inert until the crate is published: binstall resolves the name through the crates.io index,
+# so this block starts working with the commit that first runs `cargo publish`, and the
+# README offers only the Releases page until then.
 # These names must stay in step with `.github/workflows/release.yml`, which builds that
 # archive: the same filename, and the same flat layout with both binaries at the top level
 # (hence `bin-dir` without a directory — the default expects one named after the crate).

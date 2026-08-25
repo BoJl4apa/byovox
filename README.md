@@ -23,9 +23,8 @@ setting.
 ## Quick start
 
 **Download** the Windows x86_64 archive from the
-[Releases page](https://github.com/BoJl4apa/byovox/releases), or let cargo fetch the same
-one: `cargo binstall byovox`. Both binaries live at the top of the zip and must stay
-together. Verify what you downloaded before you run it:
+[Releases page](https://github.com/BoJl4apa/byovox/releases). Both binaries live at the top
+of the zip and must stay together. Verify what you downloaded before you run it:
 
 ```sh
 sha256sum -c SHA256SUMS                                              # published beside the zip
