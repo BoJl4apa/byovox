@@ -195,7 +195,7 @@ impl App {
         if let Some(pill) = &mut self.pill {
             pill.show(pill_text(state));
         }
-        if sound && let Some(cue) = &self.cue {
+        if sound && let Some(cue) = &mut self.cue {
             match state {
                 IndicatorState::Recording => cue.play(880.0, 70),
                 IndicatorState::Idle => cue.play(660.0, 60),
@@ -262,11 +262,9 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
             }
+            // Nothing to fail yet: the output device is opened by the first cue, not here.
             if self.opts.cue && self.cue.is_none() {
-                match Cue::new() {
-                    Ok(c) => self.cue = Some(c),
-                    Err(e) => tracing::warn!(error = %e, "audio cue failed; continuing without it"),
-                }
+                self.cue = Some(Cue::new());
             }
         }
     }
@@ -456,24 +454,37 @@ impl Pill {
     }
 }
 
-/// Take the pill out of the activation chain for good.
+/// Keep the pill out of the activation chain, the taskbar and Alt-Tab, for good.
 ///
-/// winit's `active` attribute only steers the *first* `ShowWindow`: `apply_diff` sends
-/// `SW_SHOWNOACTIVATE` once and then sets `MARKER_ACTIVATE`, so every later `set_visible(true)`
-/// is a plain activating `SW_SHOW`. Since a show happens at the start of every recording —
-/// precisely when the target window must keep focus or the injected text lands in the pill's
-/// owner instead — the guarantee has to come from the window itself. `WS_EX_NOACTIVATE` makes
-/// `SW_SHOW` non-activating at the OS level, for every show.
+/// `WS_EX_NOACTIVATE` is what stops a **click** on the pill from taking focus. The pill appears
+/// at cursor + (24, 24) at the start of every recording, so it lands under the pointer, and a
+/// `WM_MOUSEACTIVATE` there would pull focus off the window the transcript is about to be typed
+/// into. `ShowWindow` itself is already safe — the window is created with `active: false`, and
+/// winit's `MARKER_ACTIVATE` never persists, because `apply_diff` takes `self` by value and so
+/// mutates a throwaway copy — so this bit covers the activation paths `SW_SHOWNOACTIVATE` does
+/// not.
 ///
-/// Must be re-run after every visibility change; see `Pill::show`.
+/// `WS_EX_TOOLWINDOW` keeps the taskbar button and the Alt-Tab entry away. winit's
+/// `with_skip_taskbar` is an `ITaskbarList::DeleteTab` COM call rather than a style bit, and it
+/// is re-run only on the `TASKBAR_CREATED` broadcast — while `apply_diff` writes
+/// `WS_EX_APPWINDOW` back on the very pass that wipes this word, so without this the button
+/// returns on a hide/re-show.
 ///
-/// Failure is an error, not a warning: a pill that can steal focus is worse than no pill, and
-/// `Pill::new`'s caller drops it.
+/// Both bits must be re-asserted after every visibility change: `apply_diff` recomputes the
+/// whole extended-style word from winit's own `WindowFlags` on every `set_visible`, and never
+/// emits either of these. See `Pill::show`. On a winit bump, re-check (a) that `apply_diff`
+/// still recomputes the whole ex-style word, and (b) that `execute_in_thread` still runs inline
+/// on the event-loop thread — that is what orders the re-assert *after* the wipe instead of
+/// racing it.
+///
+/// At construction a failure is fatal and `Pill::new`'s caller drops the pill, since a pill
+/// that can steal focus is worse than no pill. From `show` there is no pill left to drop, so
+/// that caller can only WARN and carry on.
 #[cfg(windows)]
 fn deny_activation(window: &Window) -> Result<()> {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_NOACTIVATE,
+        GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     };
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -482,7 +493,7 @@ fn deny_activation(window: &Window) -> Result<()> {
         anyhow::bail!("pill window is not a Win32 window");
     };
     let hwnd = HWND(h.hwnd.get() as *mut std::ffi::c_void);
-    let wanted = WS_EX_NOACTIVATE.0 as isize;
+    let wanted = (WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0) as isize;
     // SAFETY: `hwnd` is this window's live handle and both calls only read/write its own
     // extended style word.
     let readback = unsafe {
@@ -491,9 +502,10 @@ fn deny_activation(window: &Window) -> Result<()> {
         GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
     };
     // SetWindowLongPtrW returns the old value, which is indistinguishable from failure, so
-    // the style is read back instead of trusting the return.
-    if readback & wanted == 0 {
-        anyhow::bail!("WS_EX_NOACTIVATE did not take on the pill window");
+    // the style is read back instead of trusting the return. Both bits must be present: one
+    // taking and the other not would leave a silently half-fixed pill.
+    if readback & wanted != wanted {
+        anyhow::bail!("WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW did not take on the pill window");
     }
     Ok(())
 }
@@ -520,26 +532,64 @@ fn cursor_position() -> Option<(i32, i32)> {
 
 // ---- cues ----------------------------------------------------------------------------
 
-/// Holds the output device open for the loop's lifetime; dropping it stops the cues.
+/// The audio cues.
+///
+/// The sink is opened by the first cue and re-opened after any failure, rather than held for
+/// the loop's lifetime: an output endpoint can be absent when the daemon starts and appear
+/// later (a headset, a dock, an endpoint that flaps), and a daemon that runs for weeks has to
+/// pick it up. Cues are decoration, so every failure is soft — but a dead endpoint must not
+/// write one WARN per dictation either, so a failure streak reports once and the next success
+/// re-arms it.
 struct Cue {
-    sink: rodio::MixerDeviceSink,
+    sink: Option<rodio::MixerDeviceSink>,
+    /// Set when a failure has already been reported, cleared by the next success.
+    warned: bool,
 }
 
 impl Cue {
-    fn new() -> Result<Cue> {
-        let mut sink = rodio::DeviceSinkBuilder::open_default_sink().context("audio output")?;
-        // Without rodio's `tracing` feature its drop notice is a raw `eprintln!`; byovox
-        // logs its own audio failures and a tray app must not scribble on stderr.
-        sink.log_on_drop(false);
-        Ok(Cue { sink })
+    fn new() -> Cue {
+        Cue {
+            sink: None,
+            warned: false,
+        }
     }
 
-    fn play(&self, hz: f32, ms: u64) {
+    fn play(&mut self, hz: f32, ms: u64) {
+        match self.open_and_play(hz, ms) {
+            Ok(()) => self.warned = false,
+            Err(e) => {
+                // Drop the handle so the next cue opens a fresh one: a device that came back
+                // is only reachable through a new sink.
+                self.sink = None;
+                if !self.warned {
+                    self.warned = true;
+                    tracing::warn!(error = %e, "audio cue unavailable; continuing without it");
+                }
+            }
+        }
+    }
+
+    /// Only the open is fallible: `Mixer::add` returns nothing, so a stream that dies *after*
+    /// a successful open is invisible here until something else forces a re-open.
+    fn open_and_play(&mut self, hz: f32, ms: u64) -> Result<()> {
         use rodio::Source;
+        let sink = match &mut self.sink {
+            Some(sink) => sink,
+            None => {
+                let mut sink =
+                    rodio::DeviceSinkBuilder::open_default_sink().context("audio output")?;
+                // Without rodio's `tracing` feature its drop notice is a raw `eprintln!`;
+                // byovox logs its own audio failures and a tray app must not scribble on
+                // stderr.
+                sink.log_on_drop(false);
+                self.sink.insert(sink)
+            }
+        };
         let src = rodio::source::SineWave::new(hz)
             .take_duration(Duration::from_millis(ms))
             .amplify(0.15);
-        self.sink.mixer().add(src);
+        sink.mixer().add(src);
+        Ok(())
     }
 }
 
