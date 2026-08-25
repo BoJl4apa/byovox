@@ -40,11 +40,59 @@ impl CaptureLog {
             n: 0,
             keep_days,
         };
+        // Debris first: a temp file left by a crashed prune holds transcripts, and pruning
+        // will never look at it because it is not a row and not a capture.
+        log.sweep_stale_temps();
         // At startup as well as after each write: a daemon restarted with a shorter retention
         // than it ran with must act on the change without waiting for the next dictation, and
         // a machine left off for a month must not come back to a stale corpus.
         log.prune();
         Ok(log)
+    }
+
+    /// Delete `dictations.jsonl.tmp-*` left behind by a prune that died between writing the
+    /// temp file and renaming it over the original.
+    ///
+    /// Such a file holds the kept rows — transcripts — and nothing else would ever remove it:
+    /// it is not a row, so `prune` cannot see it, and not a capture, so `is_own_capture_name`
+    /// rejects it. It would sit there past `keep_days` holding exactly the text retention
+    /// exists to age out.
+    ///
+    /// **This is the one directory scan the pruner is allowed**, and only because the prefix
+    /// is unforgeable in the way that matters: `replace_atomically` is the sole writer of that
+    /// exact name, so nothing matching it can be a file byovox did not create. Contrast the
+    /// capture names, where `2024-1.wav` is a shape a user's own file can have — which is why
+    /// deletions there are driven by the index instead.
+    ///
+    /// Run only at construction, where no prune of this log is in flight. A *second* byovox
+    /// process mid-prune on the same directory could lose its temp file to this sweep; that
+    /// costs it a failed rename, a warn and a retry next time, and cannot corrupt the JSONL,
+    /// because `replace_atomically` leaves the original untouched on any error.
+    fn sweep_stale_temps(&self) {
+        let prefix = format!("{ROWS}.tmp-");
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!(error = %e, path = %self.dir.display(), "capture log: could not scan for stale temp files");
+                return;
+            }
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if !name.starts_with(&prefix) {
+                continue;
+            }
+            let path = entry.path();
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    tracing::info!(path = %path.display(), "capture log: removed a temp file left by an interrupted prune")
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, path = %path.display(), "capture log: could not remove a stale temp file")
+                }
+            }
+        }
     }
 
     /// The `ts` below which a capture has expired, or `None` when nothing ever expires.
@@ -585,6 +633,39 @@ mod tests {
         let rows = std::fs::read_to_string(dir.join(ROWS)).unwrap();
         assert_eq!(rows.lines().count(), 1, "{rows}");
         assert!(rows.contains(&fresh), "{rows}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A prune killed between the temp write and the rename leaves a file holding transcripts
+    /// that nothing else would ever remove — pruning cannot see it, since it is neither a row
+    /// nor a capture. Only that exact prefix goes: it is written by `replace_atomically` and
+    /// nowhere else, so it cannot name a file byovox did not create.
+    #[test]
+    fn a_temp_file_from_an_interrupted_prune_is_swept_at_startup() {
+        let dir = temp_dir("sweep_stale_temps");
+        std::fs::create_dir_all(&dir).unwrap();
+        let stale = dir.join(format!("{ROWS}.tmp-4242"));
+        let ours = dir.join(format!("{ROWS}.tmp-{}", std::process::id()));
+        std::fs::write(&stale, "{\"ts\":1,\"raw\":\"a transcript\"}\n").unwrap();
+        std::fs::write(&ours, "{\"ts\":2,\"raw\":\"another\"}\n").unwrap();
+        // Neighbours that share a stem but not the prefix, and must survive.
+        let neighbours = [
+            format!("{ROWS}.bak"),
+            format!("{ROWS}.tmp"),
+            ROWS.to_string(),
+            "notes.txt".to_string(),
+        ];
+        for n in &neighbours {
+            std::fs::write(dir.join(n), b"keep me").unwrap();
+        }
+
+        let _log = CaptureLog::new(dir.clone(), 30).unwrap();
+
+        assert!(!stale.exists(), "a stale temp file survived");
+        assert!(!ours.exists(), "debris from this pid's own crash survived");
+        for n in &neighbours {
+            assert!(dir.join(n).exists(), "{n} was deleted");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
