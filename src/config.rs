@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 /// The commented default file shipped in the binary and written by `byovox config --init`.
@@ -32,6 +32,11 @@ pub struct SttConfig {
     pub api_key_env: String,
     pub prompt: String,
     pub timeout_s: u64,
+    /// Discard a transcript whose `no_speech_prob` exceeds this; `0.0` keeps every one.
+    /// TOML floats are f64, and this is the only place the value is stored, printed and
+    /// compared against the example file — the pipeline narrows it to f32 at the boundary,
+    /// where whisper's own scores live.
+    pub no_speech_threshold: f64,
 }
 impl Default for SttConfig {
     fn default() -> Self {
@@ -41,6 +46,7 @@ impl Default for SttConfig {
             api_key_env: String::new(),
             prompt: String::new(),
             timeout_s: 30,
+            no_speech_threshold: 0.6,
         }
     }
 }
@@ -224,7 +230,23 @@ pub fn load(path: &Path) -> Result<Config> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
-    toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+    let cfg: Config =
+        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    validate(&cfg).with_context(|| format!("in {}", path.display()))?;
+    Ok(cfg)
+}
+
+/// The value checks the schema cannot express. Names the offending key, and runs on the one
+/// path every command loads through, so a bad value stops the daemon at startup and fails
+/// `byovox check` rather than surfacing at the first dictation.
+fn validate(cfg: &Config) -> Result<()> {
+    let t = cfg.stt.no_speech_threshold;
+    // `contains` is false for NaN too, which is the right answer for a threshold nothing
+    // could ever compare against.
+    if !(0.0..=1.0).contains(&t) {
+        bail!("stt.no_speech_threshold is {t}: expected 0.0 to 1.0 (0.0 disables the gate)");
+    }
+    Ok(())
 }
 
 /// Every leaf key in dotted form with "file" if the file sets it, else "default".
@@ -343,6 +365,28 @@ mod tests {
         let dir = tempfile_dir("missing_file");
         let path = dir.join("config.toml");
         assert_eq!(load(&path).unwrap(), Config::default());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A probability outside 0..1 gates nothing or gates everything, and either way the file
+    /// says something the pipeline cannot honour. It has to name the key: the daemon loads
+    /// this file long before any dictation could show the value was wrong.
+    #[test]
+    fn a_threshold_outside_the_unit_range_names_the_key() {
+        let dir = tempfile_dir("threshold_range");
+        let path = dir.join("config.toml");
+        for bad in ["1.5", "-0.1", "nan"] {
+            std::fs::write(&path, format!("[stt]\nno_speech_threshold = {bad}\n")).unwrap();
+            // `{:#}` is how `main` prints a fatal, so this is the text the user sees.
+            let msg = format!("{:#}", load(&path).unwrap_err());
+            assert!(msg.contains("stt.no_speech_threshold"), "{bad}: {msg}");
+            assert!(msg.contains(&path.display().to_string()), "{bad}: {msg}");
+        }
+        // The ends are usable: 1.0 gates only a certainty, 0.0 turns the gate off.
+        for good in ["0.0", "1.0", "0.6"] {
+            std::fs::write(&path, format!("[stt]\nno_speech_threshold = {good}\n")).unwrap();
+            assert!(load(&path).is_ok(), "{good}");
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
