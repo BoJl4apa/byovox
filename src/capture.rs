@@ -4,9 +4,10 @@
 //! thread so it never crosses one, with the resample deferred to `stop()` over the whole
 //! buffer. Produces an `Audio` at 16 kHz mono.
 
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
@@ -17,11 +18,25 @@ pub trait Capture: Send {
     fn stop(&mut self) -> Result<Audio, String>;
 }
 
+/// How long `start()` waits for the device to actually begin streaming.
+const READY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Callback headroom: enough for this many seconds at the device's layout, so the audio
+/// callback never reallocates mid-recording.
+const RESERVE_SECS: usize = 30;
+
 /// Stop signal plus join handle for the thread parked on one recording's stream.
 type Worker = (Sender<()>, JoinHandle<Result<(), String>>);
 
 pub struct CpalCapture {
     buffer: Arc<Mutex<Vec<f32>>>,
+    /// First error the stream reported, if any; a recording that hit one is failed, not
+    /// silently returned truncated.
+    error: Arc<Mutex<Option<String>>>,
+    /// The layout the *running* stream opened with. Seeded from the default config at
+    /// construction and overwritten by `start()` once the stream is up, because WASAPI
+    /// re-reads `GetMixFormat` on every query and a shared-mode format change would
+    /// otherwise leave `stop()` resampling against a stale rate.
     channels: u16,
     rate: u32,
     worker: Option<Worker>,
@@ -29,15 +44,10 @@ pub struct CpalCapture {
 
 impl CpalCapture {
     pub fn open_default() -> Result<CpalCapture, String> {
-        let device = cpal::default_host()
-            .default_input_device()
-            .ok_or("no default input device")?;
-        let cfg = device
-            .default_input_config()
-            .map_err(|e| format!("input config: {e}"))?;
-        validate(cfg.sample_rate(), cfg.channels())?;
+        let (_device, cfg) = default_input()?;
         Ok(CpalCapture {
             buffer: Arc::new(Mutex::new(Vec::new())),
+            error: Arc::new(Mutex::new(None)),
             channels: cfg.channels(),
             rate: cfg.sample_rate(),
             worker: None,
@@ -45,10 +55,24 @@ impl CpalCapture {
     }
 }
 
+/// The default input device and its current default config, rejected here if we could not
+/// record it faithfully — so `check` reports an unrecordable device before the first
+/// push-to-talk rather than at the first dictation.
+fn default_input() -> Result<(cpal::Device, cpal::SupportedStreamConfig), String> {
+    let device = cpal::default_host()
+        .default_input_device()
+        .ok_or("no default input device")?;
+    let cfg = device
+        .default_input_config()
+        .map_err(|e| format!("input config: {e}"))?;
+    validate(cfg.sample_rate(), cfg.channels(), cfg.sample_format())?;
+    Ok((device, cfg))
+}
+
 /// `Audio::from_f32` reads a zero rate as "already at target, leave it alone" and clamps a
 /// zero channel count to mono, so a device reporting either would yield silently-wrong audio
 /// rather than an error. Reject it at the boundary instead.
-fn validate(rate: u32, channels: u16) -> Result<(), String> {
+fn validate_layout(rate: u32, channels: u16) -> Result<(), String> {
     if rate == 0 {
         return Err(format!("device reports sample rate {rate}"));
     }
@@ -58,13 +82,20 @@ fn validate(rate: u32, channels: u16) -> Result<(), String> {
     Ok(())
 }
 
+/// `validate_layout` plus a sample format `build_stream` knows how to decode.
+fn validate(rate: u32, channels: u16, format: cpal::SampleFormat) -> Result<(), String> {
+    validate_layout(rate, channels)?;
+    if !matches!(
+        format,
+        cpal::SampleFormat::F32 | cpal::SampleFormat::I16 | cpal::SampleFormat::U16
+    ) {
+        return Err(format!("unsupported sample format {format:?}"));
+    }
+    Ok(())
+}
+
 pub fn describe_default_device() -> Result<String, String> {
-    let device = cpal::default_host()
-        .default_input_device()
-        .ok_or("no default input device")?;
-    let cfg = device
-        .default_input_config()
-        .map_err(|e| format!("input config: {e}"))?;
+    let (device, cfg) = default_input()?;
     let name = device
         .description()
         .map(|d| d.name().to_string())
@@ -83,15 +114,21 @@ impl Capture for CpalCapture {
         if self.worker.is_some() {
             return Err("already recording".into());
         }
-        self.buffer.lock().unwrap().clear();
+        {
+            let mut buf = self.buffer.lock().unwrap();
+            buf.clear();
+            buf.reserve(RESERVE_SECS * self.rate as usize * self.channels.max(1) as usize);
+        }
+        *self.error.lock().unwrap() = None;
         let buffer = self.buffer.clone();
+        let error = self.error.clone();
         let (stop_tx, stop_rx) = channel::<()>();
-        let (ready_tx, ready_rx) = channel::<Result<(), String>>();
+        let (ready_tx, ready_rx) = channel::<Result<(u32, u16), String>>();
         let handle = std::thread::Builder::new()
             .name("byovox-capture".into())
             .spawn(move || {
-                let built = build_stream(buffer);
-                let stream = match built {
+                let built = build_stream(buffer, error);
+                let (stream, rate, channels) = match built {
                     Ok(s) => s,
                     Err(e) => {
                         let _ = ready_tx.send(Err(e.clone()));
@@ -102,15 +139,30 @@ impl Capture for CpalCapture {
                     let _ = ready_tx.send(Err(e.to_string()));
                     return Err(e.to_string());
                 }
-                let _ = ready_tx.send(Ok(()));
-                let _ = stop_rx.recv(); // blocks until stop() or the sender drops
+                let _ = ready_tx.send(Ok((rate, channels)));
+                let _ = stop_rx.recv(); // blocks until stop(), or until the sender drops
                 drop(stream);
                 Ok(())
             })
             .map_err(|e| e.to_string())?;
-        ready_rx
-            .recv()
-            .map_err(|_| "capture thread died".to_string())??;
+        let (rate, channels) = match ready_rx.recv_timeout(READY_TIMEOUT) {
+            Ok(ready) => ready?,
+            // Dropping stop_tx here (rather than parking it in self.worker) closes stop_rx, so
+            // a thread that finishes building late tears its stream down and exits instead of
+            // leaving an unowned stream on a live microphone.
+            Err(RecvTimeoutError::Timeout) => {
+                drop(stop_tx);
+                return Err("microphone did not start within 5 s".into());
+            }
+            Err(RecvTimeoutError::Disconnected) => return Err("capture thread died".into()),
+        };
+        // The stream may have opened at a different layout than open_default() saw.
+        if let Err(e) = validate_layout(rate, channels) {
+            drop(stop_tx);
+            return Err(e);
+        }
+        self.rate = rate;
+        self.channels = channels;
         self.worker = Some((stop_tx, handle));
         Ok(())
     }
@@ -124,18 +176,27 @@ impl Capture for CpalCapture {
             .join()
             .map_err(|_| "capture thread panicked".to_string())??;
         let samples = std::mem::take(&mut *self.buffer.lock().unwrap());
+        if let Some(e) = self.error.lock().unwrap().take() {
+            return Err(format!("capture stream error: {e}"));
+        }
         Ok(Audio::from_f32(&samples, self.channels, self.rate))
     }
 }
 
-fn build_stream(buffer: Arc<Mutex<Vec<f32>>>) -> Result<cpal::Stream, String> {
-    let device = cpal::default_host()
-        .default_input_device()
-        .ok_or("no default input device")?;
-    let cfg = device
-        .default_input_config()
-        .map_err(|e| format!("input config: {e}"))?;
-    let err_fn = |e| tracing::error!(error = %e, "capture stream error");
+/// Returns the stream plus the layout it actually opened with.
+fn build_stream(
+    buffer: Arc<Mutex<Vec<f32>>>,
+    error: Arc<Mutex<Option<String>>>,
+) -> Result<(cpal::Stream, u32, u16), String> {
+    let (device, cfg) = default_input()?;
+    let (rate, channels) = (cfg.sample_rate(), cfg.channels());
+    let err_fn = move |e: cpal::StreamError| {
+        tracing::error!(error = %e, "capture stream error");
+        let mut slot = error.lock().unwrap();
+        if slot.is_none() {
+            *slot = Some(e.to_string());
+        }
+    };
     let stream = match cfg.sample_format() {
         cpal::SampleFormat::F32 => device.build_input_stream(
             &cfg.into(),
@@ -167,25 +228,55 @@ fn build_stream(buffer: Arc<Mutex<Vec<f32>>>) -> Result<cpal::Stream, String> {
         ),
         other => return Err(format!("unsupported sample format {other:?}")),
     };
-    stream.map_err(|e| format!("building input stream: {e}"))
+    stream
+        .map(|s| (s, rate, channels))
+        .map_err(|e| format!("building input stream: {e}"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::validate;
+    use super::{validate, validate_layout};
+    use cpal::SampleFormat;
 
     #[test]
     fn a_zero_rate_or_channel_count_is_rejected() {
-        assert!(validate(48_000, 2).is_ok());
+        assert!(validate_layout(48_000, 2).is_ok());
         assert!(
-            validate(0, 2).unwrap_err().contains("sample rate 0"),
+            validate_layout(0, 2).unwrap_err().contains("sample rate 0"),
             "{:?}",
-            validate(0, 2)
+            validate_layout(0, 2)
         );
         assert!(
-            validate(48_000, 0).unwrap_err().contains("0 channels"),
+            validate_layout(48_000, 0)
+                .unwrap_err()
+                .contains("0 channels"),
             "{:?}",
-            validate(48_000, 0)
+            validate_layout(48_000, 0)
         );
+    }
+
+    #[test]
+    fn only_the_decodable_sample_formats_are_accepted() {
+        for f in [SampleFormat::F32, SampleFormat::I16, SampleFormat::U16] {
+            assert!(validate(48_000, 2, f).is_ok(), "{f:?}");
+        }
+        for f in [
+            SampleFormat::I8,
+            SampleFormat::I24,
+            SampleFormat::I32,
+            SampleFormat::U8,
+            SampleFormat::U32,
+            SampleFormat::F64,
+        ] {
+            let e = validate(48_000, 2, f).unwrap_err();
+            assert!(e.contains("unsupported sample format"), "{f:?}: {e}");
+            assert!(e.contains(&format!("{f:?}")), "{f:?}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_bad_layout_is_reported_before_the_format() {
+        let e = validate(0, 2, SampleFormat::F64).unwrap_err();
+        assert!(e.contains("sample rate 0"), "{e}");
     }
 }
