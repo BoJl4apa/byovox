@@ -27,8 +27,10 @@ timeout_s = 30
 # probability decides, never the text, so a real one-word utterance is never dropped for
 # what it happens to say. Measured here: real speech scores at most 0.08, silent holds 0.54
 # to 0.77 — the longer the silence the lower the score, so 0.3 sits in open space with room
-# either way. 0.0 turns the gate off; a server that sends no segments scores nothing and is
-# never gated.
+# either way. A server that sends no segments scores nothing and is never gated. Reading the
+# score needs `response_format=verbose_json`, which a few servers refuse (`gpt-4o-transcribe`
+# takes `json` and `text` only): 0.0 turns the gate off and asks for plain `json`, which is
+# the setting such a server needs.
 no_speech_threshold = 0.3
 
 [language]

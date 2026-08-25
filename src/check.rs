@@ -311,6 +311,7 @@ fn stt_round_trip(
         &cfg.model,
         key,
         Duration::from_secs(cfg.timeout_s),
+        cfg.no_speech_threshold > 0.0,
     );
     let prompt = Some(cfg.prompt.as_str()).filter(|p| !p.is_empty());
     let t = Instant::now();

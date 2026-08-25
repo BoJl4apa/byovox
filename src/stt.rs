@@ -35,15 +35,25 @@ pub struct SttClient {
     url: String,
     model: String,
     api_key: Option<String>,
+    /// Ask for `verbose_json` and read the scores out of it. Only a caller that will act on
+    /// a score turns this on — see `new`.
+    scored: bool,
     agent: ureq::Agent,
 }
 
 impl SttClient {
+    /// `scored` asks the server for `verbose_json`, the one format carrying
+    /// `segments[].no_speech_prob`. It is on only when something downstream will use the
+    /// number (`stt.no_speech_threshold > 0`), because not every OpenAI-compatible server
+    /// accepts that format — `gpt-4o-transcribe` answers `json` and `text` alone and 400s on
+    /// the rest. With it off the request is a plain `json` one and the score is `None`, so
+    /// turning the gate off restores a wire every such server takes.
     pub fn new(
         base_url: &str,
         model: &str,
         api_key: Option<String>,
         timeout: Duration,
+        scored: bool,
     ) -> SttClient {
         let config = ureq::Agent::config_builder()
             .timeout_connect(Some(Duration::from_secs(5)))
@@ -54,6 +64,7 @@ impl SttClient {
             url: format!("{}/audio/transcriptions", base_url.trim_end_matches('/')),
             model: model.to_string(),
             api_key,
+            scored,
             agent: config.into(),
         }
     }
@@ -138,9 +149,13 @@ impl Transcriber for SttClient {
         let mut m = Multipart::new();
         m.file("file", "clip.wav", "audio/wav", wav);
         m.text("model", &self.model);
-        // `verbose_json` costs nothing extra and is the only format that carries
-        // `segments[].no_speech_prob`, which is what tells a silent hold from a real one.
-        m.text("response_format", "verbose_json");
+        // `verbose_json` is the only format that carries `segments[].no_speech_prob`, which
+        // is what tells a silent hold from a real one — and the only reason to ask for a
+        // format some servers refuse. Asked for only when a score is wanted.
+        m.text(
+            "response_format",
+            if self.scored { "verbose_json" } else { "json" },
+        );
         for (name, value) in language.form_fields() {
             m.text(name, &value);
         }
@@ -182,7 +197,14 @@ impl Transcriber for SttClient {
             .ok_or_else(|| format!("stt response has no text field: {}", body_prefix(&text)))?;
         Ok(Transcript {
             text: transcript.trim().to_string(),
-            no_speech_prob: max_no_speech_prob(&v, &text)?,
+            // An unscored client reads no score at all: a server that answers a `json`
+            // request with segments anyway cannot reach the gate, and no shape it puts in
+            // them can fail a request whose scores nothing will read.
+            no_speech_prob: if self.scored {
+                max_no_speech_prob(&v, &text)?
+            } else {
+                None
+            },
         })
     }
 }
@@ -195,8 +217,14 @@ mod tests {
     use std::net::TcpListener;
     use std::time::Duration;
 
+    /// A client with the gate on, which is the shipped default.
     fn client(url: &str) -> SttClient {
-        SttClient::new(url, "whisper-1", None, Duration::from_secs(5))
+        SttClient::new(url, "whisper-1", None, Duration::from_secs(5), true)
+    }
+
+    /// A client with `stt.no_speech_threshold = 0`: nothing downstream reads a score.
+    fn unscored_client(url: &str) -> SttClient {
+        SttClient::new(url, "whisper-1", None, Duration::from_secs(5), false)
     }
 
     /// The `Authorization` value, found case-insensitively by name (RFC 9110 header
@@ -233,6 +261,45 @@ mod tests {
         assert_eq!(auth_header(&req), None, "{req}");
     }
 
+    /// Not every OpenAI-compatible server takes `verbose_json` — `gpt-4o-transcribe` rejects
+    /// it outright — so the format byovox asks for has to follow the one knob that decides
+    /// whether the score is wanted. With the gate off the request is the plain `json` one
+    /// every such server accepts, and nothing is read out of the reply's segments even if
+    /// the server volunteers them.
+    #[test]
+    fn the_gate_being_off_asks_for_plain_json_and_reads_no_score() {
+        let srv = MockServer::start(
+            200,
+            r#"{"text":"hello","segments":[{"id":0,"no_speech_prob":0.9}]}"#,
+        );
+        let out = unscored_client(srv.url())
+            .transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
+            .unwrap();
+        assert_eq!(out.text, "hello");
+        assert_eq!(out.no_speech_prob, None);
+        let req = srv.requests().remove(0);
+        assert!(
+            req.contains("name=\"response_format\"\r\n\r\njson\r\n"),
+            "{req}"
+        );
+        assert!(!req.contains("verbose_json"), "{req}");
+    }
+
+    /// The reply shapes that are a loud error for a scoring client are not even looked at by
+    /// an unscored one: the score it would refuse to guess at is a score nothing will read.
+    #[test]
+    fn the_gate_being_off_survives_a_reply_a_scoring_client_would_refuse() {
+        let srv = MockServer::start(
+            200,
+            r#"{"text":"hello","segments":[{"id":0,"no_speech_prob":"high"}]}"#,
+        );
+        let out = unscored_client(srv.url())
+            .transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
+            .unwrap();
+        assert_eq!(out.text, "hello");
+        assert_eq!(out.no_speech_prob, None);
+    }
+
     #[test]
     fn auto_sends_candidates_and_no_language_field() {
         let srv = MockServer::start(200, r#"{"text":"x"}"#);
@@ -250,7 +317,13 @@ mod tests {
     #[test]
     fn bearer_header_when_key_given() {
         let srv = MockServer::start(200, r#"{"text":"x"}"#);
-        let c = SttClient::new(srv.url(), "m", Some("tok".into()), Duration::from_secs(5));
+        let c = SttClient::new(
+            srv.url(),
+            "m",
+            Some("tok".into()),
+            Duration::from_secs(5),
+            true,
+        );
         c.transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
             .unwrap();
         // ureq 3 writes header names lowercased (`http::HeaderName`); values keep their case.

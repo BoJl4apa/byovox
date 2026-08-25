@@ -358,6 +358,7 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
         &cfg.stt.model,
         config::resolve_token(&cfg.stt.api_key_env, ""),
         Duration::from_secs(cfg.stt.timeout_s),
+        cfg.stt.no_speech_threshold > 0.0,
     );
     let polisher: Option<Box<dyn polish::Polisher>> = if cfg.polish.enabled {
         let prompt = if cfg.polish.prompt_file.is_empty() {
