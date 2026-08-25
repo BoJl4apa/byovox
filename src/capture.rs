@@ -69,8 +69,20 @@ fn default_input() -> Result<(cpal::Device, cpal::SupportedStreamConfig), String
     let cfg = device
         .default_input_config()
         .map_err(|e| format!("input config: {e}"))?;
-    validate(cfg.sample_rate(), cfg.channels(), cfg.sample_format())?;
+    // Named before it is judged. Without this a device rejected for its layout or sample
+    // format reaches `check` as a bare "unsupported sample format I24", with the handle that
+    // could have said which device one line above it.
+    validate(cfg.sample_rate(), cfg.channels(), cfg.sample_format())
+        .map_err(|e| format!("{}: {e}", device_name(&device)))?;
     Ok((device, cfg))
+}
+
+/// The device's own name, or `unnamed` — never a reason to fail.
+fn device_name(device: &cpal::Device) -> String {
+    device
+        .description()
+        .map(|d| d.name().to_string())
+        .unwrap_or_else(|_| "unnamed".into())
 }
 
 /// `Audio::from_f32` reads a zero rate as "already at target, leave it alone" and clamps a
@@ -100,13 +112,9 @@ fn validate(rate: u32, channels: u16, format: cpal::SampleFormat) -> Result<(), 
 
 pub fn describe_default_device() -> Result<String, String> {
     let (device, cfg) = default_input()?;
-    let name = device
-        .description()
-        .map(|d| d.name().to_string())
-        .unwrap_or_else(|_| "unnamed".into());
     Ok(format!(
         "{} ({} Hz, {} ch, {:?})",
-        name,
+        device_name(&device),
         cfg.sample_rate(),
         cfg.channels(),
         cfg.sample_format()

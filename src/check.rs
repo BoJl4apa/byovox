@@ -52,6 +52,11 @@ fn prefix(s: &str) -> String {
 /// diagnosis surface, so the cause has to survive — a bare `transport` tells nobody anything.
 /// Only what `stt.rs`/`polish.rs` append after `HTTP <status>: ` goes, because that is up to
 /// 200 characters of raw body, which can be transcript text or a key a 401 echoed back.
+///
+/// Accepted limitation: a 2xx whose JSON simply lacks the `text`/`content` field carries no
+/// ` HTTP ` marker, so up to 200 characters of that body reach the row. The clip `check`
+/// sends is its own one-second capture and the polish input a fixed sentence, so what can
+/// come back is a diagnosis, not a dictation.
 fn strip_body(e: &str) -> &str {
     const MARK: &str = " HTTP ";
     let Some(at) = e.find(MARK) else { return e };
@@ -114,17 +119,17 @@ fn stage_token(env_name: &str, file: &str) -> Result<Option<String>, String> {
     Ok(key)
 }
 
-/// `polish.prompt_file` must be readable when set: the daemon reads it at startup, so a path
-/// typo has to surface here rather than at the first dictation. `check` only proves it can be
-/// read — the round-trip below sends the built-in prompt.
-fn prompt_file_error(prompt_file: &str) -> Option<String> {
+/// The system prompt the daemon would send: `polish.prompt_file` when set, else the built-in
+/// one. Reading it here is what makes a path typo fail the check rather than the first
+/// dictation — and it is what the round trip below sends, so `check` exercises the prompt the
+/// daemon will use rather than a stand-in that could behave differently.
+fn prompt_text(prompt_file: &str) -> Result<String, String> {
     if prompt_file.is_empty() {
-        return None;
+        return Ok(BUILT_IN_PROMPT.to_string());
     }
     let path = expand_home(prompt_file);
     std::fs::read_to_string(&path)
-        .err()
-        .map(|e| format!("polish.prompt_file {}: {e}", path.display()))
+        .map_err(|e| format!("polish.prompt_file {}: {e}", path.display()))
 }
 
 pub fn run(cfg: &Config, config_path: &Path) -> bool {
@@ -324,15 +329,13 @@ fn stt_round_trip(
 /// gateway that answers anyway. The error loses its body for the same reason as STT's.
 fn polish_round_trip(cfg: &PolishConfig) -> Result<String, String> {
     let key = stage_token(&cfg.api_key_env, &cfg.api_key_file)?;
-    if let Some(e) = prompt_file_error(&cfg.prompt_file) {
-        return Err(e);
-    }
+    let prompt = prompt_text(&cfg.prompt_file)?;
     let client = PolishClient::new(
         &cfg.base_url,
         &cfg.model,
         key,
         Duration::from_secs(cfg.timeout_s),
-        BUILT_IN_PROMPT.into(),
+        prompt,
     );
     let t = Instant::now();
     let text = client
@@ -355,8 +358,8 @@ fn record() -> Result<Audio, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Audio, HotkeyConfig, PREFIX_CHARS, QUIET_DBFS, SAMPLE_RATE, hotkey_error, prefix,
-        prompt_file_error, stage_token, steady_state, strip_body,
+        Audio, BUILT_IN_PROMPT, HotkeyConfig, PREFIX_CHARS, QUIET_DBFS, SAMPLE_RATE, hotkey_error,
+        prefix, prompt_text, stage_token, steady_state, strip_body,
     };
 
     /// A dictation is private: the report shows a prefix, cut on a character boundary so a
@@ -399,6 +402,9 @@ mod tests {
         for e in [
             "stt transport: io: Connection refused",
             "polish transport: io: Connection refused",
+            // A status arrived, the body did not: the io cause is the whole diagnosis, and
+            // `stt.rs` keeps the colon off the status so this survives.
+            "stt HTTP 500 body unreadable: io: unexpected end of file",
             "stt JSON: expected value at line 1 column 1",
             "Microphone Array (48000 Hz, 2 ch, F32): microphone did not start within 5 s",
             "token: env var EXAMPLE_API_KEY unset",
@@ -465,16 +471,20 @@ mod tests {
         assert_eq!(stage_token("", "").unwrap(), None);
     }
 
-    /// The daemon reads `polish.prompt_file` at startup; a path typo has to fail the check,
-    /// not the first dictation.
+    /// The daemon reads `polish.prompt_file` at startup and sends what is in it; a path typo
+    /// has to fail the check, not the first dictation, and the round trip has to exercise the
+    /// configured text rather than the built-in stand-in.
     #[test]
-    fn an_unreadable_prompt_file_names_the_path_and_the_error() {
-        assert_eq!(prompt_file_error(""), None);
-        assert_eq!(
-            prompt_file_error(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")),
-            None
+    fn the_configured_prompt_is_what_check_reads_and_sends() {
+        assert_eq!(prompt_text("").unwrap(), BUILT_IN_PROMPT);
+        let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+        let text = prompt_text(manifest).expect("a readable file");
+        assert!(
+            text.contains("byovox"),
+            "the file's own text, not the built-in"
         );
-        let e = prompt_file_error("no-such-dir/no-such-prompt.txt").expect("unreadable");
+        assert_ne!(text, BUILT_IN_PROMPT);
+        let e = prompt_text("no-such-dir/no-such-prompt.txt").unwrap_err();
         let (path, io) = e
             .strip_prefix("polish.prompt_file ")
             .and_then(|rest| rest.split_once(": "))

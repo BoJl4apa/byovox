@@ -114,8 +114,11 @@ impl Transcriber for SttClient {
         };
         let (status, text) = match attempt {
             Attempt::Response { status, body } => (status, body),
+            // No colon straight after the status: `check::strip_body` cuts everything past
+            // `HTTP <status>: ` as response body, and here what follows is the io cause,
+            // which is the whole diagnosis.
             Attempt::BodyUnreadable { status, error } => {
-                return Err(format!("stt HTTP {status}: body unreadable: {error}"));
+                return Err(format!("stt HTTP {status} body unreadable: {error}"));
             }
             // The stage names itself: `pipeline::summary` keeps only the head before the
             // first colon, so a bare `transport` is all the tray tooltip, the tray status
@@ -245,6 +248,9 @@ mod tests {
             .transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
             .unwrap_err();
         assert!(err.contains("500"), "{err}");
+        // The io cause is the diagnosis and there is no response body to hide, so the
+        // status is not followed by a colon — see `check::strip_body`.
+        assert!(err.starts_with("stt HTTP 500 body unreadable: "), "{err}");
         assert_eq!(
             srv.requests().len(),
             1,
