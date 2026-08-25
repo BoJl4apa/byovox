@@ -14,6 +14,17 @@ readme = "README.md"
 keywords = ["dictation", "speech-to-text", "whisper", "push-to-talk", "hotkey"]
 categories = ["command-line-utilities", "accessibility", "multimedia::audio"]
 
+# `cargo binstall byovox` — fetch the release archive instead of compiling for two minutes.
+# These names must stay in step with `.github/workflows/release.yml`, which builds that
+# archive: the same filename, and the same flat layout with both binaries at the top level
+# (hence `bin-dir` without a directory — the default expects one named after the crate).
+# `{ version }` is the package version, so binstall only ever asks for a real release tag;
+# a pre-release such as v0.1.0-rc1 is deliberately not reachable this way.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/byovox-v{ version }-{ target }.zip"
+pkg-fmt = "zip"
+bin-dir = "{ bin }{ binary-ext }"
+
 [dependencies]
 anyhow = "1.0.104"
 arboard = "3.6.1"
