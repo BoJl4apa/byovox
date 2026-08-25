@@ -110,11 +110,12 @@ fn body_prefix(body: &str) -> String {
 }
 
 /// The strongest `no_speech_prob` in a `verbose_json` reply, `None` when the reply carries no
-/// `segments` at all or none of them is scored. A `segments` that is not an array, or a score
-/// that is not a number, is a reply this client does not understand: it fails loudly rather
-/// than handing the gate a silent `None` that would look exactly like an unscored server.
+/// `segments` — absent or null are the same answer, a list of nothing — and when none of the
+/// segments is scored. A `segments` that is some other non-list, or a score that is not a
+/// number, is a reply this client does not understand: it fails loudly rather than handing
+/// the gate a silent `None` that would look exactly like an unscored server.
 fn max_no_speech_prob(v: &serde_json::Value, body: &str) -> Result<Option<f32>, String> {
-    let Some(segments) = v.get("segments") else {
+    let Some(segments) = v.get("segments").filter(|s| !s.is_null()) else {
         return Ok(None);
     };
     let segments = segments.as_array().ok_or_else(|| {
@@ -435,15 +436,42 @@ mod tests {
     }
 
     /// A server that answers `verbose_json` with no segments scores nothing, and an unscored
-    /// reply must reach the pipeline as "unknown" rather than as a confident zero.
+    /// reply must reach the pipeline as "unknown" rather than as a confident zero. A null
+    /// `segments` is that same well-formed answer — a list of nothing — and refusing it would
+    /// fail every dictation from such a server over a reply nothing is wrong with.
     #[test]
     fn a_reply_without_segments_carries_no_score() {
-        let srv = MockServer::start(200, r#"{"text":"hello","language":"en"}"#);
-        let out = client(srv.url())
+        for body in [
+            r#"{"text":"hello","language":"en"}"#,
+            r#"{"text":"hello","segments":null}"#,
+            r#"{"text":"hello","segments":[]}"#,
+            // Segments that carry no score at all: nothing was measured.
+            r#"{"text":"hello","segments":[{"id":0,"text":"hello"}]}"#,
+        ] {
+            let srv = MockServer::start(200, body);
+            let out = client(srv.url())
+                .transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
+                .unwrap();
+            assert_eq!(out.text, "hello", "{body}");
+            assert_eq!(out.no_speech_prob, None, "{body}");
+        }
+    }
+
+    /// The inner null stays loud: a segment that exists and carries an unreadable score is a
+    /// score this client cannot read, not an absent one.
+    #[test]
+    fn a_null_score_inside_a_segment_is_still_an_error() {
+        let srv = MockServer::start(
+            200,
+            r#"{"text":"x","segments":[{"id":0,"no_speech_prob":null}]}"#,
+        );
+        let err = client(srv.url())
             .transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
-            .unwrap();
-        assert_eq!(out.text, "hello");
-        assert_eq!(out.no_speech_prob, None);
+            .unwrap_err();
+        assert!(
+            err.starts_with("stt response no_speech_prob is not a number: "),
+            "{err}"
+        );
     }
 
     /// A score this client cannot read is a reply it does not understand. Skipping it would
