@@ -125,12 +125,16 @@ pub struct InjectConfig {
     /// auto | type | paste | clipboard-only
     pub mode: String,
     pub trailing_space: bool,
+    /// Longest transcript, in characters, that may be typed; `0` lifts the limit. A reply
+    /// over it is held for `byovox last`, never truncated.
+    pub max_chars: usize,
 }
 impl Default for InjectConfig {
     fn default() -> Self {
         Self {
             mode: "auto".into(),
             trailing_space: false,
+            max_chars: 20_000,
         }
     }
 }

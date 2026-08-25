@@ -178,6 +178,7 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
             polish_min_words: cfg.polish.min_words,
             prompt: Some(cfg.stt.prompt.clone()).filter(|p| !p.is_empty()),
             trailing_space: cfg.inject.trailing_space,
+            max_chars: cfg.inject.max_chars,
             polish_model: cfg.polish.model.clone(),
             // Narrowed here: the file holds a TOML f64, whisper scores in f32.
             no_speech_threshold: cfg.stt.no_speech_threshold as f32,

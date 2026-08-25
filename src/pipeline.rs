@@ -30,6 +30,9 @@ pub struct PipelineConfig {
     /// `polish.model`, recorded on every capture-log row that the polish stage ran for, so
     /// rows from before and after a model change stay distinguishable.
     pub polish_model: String,
+    /// Longest transcript, in characters, that may be typed. `0` lifts the limit. A reply
+    /// over it is held for `byovox last` rather than truncated — see `finish`.
+    pub max_chars: usize,
 }
 
 /// What `byovox status` / `byovox last` read; written by the pipeline thread.
@@ -432,21 +435,37 @@ impl Pipeline {
         }
         self.shared.lock().unwrap().last_transcript = Some(text.clone());
 
+        // A reply longer than the cap is not typed and is not cut down: truncating would
+        // insert half a dictation and silently discard the rest, and this is the one place
+        // the pipeline promises never to lose text. It ends exactly where a dictation whose
+        // every rung failed ends — held in `Shared::last_transcript` for `byovox last`, with
+        // the error indicator — because that is already the "we have your words, we could not
+        // put them anywhere" path. The length is logged, never the text.
+        let over_cap = self.cfg.max_chars > 0 && text.chars().count() > self.cfg.max_chars;
+        if over_cap {
+            tracing::warn!(
+                chars = text.chars().count(),
+                max_chars = self.cfg.max_chars,
+                "transcript over inject.max_chars; not typed, held for `byovox last`"
+            );
+        }
         let t = Instant::now();
         let mut rung_used = None;
-        for rung in &mut self.rungs {
-            match rung.inject(&text) {
-                Ok(()) => {
-                    rung_used = Some(rung.name());
-                    break;
-                }
-                Err(e) => {
-                    tracing::debug!(rung = rung.name(), error = %e, "inject rung error");
-                    tracing::warn!(
-                        rung = rung.name(),
-                        error = summary(&e),
-                        "inject rung failed"
-                    );
+        if !over_cap {
+            for rung in &mut self.rungs {
+                match rung.inject(&text) {
+                    Ok(()) => {
+                        rung_used = Some(rung.name());
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::debug!(rung = rung.name(), error = %e, "inject rung error");
+                        tracing::warn!(
+                            rung = rung.name(),
+                            error = summary(&e),
+                            "inject rung failed"
+                        );
+                    }
                 }
             }
         }
@@ -483,8 +502,13 @@ impl Pipeline {
                 Outcome::Inserted { rung }
             }
             None => {
-                tracing::warn!(lang = %language.label(), stt_ms, polish_ms, inject_ms, total_ms, "no inject rung worked; transcript held for `byovox last`");
-                self.fail("no inject rung worked; run `byovox last`".into());
+                let why = if over_cap {
+                    "transcript over inject.max_chars; run `byovox last`"
+                } else {
+                    "no inject rung worked; run `byovox last`"
+                };
+                tracing::warn!(lang = %language.label(), stt_ms, polish_ms, inject_ms, total_ms, why, "transcript held for `byovox last`");
+                self.fail(why.into());
                 Outcome::Held
             }
         }
@@ -567,6 +591,7 @@ mod tests {
             prompt: Some("Glossary: Acme".into()),
             trailing_space: false,
             polish_model: "cleanup-1".into(),
+            max_chars: 20_000,
             no_speech_threshold: 0.6,
         };
         let p = Pipeline::new(
@@ -1143,6 +1168,7 @@ mod tests {
                 prompt: None,
                 trailing_space: false,
                 polish_model: String::new(),
+                max_chars: 20_000,
                 no_speech_threshold: 0.6,
             },
             Box::new(cap),
@@ -1306,6 +1332,72 @@ mod tests {
         assert_eq!(
             r.rung1.texts.lock().unwrap().as_slice(),
             ["go]0;OWNED home"]
+        );
+    }
+
+    /// A reply past the cap is never typed and never cut down: truncation would insert half a
+    /// dictation and drop the rest silently. It ends where a dictation whose rungs all failed
+    /// ends — held for `byovox last`, error indicator, nothing on the keyboard.
+    #[test]
+    fn a_transcript_over_the_cap_is_held_rather_than_typed_or_truncated() {
+        let long = "x".repeat(50);
+        let mut r = rig(FakeTranscriber::ok(&long), None, false, false);
+        r.p.cfg.max_chars = 10;
+        let log = logged(|| {
+            assert_eq!(dictate(&mut r, Duration::from_secs(1)), Some(Outcome::Held));
+        });
+        assert!(r.rung1.texts.lock().unwrap().is_empty());
+        assert!(r.rung2.texts.lock().unwrap().is_empty());
+        // Held whole: `byovox last` hands back every character that was dictated.
+        assert_eq!(
+            r.p.shared().lock().unwrap().last_transcript.as_deref(),
+            Some(long.as_str())
+        );
+        assert_eq!(r.ind.0.lock().unwrap().last(), Some(&S::Error));
+        // No colon in the message, so `summary` keeps it whole and the tray tells the user
+        // where their words went rather than just that something failed.
+        assert_eq!(
+            r.p.shared().lock().unwrap().last_error.as_deref(),
+            Some("transcript over inject.max_chars; run `byovox last`")
+        );
+        // The length is reported and the text is not.
+        assert!(log.contains("chars=50"), "{log}");
+        assert!(log.contains("max_chars=10"), "{log}");
+        assert!(!log.contains(&long), "{log}");
+    }
+
+    /// The cap counts characters, not bytes — a Hebrew or emoji dictation must not be held
+    /// for being multi-byte — and `0` lifts it entirely.
+    #[test]
+    fn the_cap_counts_characters_and_zero_lifts_it() {
+        // 30 chars, 60 bytes: under a 40-char cap, over a 40-byte one.
+        let cyrillic = "ы".repeat(30);
+        assert_eq!(cyrillic.len(), 60);
+        let mut r = rig(FakeTranscriber::ok(&cyrillic), None, false, false);
+        r.p.cfg.max_chars = 40;
+        assert_eq!(
+            dictate(&mut r, Duration::from_secs(1)),
+            Some(Outcome::Inserted { rung: "type" })
+        );
+
+        let mut off = rig(
+            FakeTranscriber::ok(&"x".repeat(100_000)),
+            None,
+            false,
+            false,
+        );
+        off.p.cfg.max_chars = 0;
+        assert_eq!(
+            dictate(&mut off, Duration::from_secs(1)),
+            Some(Outcome::Inserted { rung: "type" })
+        );
+
+        // Exactly at the cap is not over it.
+        let mut at = rig(FakeTranscriber::ok("0123456789"), None, false, false);
+        at.p.cfg.max_chars = 10;
+        assert_eq!(
+            dictate(&mut at, Duration::from_secs(1)),
+            Some(Outcome::Inserted { rung: "type" })
         );
     }
 

@@ -104,6 +104,13 @@ cancel_key = "Escape"
 mode = "auto"
 # Append a space after the inserted text.
 trailing_space = false
+# Longest transcript, in characters, that byovox will type. A reply over this is NOT
+# truncated — it is held for `byovox last` with the error cue, the same as a dictation no
+# injection method could place, so nothing you said is ever lost. The point is a runaway or
+# hostile endpoint: whatever the server returns is typed as real keystrokes, and a reply of
+# a megabyte would hammer them into the focused window for minutes. Normal dictation is
+# nowhere near this. 0 removes the limit.
+max_chars = 20000
 
 [indicator]
 # Small always-on-top "recording / working" pill near the cursor (Windows, X11, macOS).
