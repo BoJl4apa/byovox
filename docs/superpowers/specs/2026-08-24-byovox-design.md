@@ -310,7 +310,8 @@ held. Anything unparseable gets `ok: false` and the connection closes.
 
 **Logging.** `tracing` to a rotated file under the platform local-data dir
 (`%LOCALAPPDATA%\byovox\data\logs`, `~/.local/share/byovox/logs`,
-`~/Library/Application Support/byovox/logs`) plus stderr when run from a terminal. Levels per the usual contract: ERROR operation failed, WARN unexpected
+`~/Library/Application Support/byovox/logs`), plus stderr under `byovox run` — the daemon
+binary has no console to write to. Levels per the usual contract: ERROR operation failed, WARN unexpected
 but continuing, INFO milestones (one line per dictation), DEBUG detail (the only level
 that carries transcript text).
 
