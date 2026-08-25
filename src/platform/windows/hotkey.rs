@@ -22,6 +22,11 @@ static DOWN: AtomicBool = AtomicBool::new(false);
 /// double every event, and lets a caller wait for the hook to be installed.
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
+/// Stamped into `dwExtraInfo` of every event `platform::windows::inject` sends, so the hook
+/// can tell our own synthetic keys from the user's. The hook cannot filter `LLKHF_INJECTED`
+/// instead: its own probe injects the keys it tests with.
+pub const INJECT_MARKER: usize = 0x00B7_0B0C;
+
 fn sender_slot() -> &'static Mutex<Option<Sender<HotkeyEvent>>> {
     SENDER.get_or_init(|| Mutex::new(None))
 }
@@ -92,6 +97,11 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     if code >= 0 {
         // SAFETY: for WH_KEYBOARD_LL, lparam points at a KBDLLHOOKSTRUCT for the call's duration.
         let kb = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
+        // Text we typed or pasted ourselves: a paste chord's Ctrl must not read as a hotkey
+        // press. The probe below stamps 0, so it still drives the hook.
+        if kb.dwExtraInfo == INJECT_MARKER {
+            return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+        }
         let msg = wparam.0 as u32;
         let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
         let is_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
