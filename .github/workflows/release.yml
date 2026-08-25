@@ -134,9 +134,13 @@ jobs:
             "target/release/byovox-daemon.exe",
             "LICENSE",
             "README.md",
-            "SECURITY.md",
-            "docs/config.example.toml"
+            "SECURITY.md"
           )
+          # Under docs/, not flattened beside the README — because the README travelling with
+          # it links `docs/config.example.toml`, and the reference for the file you are about
+          # to write is a poor place for a dead link. Only the binaries need the top level.
+          New-Item -ItemType Directory -Force -Path "$stage/docs" | Out-Null
+          Copy-Item -Destination "$stage/docs" -Path "docs/config.example.toml"
           $zip = "byovox-$env:TAG-x86_64-pc-windows-msvc.zip"
           Compress-Archive -Path "$stage/*" -DestinationPath "dist/$zip"
           # `sha256sum -c SHA256SUMS` is the check the README tells people to run, so the
