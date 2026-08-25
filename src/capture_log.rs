@@ -10,7 +10,7 @@
 //! transcripts, so it prunes itself rather than growing without bound.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -109,8 +109,14 @@ impl CaptureLog {
         if !body.is_empty() {
             body.push('\n');
         }
-        if let Err(e) = std::fs::write(&path, body) {
+        // The pid keeps two byovox processes — the loser of a single-instance race, or a
+        // second one pointed at the same capture directory by `--config` — from writing each
+        // other's temp file half-way through.
+        let tmp = self.dir.join(format!("{ROWS}.tmp-{}", std::process::id()));
+        if let Err(e) = replace_atomically(&path, &tmp, &body) {
             tracing::warn!(error = %e, path = %path.display(), "capture log: prune could not rewrite the rows");
+            // The original is still whole; the temp file is the only casualty.
+            let _ = std::fs::remove_file(&tmp);
         }
     }
 
@@ -138,6 +144,31 @@ impl CaptureLog {
             }
         }
     }
+}
+
+/// Replace `path`'s contents with `body` without ever leaving it half-written.
+///
+/// `std::fs::write` is `File::create` — which **truncates** — followed by `write_all`. Between
+/// those two the file is empty, so a crash, a full disk or a killed process at that moment
+/// destroys every row the cutoff had decided to keep. That is a retention pass losing the data
+/// it exists to protect, on the one file byovox cannot regenerate.
+///
+/// Instead the kept rows go to a sibling temp file, are flushed to the disk itself, and are
+/// then renamed over the original. `rename` replaces atomically on both POSIX and Windows
+/// (`MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`), so a reader sees either every old row or
+/// every kept row and never a truncated file. The temp file must be a *sibling*: rename is
+/// only atomic within one volume.
+///
+/// `sync_all` before the rename, not after: without it the directory entry can reach the disk
+/// pointing at blocks that never did, which is exactly the torn file this avoids. The handle
+/// is dropped before the rename because Windows refuses to rename an open file.
+fn replace_atomically(path: &Path, tmp: &Path, body: &str) -> std::io::Result<()> {
+    {
+        let mut f = std::fs::File::create(tmp)?;
+        f.write_all(body.as_bytes())?;
+        f.sync_all()?;
+    }
+    std::fs::rename(tmp, path)
 }
 
 fn now_ms() -> u64 {
@@ -241,7 +272,6 @@ mod tests {
     use crate::audio::Audio;
     use crate::lang::{Lang, SttLanguage};
     use crate::pipeline::{DictationRecord, Recorder};
-    use std::path::Path;
 
     /// A directory of this test's own: the whole suite shares one process id.
     fn temp_dir(test: &str) -> PathBuf {
@@ -519,6 +549,71 @@ mod tests {
         ] {
             assert!(!is_own_capture_name(other), "{other} was claimed as ours");
         }
+    }
+
+    /// The rewrite must be all-or-nothing. `std::fs::write` truncates before it writes, so a
+    /// failure part-way through left an empty or half-written JSONL and destroyed exactly the
+    /// rows the cutoff had decided to keep.
+    ///
+    /// The failure is injected through the temp path — a directory that does not exist, so
+    /// `File::create` fails before anything touches the original — because the interesting
+    /// property is "on any error the original is untouched", not which error it was.
+    #[test]
+    fn a_failed_rewrite_leaves_the_original_bytes_intact() {
+        let dir = temp_dir("atomic_rewrite_failure");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(ROWS);
+        let original = "{\"ts\":1,\"wav\":\"a\"}\n{\"ts\":2,\"wav\":\"b\"}\n";
+        std::fs::write(&path, original).unwrap();
+
+        let doomed = dir.join("no-such-subdir").join("x.tmp");
+        let err = replace_atomically(&path, &doomed, "replacement").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound, "{err}");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original,
+            "a failed rewrite must not have touched the original"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The success path, and the guarantee that makes it atomic: the temp file is consumed by
+    /// the rename, so no debris is left in a directory the user browses.
+    #[test]
+    fn a_successful_rewrite_replaces_the_file_and_leaves_no_temp() {
+        let dir = temp_dir("atomic_rewrite_success");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(ROWS);
+        std::fs::write(&path, "old\n").unwrap();
+        let tmp = dir.join(format!("{ROWS}.tmp-{}", std::process::id()));
+
+        replace_atomically(&path, &tmp, "new\n").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\n");
+        assert!(!tmp.exists(), "the temp file survived the rename");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The temp file is a sibling of the JSONL, not a system temp file: rename is only atomic
+    /// within a volume, and a capture directory can sit on a different drive.
+    #[test]
+    fn a_real_prune_leaves_no_temp_file_behind() {
+        let dir = temp_dir("prune_leaves_no_temp");
+        std::fs::create_dir_all(&dir).unwrap();
+        plant(&dir, 90, 0);
+        plant(&dir, 1, 1);
+
+        let _log = CaptureLog::new(dir.clone(), 30).unwrap();
+
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+            .filter(|n| n.contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A row the pruner cannot read is kept: this code deletes data, so anything it does not
