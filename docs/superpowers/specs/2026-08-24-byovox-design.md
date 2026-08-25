@@ -46,11 +46,12 @@ which language you are about to speak. No existing client does the second thing 
 
 ## Architecture
 
-One binary; the daemon plus five subcommands:
+One crate, two binaries: the console CLI with its subcommands, and the windowless daemon.
 
 | Command | Purpose |
 |---|---|
-| `byovox` | Run the daemon: tray icon, hotkey listener, pipeline. Single instance. |
+| `byovox` | Start the daemon in the background. Single instance. |
+| `byovox run` | Run the daemon in this console instead — tray icon, hotkey listener, pipeline, and the log on stderr as well as in the file. |
 | `byovox toggle` | Signal the running daemon to start/stop recording. The path for OS-bound shortcuts and for setups without an in-process hotkey. |
 | `byovox quit` | Stop the daemon. |
 | `byovox last` | Print the most recent transcript held by the daemon (memory only, cleared on quit) — the retrieval path when no inject rung worked. |
