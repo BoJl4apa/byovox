@@ -29,8 +29,11 @@ which language you are about to speak. No existing client does the second thing 
   are exercised for v1; GNOME, X11 and macOS are written to the same seams and marked
   best-effort until someone runs them. Every platform capability degrades one rung at a
   time and reports which rung it is on.
-- **Documented config.** The config schema *is* the documentation: one source renders the
-  commented default file, the README reference, and the effective-config printout.
+- **Documented config.** The config schema *is* the documentation. `docs/config.example.toml`
+  is the one commented default: compiled into the binary for `byovox config --init`, pinned
+  by a test against `Config::default()`, and *linked* from the README rather than copied into
+  it by a build script — one canonical text beats two that can drift. The effective-config
+  printout comes off the same struct.
 - **Lean.** Tray + indicator only. No settings window, no auto-update, no account.
 
 ## Non-goals
@@ -79,7 +82,7 @@ trait Hotkey   { fn run(self, tx: Sender<HotkeyEvent>) }        // Pressed | Rel
 trait Capture  { fn start(&mut self) -> Result<()>; fn stop(&mut self) -> Result<Audio> }   // 16 kHz mono i16
 trait Layout   { fn current(&self) -> Option<Lang> }             // ISO 639-1 of the foreground window's layout
 trait Inject   { fn type_text(&mut self, text: &str) -> Result<()> }
-trait Indicator{ fn set(&mut self, state: IndicatorState) }      // Idle | Recording | Working | Error
+trait Indicator{ fn set(&mut self, state: IndicatorState) }      // Idle | Recording | Working | Done | Error
 ```
 
 The pipeline holds boxed trait objects and knows no OS. `platform::detect()` probes the
@@ -321,7 +324,9 @@ working, error (3 s).
 
 **Indicator.** Pill: a small frameless always-on-top window near the cursor showing
 "● recording" / "… working", hidden when idle; disabled on Wayland in v1. Cues: three
-short embedded WAVs (start, done, error).
+short tones (start, done, error), synthesised at run time rather than shipped as
+assets — nothing to load, nothing to fail to load. Only a dictation that reached the
+focused window plays the done tone: a tap, a cancel and an empty transcript are silent.
 
 **Autostart.** HKCU `Run` key / XDG autostart `.desktop` / LaunchAgent plist. **Updates:**
 none built in; GitHub release binaries and `cargo install`.
@@ -350,12 +355,15 @@ byovox ships only synthetic fixtures.
 ## Repository
 
 `byovox/` — `Cargo.toml` (stable toolchain, edition 2024), `LICENSE` (MIT), `README.md`
-(generated config reference), `src/`, `assets/` (tray icons, cue WAVs), `docs/`
+(links the config reference), `src/`, `assets/` (the pill's font; the tray icon and the
+cues are drawn and synthesised at run time), `docs/`
 (platform notes, testing checklist, this spec under `docs/superpowers/specs/`).
 
 CI: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test` on a
-windows/ubuntu/macos matrix. Release workflow on tag: Windows x64, Linux x64, macOS
-arm64 and x64 binaries. Linux build needs GTK/libappindicator dev packages for the tray
+windows/ubuntu/macos matrix, on the locked dependency versions. Release workflow on tag —
+Windows x64, Linux x64, macOS arm64 and x64 binaries — lands with the platform plans that
+make it more than a Windows-only tag: until then §Autostart's "get a binary from GitHub
+releases" means `cargo install --path .`. Linux build needs GTK/libappindicator dev packages for the tray
 crate; documented.
 
 Public defaults are neutral placeholders; `check` reports what is unset.

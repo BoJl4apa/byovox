@@ -36,6 +36,12 @@ the clipboard — press Ctrl+V*.
 Running byovox itself elevated would lift the restriction and is a bad trade: it puts a global
 keyboard hook and a live microphone inside an administrator process.
 
+One thing to know about `type`: a newline in the text is typed as Enter, because that is what
+typing a newline means. The built-in cleanup prompt formats a spoken enumeration as a list,
+one item per line — so dictating a list into a chat box that sends on Enter sends the first
+item and types the rest into the next messages. Use `inject.mode = "paste"` where that
+matters; `paste` puts the whole text in at once.
+
 ## Language routing
 
 The layout byovox reads is the **foreground window's**, taken from that window's own thread —
