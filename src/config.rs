@@ -574,7 +574,9 @@ mod tests {
         for warns in [
             "http://10.0.0.5",
             "http://10.0.0.5:8770/v1",
-            "http://203.0.113.10:4000/v1",
+            // 100.64.0.0/10 is the CGNAT range Tailscale hands out: still a network, still
+            // in clear, so it warns like any other non-loopback address.
+            "http://100.64.0.1:4000/v1",
             "http://your-whisper-host:8770/v1",
             "http://[2001:db8::1]:8770/v1",
             "HTTP://10.0.0.5:8770/v1",
