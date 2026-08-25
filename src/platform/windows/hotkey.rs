@@ -26,6 +26,15 @@ use crate::hotkey::{
 static SENDER: OnceLock<Mutex<Option<Sender<HotkeyEvent>>>> = OnceLock::new();
 static CHORD: OnceLock<Mutex<Option<ChordHook>>> = OnceLock::new();
 static CANCEL_VK: AtomicU32 = AtomicU32::new(0);
+/// The tray's Enable/Disable, mirrored where the hook procedure can read it: a daemon that
+/// was told to stop listening must not swallow the keystroke it is not going to act on.
+///
+/// A mirror rather than a reference to `pipeline::Shared` because the backend is built
+/// before that exists — `daemon::start` calls `platform::detect` well before `Pipeline::new`
+/// — and because a hook procedure is a plain function whose state lives in statics anyway.
+/// `Shared::enabled` has exactly one writer (the tray's Enable/Disable), which is the one
+/// place this is written, so the two cannot disagree.
+static ARMED: AtomicBool = AtomicBool::new(true);
 /// True once a hook is live. Guards against a second `run`, whose chained hook would
 /// double every event, and lets a caller wait for the hook to be installed.
 ///
@@ -49,6 +58,13 @@ pub const INJECT_MARKER: usize = 0x00B7_0B0C;
 /// it. `0xFF` is reserved and assigned to nothing, so an application ignores it — the same
 /// trick AutoHotkey uses to keep Alt from opening a menu bar.
 const DEFUSE_VK: u16 = 0xFF;
+
+/// Arm or disarm the hotkey. Called from the tray beside its write to `Shared::enabled`;
+/// while disarmed a chord's trigger types as usual and starts nothing, and a chord already
+/// latched still finishes the swallow it began.
+pub fn set_armed(on: bool) {
+    ARMED.store(on, Ordering::Relaxed);
+}
 
 fn sender_slot() -> &'static Mutex<Option<Sender<HotkeyEvent>>> {
     SENDER.get_or_init(|| Mutex::new(None))
@@ -214,7 +230,11 @@ fn step_for(vk: u32, down: bool) -> Option<Step> {
     let mut guard = slot.lock().unwrap_or_else(|p| p.into_inner());
     let hook = guard.as_mut()?;
     let key = hook.key_for(vk)?;
-    Some(hook.tracker.feed(key, down))
+    // The tracker sees every event whatever the arming: a modifier released while the daemon
+    // is disabled has to clear its flag, or it would be stuck down when the daemon is armed
+    // again.
+    let armed = ARMED.load(Ordering::Relaxed);
+    Some(hook.tracker.feed(key, down, armed))
 }
 
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {

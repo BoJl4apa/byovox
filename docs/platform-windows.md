@@ -17,6 +17,11 @@ Pressed without them it types as usual. The names are **physical keys**, because
 works in virtual-key codes rather than characters: `Z` is the key a US layout labels Z, and it
 stays that key on a Cyrillic or Hebrew layout, where it types я or ז.
 
+A **disabled** daemon swallows nothing: the tray's Disable disarms the hook as well as the
+pipeline, so the chord's trigger types as usual until Enable puts it back. A chord already
+recording when Disable lands still finishes — its repeats and its release stay swallowed, or
+the window would get a key-up whose key-down it never saw.
+
 The modifiers themselves pass through untouched — an app left holding a Shift that never comes
 up is worse than any hotkey — so with the trigger swallowed the app sees them go down and come
 back up with no key pressed in between, and Windows acts on exactly that: Ctrl+Left Shift sets

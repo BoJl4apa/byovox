@@ -200,7 +200,14 @@ impl ChordTracker {
         !self.mods_down.is_empty()
     }
 
-    pub fn feed(&mut self, key: ChordKey, down: bool) -> Step {
+    /// `armed` is the daemon's Enable/Disable, and it gates exactly one transition: the
+    /// `Pressed` that latches a chord. A disabled daemon must not swallow a keystroke it is
+    /// not going to act on — but a chord already latched when Disable landed still finishes,
+    /// repeats and up included, or the window would get a `Z` up whose down it never saw.
+    ///
+    /// Gating anything else would be worse than not gating at all: skipping the tracker while
+    /// disabled would leave a modifier released in that window stuck down forever.
+    pub fn feed(&mut self, key: ChordKey, down: bool, armed: bool) -> Step {
         let pass = Step {
             event: None,
             swallow: false,
@@ -236,9 +243,9 @@ impl ChordTracker {
                         swallow: self.swallows(),
                     };
                 }
-                if !self.mods_down.iter().all(|d| *d) {
-                    // The chord is not held: this is the user typing the trigger, and it is
-                    // theirs.
+                if !armed || !self.mods_down.iter().all(|d| *d) {
+                    // The chord is not held, or the daemon was told to stop listening:
+                    // either way this keystroke is the user's, untouched.
                     return pass;
                 }
                 self.holding = true;
@@ -394,9 +401,19 @@ mod tests {
         ChordTracker::new(&parse_chord(key).unwrap())
     }
 
-    /// `(event, swallow)` — the whole of one `Step`, in the order the rules read.
+    /// `(event, swallow)` — the whole of one `Step`, in the order the rules read. Armed,
+    /// which is the daemon's normal state; `feed_disarmed` is the tray's Disable.
     fn feed(t: &mut ChordTracker, key: ChordKey, down: bool) -> (Option<HotkeyEvent>, bool) {
-        let s = t.feed(key, down);
+        let s = t.feed(key, down, true);
+        (s.event, s.swallow)
+    }
+
+    fn feed_disarmed(
+        t: &mut ChordTracker,
+        key: ChordKey,
+        down: bool,
+    ) -> (Option<HotkeyEvent>, bool) {
+        let s = t.feed(key, down, false);
         (s.event, s.swallow)
     }
 
@@ -543,6 +560,71 @@ mod tests {
         );
         // An up with no press before it — a key held when the daemon started, or another
         // process clearing a stuck key — ends a dictation that never began.
+        assert_eq!(feed(&mut t, TRIGGER, false), (None, false));
+    }
+
+    /// Told to stop listening, byovox must also stop *taking*: a chord pressed while the tray
+    /// says Disable types its trigger and starts nothing. Swallowing a keystroke a disabled
+    /// daemon is going to drop anyway would destroy it for nothing.
+    #[test]
+    fn a_disarmed_chord_types_its_trigger_and_starts_nothing() {
+        let mut t = tracker("ControlLeft+ShiftLeft+Z");
+        assert_eq!(feed_disarmed(&mut t, CTRL, true), (None, false));
+        assert_eq!(feed_disarmed(&mut t, SHIFT, true), (None, false));
+        assert_eq!(feed_disarmed(&mut t, TRIGGER, true), (None, false));
+        assert_eq!(
+            feed_disarmed(&mut t, TRIGGER, true),
+            (None, false),
+            "repeat"
+        );
+        assert_eq!(feed_disarmed(&mut t, TRIGGER, false), (None, false));
+        assert_eq!(feed_disarmed(&mut t, SHIFT, false), (None, false));
+        assert_eq!(feed_disarmed(&mut t, CTRL, false), (None, false));
+    }
+
+    /// Disable landing mid-hold does not abandon the chord halfway: its repeats and its up
+    /// are still ours, or the window would get a `Z` up whose down it never saw. Only the
+    /// *next* press is refused — and re-enabling arms it again.
+    #[test]
+    fn a_chord_latched_before_disable_still_finishes_its_swallow() {
+        let mut t = tracker("ControlLeft+ShiftLeft+Z");
+        feed(&mut t, CTRL, true);
+        feed(&mut t, SHIFT, true);
+        assert_eq!(
+            feed(&mut t, TRIGGER, true),
+            (Some(HotkeyEvent::Pressed), true)
+        );
+        // Disable lands here.
+        assert_eq!(feed_disarmed(&mut t, TRIGGER, true), (None, true), "repeat");
+        assert_eq!(
+            feed_disarmed(&mut t, TRIGGER, false),
+            (Some(HotkeyEvent::Released), true),
+            "one Released, and the up is still swallowed"
+        );
+        // Still disabled: the next press is the user's.
+        assert_eq!(feed_disarmed(&mut t, TRIGGER, true), (None, false));
+        assert_eq!(feed_disarmed(&mut t, TRIGGER, false), (None, false));
+        // Enable, and the chord works again.
+        assert_eq!(
+            feed(&mut t, TRIGGER, true),
+            (Some(HotkeyEvent::Pressed), true)
+        );
+        assert_eq!(
+            feed(&mut t, TRIGGER, false),
+            (Some(HotkeyEvent::Released), true)
+        );
+    }
+
+    /// The modifiers are tracked whatever the arming. Skipping the tracker while disabled
+    /// would leave a modifier that was released in that window stuck down for good, and the
+    /// next bare trigger would then fire the chord and be eaten.
+    #[test]
+    fn a_modifier_released_while_disarmed_still_clears() {
+        let mut t = tracker("ControlLeft+Z");
+        feed(&mut t, CTRL, true);
+        assert_eq!(feed_disarmed(&mut t, CTRL, false), (None, false));
+        // Armed again, with nothing held: a plain trigger types.
+        assert_eq!(feed(&mut t, TRIGGER, true), (None, false));
         assert_eq!(feed(&mut t, TRIGGER, false), (None, false));
     }
 
