@@ -15,7 +15,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "byovox",
-    version,
+    version = byovox::VERSION,
     about = "Push-to-talk dictation against a speech-to-text server you run"
 )]
 struct Cli {

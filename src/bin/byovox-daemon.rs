@@ -17,7 +17,7 @@ use clap::Parser;
 #[derive(Parser)]
 #[command(
     name = "byovox-daemon",
-    version,
+    version = byovox::VERSION,
     about = "The byovox daemon — started by `byovox`, not by hand"
 )]
 struct Cli {

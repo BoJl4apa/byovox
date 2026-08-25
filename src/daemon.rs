@@ -111,7 +111,7 @@ pub fn run(opts: Options) -> Result<()> {
 fn start(cfg: Config, path: PathBuf) -> Result<()> {
     // The pid distinguishes this process from the one already running when the loser of the
     // single-instance check writes its failure into the same daily log file.
-    tracing::info!(pid = std::process::id(), version = env!("CARGO_PKG_VERSION"), config = %path.display(), "byovox starting");
+    tracing::info!(pid = std::process::id(), version = crate::VERSION, config = %path.display(), "byovox starting");
 
     // The list the spawning CLI already refused on its console, refused again here with the
     // log file open — a daemon the Run key started has no console at either end, and this is
