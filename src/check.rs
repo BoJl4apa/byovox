@@ -314,13 +314,13 @@ fn stt_round_trip(
     );
     let prompt = Some(cfg.prompt.as_str()).filter(|p| !p.is_empty());
     let t = Instant::now();
-    let text = client
+    let transcript = client
         .transcribe(&audio.to_wav(), language, prompt)
         .map_err(|e| strip_body(&e).to_string())?;
     Ok(format!(
         "{:.2}s  \"{}\"",
         t.elapsed().as_secs_f32(),
-        prefix(&text)
+        prefix(&transcript.text)
     ))
 }
 

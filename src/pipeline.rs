@@ -282,7 +282,7 @@ impl Pipeline {
         // Encoding is byovox's own cost; `stt_ms` reports the server round-trip alone.
         let wav = audio.to_wav();
         let t = Instant::now();
-        let raw = match self
+        let transcript = match self
             .stt
             .transcribe(&wav, &language, self.cfg.prompt.as_deref())
         {
@@ -295,6 +295,7 @@ impl Pipeline {
             }
         };
         let stt_ms = t.elapsed().as_millis();
+        let raw = transcript.text;
         tracing::debug!(raw = %raw, "transcript");
         if raw.trim().is_empty() {
             self.set_state(State::Idle, IndicatorState::Idle);
@@ -415,6 +416,7 @@ mod tests {
     use crate::hotkey::HotkeyMode;
     use crate::indicator::IndicatorState as S;
     use crate::lang::Lang;
+    use crate::stt::Transcript;
     use crate::testutil::fakes::*;
     use std::time::{Duration, Instant};
 
@@ -841,11 +843,14 @@ mod tests {
             _wav: &[u8],
             _language: &SttLanguage,
             _prompt: Option<&str>,
-        ) -> Result<String, String> {
+        ) -> Result<Transcript, String> {
             if let Some(tx) = self.tx.lock().unwrap().take() {
                 tx.send(self.event).expect("the pump still holds rx");
             }
-            Ok("hi there".into())
+            Ok(Transcript {
+                text: "hi there".into(),
+                no_speech_prob: None,
+            })
         }
     }
 
