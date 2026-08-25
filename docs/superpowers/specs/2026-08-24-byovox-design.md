@@ -24,7 +24,10 @@ which language you are about to speak. No existing client does the second thing 
   PR pending) — servers that lack it ignore the field and fall back to unconstrained
   auto-detection, which is what they would have done anyway.
 - **Never lossy.** A dictation that reached the STT server is inserted even if every later
-  stage fails.
+  stage fails. The single exception: a transcript whisper itself scored as silence above
+  `stt.no_speech_threshold` is dropped — decided on that score and never on the words, so no
+  utterance is ever discarded for what it happens to say, and the clip is kept in the capture
+  log. `stt.no_speech_threshold = 0` removes the exception.
 - **Multiplatform with honest degradation.** Windows and Linux on KDE Plasma (Wayland)
   are exercised for v1; GNOME, X11 and macOS are written to the same seams and marked
   best-effort until someone runs them. Every platform capability degrades one rung at a
@@ -173,12 +176,21 @@ silently becomes something else.
 3. **Encode.** Downmix to mono by averaging, resample to 16 kHz with a windowed-sinc
    resampler (`rubato`), encode 16-bit PCM WAV in memory (`hound`).
 4. **Transcribe.** Multipart POST to `{stt.base_url}/audio/transcriptions`: `file`,
-   `response_format=json`, `model` (sent, ignored by most self-hosted servers), the
-   language policy fields (below), and `Authorization: Bearer` when `stt.api_key_env`
-   resolves. Timeouts: connect 5 s, total `stt.timeout_s` (30).
+   `response_format` (`verbose_json` while `stt.no_speech_threshold > 0`, since that is the
+   only format carrying `segments[].no_speech_prob`; plain `json` when the gate is off, which
+   is the wire a server that refuses `verbose_json` needs), `model` (sent, ignored by most
+   self-hosted servers), the language policy fields (below), and `Authorization: Bearer` when
+   `stt.api_key_env` resolves. Timeouts: connect 5 s, total `stt.timeout_s` (30).
    One retry on connection error only; HTTP errors are never retried — they are
-   configuration problems and retrying hides them. Response `text` is trimmed.
-5. **Empty transcript** → Idle, logged at INFO, no cue.
+   configuration problems and retrying hides them. Response `text` is trimmed; the strongest
+   `no_speech_prob` over the reply's segments is read alongside it, and is absent when the
+   server sends no segments.
+5. **Nothing to insert** → Idle, logged at INFO, no cue. Two ways in: an empty transcript,
+   and a transcript scored above `stt.no_speech_threshold` (default 0.3), which whisper fills
+   with an invented stock phrase over near-silence. Neither polishes nor injects nor is held
+   for `byovox last`; the score decides and the text is never inspected. The INFO line for
+   the second carries the probability and no text. Measured bands: speech ≤ 0.08, silent
+   holds 0.54–0.77.
 6. **Polish** when `polish.enabled` and word count ≥ `polish.min_words`: POST
    `{polish.base_url}/chat/completions`, model `polish.model`, system = built-in prompt (or
    `polish.prompt_file`), user = `<transcription>…</transcription>`, `temperature 0.3`,
@@ -187,7 +199,10 @@ silently becomes something else.
 7. **Inject.** Trim; append a space if `inject.trailing_space`; hand to the `Inject`
    backend. Done cue. Indicator → Idle.
 8. **Capture log** (opt-in): `<dir>/<timestamp>.wav` plus one JSONL row: timestamp,
-   layout, language fields sent, raw text, polished text, per-stage latency, polish model.
+   layout, language fields sent, raw text, `no_speech_prob`, polished text, per-stage
+   latency, polish model. A dictation dropped by step 5's score is written too, with no
+   polished text and no rung — those rows are the corpus `stt.no_speech_threshold` is tuned
+   from.
 
 Every dictation emits one INFO line: `lang=auto→ru stt=612ms polish=480ms inject=12ms
 total=1.1s`. Transcript content is logged at DEBUG only — this holds on every path,
@@ -244,6 +259,7 @@ model       = "whisper-1"
 api_key_env = ""           # env var holding a bearer token; empty = no Authorization header
 prompt      = ""           # vocabulary priming, e.g. "Glossary: Acme, Kubernetes, Postgres"
 timeout_s   = 30
+no_speech_threshold = 0.3  # drop a transcript whisper scores above this; 0 = off
 
 [language]                 # see Language policy
 default    = "auto"
