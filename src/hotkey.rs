@@ -200,6 +200,15 @@ impl ChordTracker {
         !self.mods_down.is_empty()
     }
 
+    /// True when the next trigger down would fire the chord on the strength of `mods_down`
+    /// alone. A backend calls it to decide whether this one keystroke is worth checking its
+    /// flags against the OS before swallowing it: the flags are built from events, and an
+    /// event that never arrives leaves one stuck. False for a hotkey with no modifiers —
+    /// there is nothing there to go stale, and nothing gets swallowed either.
+    pub fn would_fire(&self) -> bool {
+        !self.holding && !self.mods_down.is_empty() && self.mods_down.iter().all(|d| *d)
+    }
+
     /// `armed` is the daemon's Enable/Disable, and it gates exactly one transition: the
     /// `Pressed` that latches a chord. A disabled daemon must not swallow a keystroke it is
     /// not going to act on — but a chord already latched when Disable landed still finishes,
@@ -561,6 +570,60 @@ mod tests {
         // An up with no press before it — a key held when the daemon started, or another
         // process clearing a stuck key — ends a dictation that never began.
         assert_eq!(feed(&mut t, TRIGGER, false), (None, false));
+    }
+
+    /// The flags are built from events, and an event can simply never arrive: hold Ctrl+Shift
+    /// into a UAC prompt and the ups go to that desktop, not to the hook. Both flags then say
+    /// "held" with nothing held, and the next plain `z` would satisfy the chord and be eaten.
+    /// `would_fire` is what lets the backend catch that — it asks the OS before swallowing
+    /// anything, and re-feeding the truth disarms the stale flags.
+    #[test]
+    fn a_resync_clears_stale_modifiers_before_they_can_eat_the_trigger() {
+        let mut t = tracker("ControlLeft+ShiftLeft+Z");
+        feed(&mut t, CTRL, true);
+        assert!(!t.would_fire(), "one modifier short");
+        feed(&mut t, SHIFT, true);
+        assert!(
+            t.would_fire(),
+            "the backend checks the OS at exactly this point"
+        );
+
+        // What the backend re-feeds when `GetAsyncKeyState` says neither is really held.
+        assert_eq!(feed(&mut t, CTRL, false), (None, false));
+        assert_eq!(feed(&mut t, SHIFT, false), (None, false));
+        assert!(!t.would_fire());
+        assert_eq!(
+            feed(&mut t, TRIGGER, true),
+            (None, false),
+            "a plain z types"
+        );
+        assert_eq!(feed(&mut t, TRIGGER, false), (None, false));
+
+        // And a resync that confirms the flags leaves the chord working.
+        feed(&mut t, CTRL, true);
+        feed(&mut t, SHIFT, true);
+        assert_eq!(feed(&mut t, CTRL, true), (None, false), "still held");
+        assert_eq!(feed(&mut t, SHIFT, true), (None, false));
+        assert_eq!(
+            feed(&mut t, TRIGGER, true),
+            (Some(HotkeyEvent::Pressed), true)
+        );
+    }
+
+    /// The two states in which the backend must *not* read the keyboard: a chord already ours
+    /// (its repeats are ours whatever is held now), and a hotkey with no modifiers, which has
+    /// no flags to go stale and swallows nothing anyway.
+    #[test]
+    fn a_held_chord_and_a_bare_key_never_ask_for_a_resync() {
+        let mut t = tracker("ControlLeft+Z");
+        feed(&mut t, CTRL, true);
+        feed(&mut t, TRIGGER, true);
+        assert!(!t.would_fire(), "already holding");
+
+        let mut bare = tracker("ControlRight");
+        assert!(!bare.would_fire());
+        feed(&mut bare, TRIGGER, true);
+        assert!(!bare.would_fire());
     }
 
     /// Told to stop listening, byovox must also stop *taking*: a chord pressed while the tray

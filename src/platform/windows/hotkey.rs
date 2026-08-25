@@ -12,7 +12,8 @@ use std::sync::{Mutex, OnceLock};
 
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY,
+    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
+    VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, KBDLLHOOKSTRUCT, MSG, SetWindowsHookExW,
@@ -234,6 +235,29 @@ fn step_for(vk: u32, down: bool) -> Option<Step> {
     // is disabled has to clear its flag, or it would be stuck down when the daemon is armed
     // again.
     let armed = ARMED.load(Ordering::Relaxed);
+    if key == ChordKey::Trigger && down && hook.tracker.would_fire() {
+        // The flags say the chord is held, and this keystroke is about to be swallowed on
+        // the strength of them — so check them against the OS first. A low-level hook is
+        // per-desktop: hold Ctrl+Shift into a UAC prompt (Ctrl+Shift+click *is* the "run as
+        // administrator" gesture) or into Win+L and the key-ups are delivered to that
+        // desktop, never to us, leaving both flags stuck down. The next plain `z` would then
+        // satisfy the chord and be eaten, and every one after it.
+        //
+        // Two state reads on the one keystroke that could fire, none on any other key. It
+        // also fixes the opposite staleness for free: a modifier held from before the daemon
+        // started is discovered here rather than never.
+        //
+        // `vks` always ends with the trigger, so these indices are the modifiers. The
+        // returned `Step`s are dropped, and nothing is lost with them: `would_fire` is false
+        // while the chord is held, so nothing is latched here and a modifier fed now can
+        // emit no event.
+        for i in 0..hook.vks.len() - 1 {
+            let vk = hook.vks[i];
+            // SAFETY: a plain keyboard-state read, no arguments to get wrong.
+            let held = unsafe { GetAsyncKeyState(vk as i32) } as u16 & 0x8000 != 0;
+            hook.tracker.feed(ChordKey::Modifier(i), held, armed);
+        }
+    }
     Some(hook.tracker.feed(key, down, armed))
 }
 
