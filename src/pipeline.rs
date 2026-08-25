@@ -27,7 +27,8 @@ pub struct PipelineConfig {
 #[derive(Debug)]
 pub struct Shared {
     pub state: &'static str,
-    /// The tray's Enable/Disable toggle; a disabled pipeline ignores every hotkey event.
+    /// The tray's Enable/Disable toggle. A disabled pipeline starts nothing; an event
+    /// arriving during a recording closes the microphone and discards the audio.
     pub enabled: bool,
     pub last_transcript: Option<String>,
     pub last_error: Option<String>,
@@ -75,9 +76,10 @@ pub enum Outcome {
     SttFailed(String),
 }
 
-/// The head of a stage error, for WARN and above: everything before the first `:`.
-/// Stage errors carry a response-body prefix after the colon, which can be transcript
-/// text — the full string goes to `debug!`, this summary goes on the visible line.
+/// The head of a stage error, for WARN and above and for `Shared::last_error`: everything
+/// before the first `:`. Stage errors carry a response-body prefix after the colon, which
+/// can be transcript text — the full string goes to `debug!`, this summary goes everywhere
+/// a human can see it (the log line, the tray menu, `byovox status`).
 fn summary(e: &str) -> &str {
     e.split_once(':').map_or(e, |(head, _)| head).trim()
 }
@@ -246,7 +248,7 @@ impl Pipeline {
                         error = summary(&e),
                         "polish failed; inserting raw transcript"
                     );
-                    self.shared.lock().unwrap().last_error = Some(e);
+                    self.shared.lock().unwrap().last_error = Some(summary(&e).to_string());
                     errored = true;
                     None
                 }
@@ -316,7 +318,7 @@ impl Pipeline {
     }
 
     fn fail(&mut self, error: String) {
-        self.shared.lock().unwrap().last_error = Some(error);
+        self.shared.lock().unwrap().last_error = Some(summary(&error).to_string());
         self.set_state(State::Idle, IndicatorState::Error);
     }
 
@@ -458,7 +460,7 @@ mod tests {
     fn polish_failure_inserts_raw() {
         let mut r = rig(
             FakeTranscriber::ok("raw words"),
-            Some(FakePolisher::err("500")),
+            Some(FakePolisher::err("polish HTTP 500: SECRET")),
             false,
             false,
         );
@@ -468,6 +470,10 @@ mod tests {
         );
         assert_eq!(r.rung1.texts.lock().unwrap().as_slice(), ["raw words"]);
         assert_eq!(r.ind.0.lock().unwrap().last(), Some(&S::Error));
+        assert_eq!(
+            r.p.shared().lock().unwrap().last_error.as_deref(),
+            Some("polish HTTP 500")
+        );
     }
 
     #[test]
@@ -483,6 +489,25 @@ mod tests {
             Some("boom")
         );
         assert_eq!(r.ind.0.lock().unwrap().last(), Some(&S::Error));
+    }
+
+    #[test]
+    fn last_error_keeps_only_the_summary_so_the_tray_cannot_echo_a_response_body() {
+        let mut r = rig(
+            FakeTranscriber::err("stt HTTP 500: SECRET"),
+            None,
+            false,
+            false,
+        );
+        assert_eq!(
+            dictate(&mut r, Duration::from_secs(1)),
+            Some(Outcome::SttFailed("stt HTTP 500: SECRET".into())),
+            "the outcome still carries the whole error for the caller"
+        );
+        assert_eq!(
+            r.p.shared().lock().unwrap().last_error.as_deref(),
+            Some("stt HTTP 500")
+        );
     }
 
     #[test]
