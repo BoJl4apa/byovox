@@ -468,7 +468,10 @@ impl Pill {
 /// `with_skip_taskbar` is an `ITaskbarList::DeleteTab` COM call rather than a style bit, and it
 /// is re-run only on the `TASKBAR_CREATED` broadcast — while `apply_diff` writes
 /// `WS_EX_APPWINDOW` back on the very pass that wipes this word, so without this the button
-/// returns on a hide/re-show.
+/// returns on a hide/re-show. `WS_EX_APPWINDOW` has to come *off* in the same write:
+/// it forces a top-level window onto the taskbar and takes precedence over `WS_EX_TOOLWINDOW`,
+/// so setting the two bits without clearing it leaves the pill qualifying for a button by the
+/// shell's own listing rule. All three are read back for the same reason.
 ///
 /// Both bits must be re-asserted after every visibility change: `apply_diff` recomputes the
 /// whole extended-style word from winit's own `WindowFlags` on every `set_visible`, and never
@@ -484,7 +487,8 @@ impl Pill {
 fn deny_activation(window: &Window) -> Result<()> {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
+        WS_EX_TOOLWINDOW,
     };
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -494,18 +498,22 @@ fn deny_activation(window: &Window) -> Result<()> {
     };
     let hwnd = HWND(h.hwnd.get() as *mut std::ffi::c_void);
     let wanted = (WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0) as isize;
+    let unwanted = WS_EX_APPWINDOW.0 as isize;
     // SAFETY: `hwnd` is this window's live handle and both calls only read/write its own
     // extended style word.
     let readback = unsafe {
         let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | wanted);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (ex | wanted) & !unwanted);
         GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
     };
     // SetWindowLongPtrW returns the old value, which is indistinguishable from failure, so
-    // the style is read back instead of trusting the return. Both bits must be present: one
-    // taking and the other not would leave a silently half-fixed pill.
-    if readback & wanted != wanted {
-        anyhow::bail!("WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW did not take on the pill window");
+    // the style is read back instead of trusting the return. All three bits must land: any
+    // one of them taking and another not would leave a silently half-fixed pill.
+    if readback & wanted != wanted || readback & unwanted != 0 {
+        anyhow::bail!(
+            "the pill window kept the wrong extended style (0x{readback:08X}): wanted \
+             WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, not WS_EX_APPWINDOW"
+        );
     }
     Ok(())
 }
