@@ -139,6 +139,34 @@ fn summary(e: &str) -> &str {
     e.split_once(':').map_or(e, |(head, _)| head).trim()
 }
 
+/// True for a character the transcription endpoint must not be able to put on the keyboard.
+///
+/// `char::is_control` is exactly C0 (U+0000–U+001F), DEL (U+007F) and C1 (U+0080–U+009F) —
+/// the Unicode `Cc` category. `\n` is kept out of it deliberately: `inject` sends it as a
+/// real Return, and the built-in polish prompt asks for enumerations one item per line, so
+/// it is content. Everything else in `Cc` is a keystroke the user never spoke — `\t`
+/// navigates fields or triggers completion, `\r` rewinds the caret, `\x1b` opens a terminal
+/// escape sequence — and no transcript legitimately contains one.
+///
+/// The bidi **overrides** (U+202A–U+202E) and **isolates** (U+2066–U+2069) go because they
+/// reorder what is *displayed* without changing what was typed: the window would show one
+/// command and hold another. The bidi **marks** stay — RLM/LRM (U+200F/U+200E) and the
+/// joiners ZWJ/ZWNJ (U+200D/U+200C) are ordinary content in Hebrew, Arabic and emoji
+/// sequences, and dropping them would corrupt real dictations.
+fn is_forbidden(c: char) -> bool {
+    (c.is_control() && c != '\n') || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// The transcript with everything `is_forbidden` names removed.
+///
+/// The endpoint is the one part of the pipeline byovox does not control, and its answer is
+/// typed into whatever window has focus. This is the single choke point deciding which of
+/// those keystrokes may be pressed: applied once to the text about to be injected, so
+/// `type`, `paste` and `clipboard-only` are all covered by the one call.
+pub fn sanitize(text: &str) -> String {
+    text.chars().filter(|c| !is_forbidden(*c)).collect()
+}
+
 /// The score that condemns a transcript as silence, if any: `Some(p)` exactly when this
 /// dictation is one the gate drops. A threshold of `0` gates nothing, and a reply the server
 /// did not score is never gated.
@@ -377,7 +405,28 @@ impl Pipeline {
         let polish_ms = t.elapsed().as_millis();
         tracing::debug!(polished = ?polished, "polished");
 
-        let mut text = polished.clone().unwrap_or_else(|| raw.clone());
+        // The last point the endpoint's own text is still just data. Everything past here is
+        // keystrokes in someone's window, so the control and bidi-override characters come
+        // out first — of the polished text or of the raw fallback, whichever is about to be
+        // typed. The count is logged and the text is not: a dropped character is exactly the
+        // thing a hostile reply would want echoed somewhere.
+        let served = polished.clone().unwrap_or_else(|| raw.clone());
+        let mut text = sanitize(&served);
+        let dropped = served.chars().count() - text.chars().count();
+        if dropped > 0 {
+            tracing::warn!(
+                dropped,
+                "removed control or bidi-override characters the endpoint returned"
+            );
+        }
+        // A reply that was nothing but those characters leaves nothing to type. Treated as
+        // the empty transcript it now is, and deliberately not held for `byovox last`: that
+        // command must never hand back something the user did not dictate.
+        if text.trim().is_empty() {
+            self.set_state(State::Idle, IndicatorState::Idle);
+            tracing::info!(lang = %language.label(), stt_ms, "empty transcript after sanitising");
+            return Outcome::Empty;
+        }
         if self.cfg.trailing_space {
             text.push(' ');
         }
@@ -1169,6 +1218,105 @@ mod tests {
 
         assert_eq!(cap.starts(), 2, "the press after a tap was dropped");
         assert_eq!(p.shared().lock().unwrap().state, "recording");
+    }
+
+    /// The headline case: a compromised endpoint answers with something that would run if the
+    /// focused window were a terminal. The newline is content and stays — it is what makes a
+    /// dictated list a list — but the escape sequence around it is a keystroke nobody spoke.
+    #[test]
+    fn a_terminal_payload_keeps_its_newline_and_loses_its_escape() {
+        assert_eq!(sanitize("ls\n rm -rf /\x1b[0m"), "ls\n rm -rf /[0m");
+        // Every other C0, DEL and C1 character goes the same way; `\n` alone survives.
+        assert_eq!(sanitize("a\tb\rc\x08d\x7fe\u{85}f"), "abcdef");
+        assert_eq!(sanitize("one\ntwo"), "one\ntwo");
+    }
+
+    /// The rule cuts overrides and isolates, which lie about what was typed, and must leave
+    /// the marks and joiners alone: they are ordinary content, and a Hebrew dictation that
+    /// lost its RLM would be silently corrupted.
+    #[test]
+    fn hebrew_with_a_right_to_left_mark_is_untouched() {
+        let he = "שלום\u{200F} עולם, Acme \u{200E}2026";
+        assert_eq!(sanitize(he), he);
+        // ZWJ/ZWNJ carry emoji sequences and Persian/Arabic orthography.
+        let emoji = "\u{1F469}\u{200D}\u{1F4BB} \u{200C}x";
+        assert_eq!(sanitize(emoji), emoji);
+        // The overrides and isolates do go.
+        assert_eq!(sanitize("a\u{202E}b\u{202D}c"), "abc");
+        assert_eq!(sanitize("a\u{2066}b\u{2069}c"), "abc");
+    }
+
+    /// A reply made only of forbidden characters leaves nothing to type. It must end as an
+    /// empty dictation rather than an insertion of nothing — and must not be held for
+    /// `byovox last`, which would hand back something never dictated.
+    #[test]
+    fn a_transcript_that_sanitises_to_nothing_is_empty_not_inserted() {
+        let mut r = rig(
+            FakeTranscriber::ok("\x1b\x07\t\r\u{202E}\u{2066}"),
+            None,
+            false,
+            false,
+        );
+        assert_eq!(
+            dictate(&mut r, Duration::from_secs(1)),
+            Some(Outcome::Empty)
+        );
+        assert!(r.rung1.texts.lock().unwrap().is_empty());
+        assert!(r.rung2.texts.lock().unwrap().is_empty());
+        assert!(r.p.shared().lock().unwrap().last_transcript.is_none());
+        assert_eq!(r.ind.0.lock().unwrap().last(), Some(&S::Idle));
+    }
+
+    /// Sanitising happens once, on the text about to be injected, so whichever rung wins sees
+    /// the cleaned string — and so does the raw fallback when polish fails.
+    #[test]
+    fn every_rung_receives_the_sanitised_text() {
+        let mut r = rig(
+            FakeTranscriber::ok("raw\ttext"),
+            Some(FakePolisher::err("polish HTTP 500: x")),
+            true,
+            false,
+        );
+        assert_eq!(
+            dictate(&mut r, Duration::from_secs(1)),
+            Some(Outcome::Inserted { rung: "paste" })
+        );
+        assert_eq!(r.rung2.texts.lock().unwrap().as_slice(), ["rawtext"]);
+    }
+
+    /// The WARN says how many characters were removed and never which: a hostile reply must
+    /// not be able to write its own text into the user's log through the very line that
+    /// reports it.
+    #[test]
+    fn the_sanitising_warning_carries_a_count_and_no_text() {
+        let mut r = rig(
+            FakeTranscriber::ok("go\x1b]0;OWNED\x07 home"),
+            None,
+            false,
+            false,
+        );
+        let log = logged(|| {
+            assert_eq!(
+                dictate(&mut r, Duration::from_secs(1)),
+                Some(Outcome::Inserted { rung: "type" })
+            );
+        });
+        assert!(log.contains("dropped=2"), "{log}");
+        assert!(!log.contains("OWNED"), "{log}");
+        assert_eq!(
+            r.rung1.texts.lock().unwrap().as_slice(),
+            ["go]0;OWNED home"]
+        );
+    }
+
+    /// The capture log is evidence, so it keeps what the server actually sent — sanitising is
+    /// about what reaches the keyboard, not about rewriting the corpus.
+    #[test]
+    fn the_capture_row_keeps_the_unsanitised_reply() {
+        let mut r = rig(FakeTranscriber::ok("a\tb"), None, false, false);
+        dictate(&mut r, Duration::from_secs(1));
+        assert_eq!(r.rec.0.lock().unwrap()[0].raw, "a\tb");
+        assert_eq!(r.rung1.texts.lock().unwrap().as_slice(), ["ab"]);
     }
 
     #[test]

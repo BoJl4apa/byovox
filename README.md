@@ -72,9 +72,11 @@ things are worth knowing before you install it. The full threat model — what i
 what is not — is in [SECURITY.md](SECURITY.md), along with how to report a vulnerability.
 
 - **The endpoint you configure can type into your windows.** Whatever the STT and polish
-  servers return is sent as real keystrokes, and a newline is a real Enter. Point byovox at
-  servers you run or trust, and prefer `localhost`, a WireGuard/Tailscale link, or `https://`
-  over plain HTTP across an untrusted network — the token travels with the request.
+  servers return is sent as real keystrokes, and a newline is a real Enter. Control
+  characters and bidi overrides are stripped before anything is typed, and a transcript over
+  `inject.max_chars` is held rather than typed — but the *text* is still the server's to
+  choose. Point byovox at servers you run or trust, and prefer `localhost`, a
+  WireGuard/Tailscale link, or `https://` over plain HTTP — the token rides on the request.
 - **The capture log stores your voice and your text in plain files.** It is off by default;
   `capture_log.enabled = true` writes a WAV and the transcript for every dictation, and
   prunes nothing. Transcripts also reach the log file at `logging.level = "debug"`.
