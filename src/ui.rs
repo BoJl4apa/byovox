@@ -106,7 +106,6 @@ struct App {
     items: Option<MenuItems>,
     pill: Option<Pill>,
     cue: Option<Cue>,
-    state: IndicatorState,
     error_until: Option<Instant>,
     enabled: bool,
 }
@@ -126,7 +125,7 @@ impl App {
         let menu = Menu::new();
         let items = MenuItems {
             status: MenuItem::new("byovox: idle", false, None),
-            enabled: MenuItem::new("Disable", true, None),
+            enabled: MenuItem::new(if self.enabled { "Disable" } else { "Enable" }, true, None),
             show_last: MenuItem::new("Show last transcript", true, None),
             open_config: MenuItem::new("Open config", true, None),
             open_logs: MenuItem::new("Open logs", true, None),
@@ -161,9 +160,13 @@ impl App {
             (items.run_check.id().clone(), MenuAction::RunCheck),
             (items.quit.id().clone(), MenuAction::Quit),
         ];
+        // This runs inside the tray's window procedure: a panic here would unwind through
+        // foreign frames, so a poisoned lock drops the click instead.
         MenuEvent::set_event_handler(Some(move |ev: MenuEvent| {
-            if let Some((_, action)) = ids.iter().find(|(id, _)| *id == ev.id) {
-                let _ = proxy.lock().unwrap().send_event(UserEvent::Menu(*action));
+            if let Some((_, action)) = ids.iter().find(|(id, _)| *id == ev.id)
+                && let Ok(p) = proxy.lock()
+            {
+                let _ = p.send_event(UserEvent::Menu(*action));
             }
         }));
         self.tray = Some(tray);
@@ -175,7 +178,6 @@ impl App {
     /// Idle, which must not add a second tone to the one the error already played.
     fn apply(&mut self, state: IndicatorState, sound: bool) {
         tracing::debug!(?state, sound, "indicator");
-        self.state = state;
         if let (Some(tray), Some(items)) = (&self.tray, &self.items) {
             if let Ok(icon) = Icon::from_rgba(icon_rgba(state), 32, 32) {
                 let _ = tray.set_icon(Some(icon));
@@ -278,8 +280,15 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
-        if let (WindowEvent::RedrawRequested, Some(pill)) = (event, &mut self.pill) {
-            pill.draw();
+        let Some(pill) = &mut self.pill else {
+            return;
+        };
+        match event {
+            WindowEvent::RedrawRequested => pill.draw(),
+            // The text is laid out in physical pixels, so a move to a display with a
+            // different DPI has to repaint or the pill reads at the old scale.
+            WindowEvent::ScaleFactorChanged { .. } => pill.window.request_redraw(),
+            _ => {}
         }
     }
 
@@ -307,6 +316,9 @@ pub fn run(
     log_dir: PathBuf,
 ) -> Result<()> {
     let proxy = event_loop.create_proxy();
+    // The menu's Enable/Disable label has to start where the pipeline actually is, not at an
+    // assumed `true`.
+    let enabled = shared.lock().unwrap().enabled;
     let mut app = App {
         opts,
         shared,
@@ -318,9 +330,8 @@ pub fn run(
         items: None,
         pill: None,
         cue: None,
-        state: IndicatorState::Idle,
         error_until: None,
-        enabled: true,
+        enabled,
     };
     event_loop.run_app(&mut app).context("event loop")?;
     Ok(())
@@ -331,6 +342,10 @@ pub fn run(
 const FONT: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
 const PILL_W: u32 = 170;
 const PILL_H: u32 = 36;
+/// Pill background and text, as one grey level each: the buffer is 0RGB and the pill paints
+/// nothing but shades between them.
+const BG: u32 = 0x0020_2020;
+const FG: u32 = 0xF0;
 
 struct Pill {
     window: std::rc::Rc<Window>,
@@ -341,27 +356,37 @@ struct Pill {
 
 impl Pill {
     /// Created hidden: the first `show` positions it by the cursor before it is mapped, so
-    /// it never flashes at the origin.
+    /// it never flashes at the origin. It is also painted once here, so that first show maps
+    /// a surface that already has its background in it rather than uninitialised memory.
     fn new(event_loop: &ActiveEventLoop) -> Result<Pill> {
         let attrs = Window::default_attributes()
             .with_title("byovox")
             .with_decorations(false)
             .with_resizable(false)
             .with_visible(false)
+            .with_active(false)
             .with_window_level(WindowLevel::AlwaysOnTop)
             .with_inner_size(winit::dpi::LogicalSize::new(PILL_W, PILL_H));
+        #[cfg(windows)]
+        let attrs = {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            attrs.with_skip_taskbar(true)
+        };
         let window = std::rc::Rc::new(event_loop.create_window(attrs).context("pill window")?);
+        deny_activation(&window)?;
         let ctx = softbuffer::Context::new(window.clone()).map_err(|e| anyhow::anyhow!("{e}"))?;
         let surface =
             softbuffer::Surface::new(&ctx, window.clone()).map_err(|e| anyhow::anyhow!("{e}"))?;
         let font = fontdue::Font::from_bytes(FONT, fontdue::FontSettings::default())
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        Ok(Pill {
+        let mut pill = Pill {
             window,
             surface,
             font,
             text: None,
-        })
+        };
+        pill.draw();
+        Ok(pill)
     }
 
     fn show(&mut self, text: Option<&'static str>) {
@@ -376,6 +401,14 @@ impl Pill {
                 self.window.request_redraw();
             }
             None => self.window.set_visible(false),
+        }
+        // Setting it once at creation is not enough: winit recomputes the *whole* extended
+        // style from its own WindowFlags on every visibility change and writes it back, so
+        // each show and each hide erases the bit. Re-asserting it here leaves the window
+        // carrying it at every moment a show can happen. `set_visible` runs inline on the
+        // event loop thread, which this is, so the restore is ordered after the wipe.
+        if let Err(e) = deny_activation(&self.window) {
+            tracing::warn!(error = %e, "pill lost its no-activation style");
         }
     }
 
@@ -392,21 +425,28 @@ impl Pill {
         let Ok(mut buf) = self.surface.buffer_mut() else {
             return;
         };
-        buf.fill(0x00202020);
+        buf.fill(BG);
         if let Some(text) = self.text {
-            let mut pen_x = 12.0f32;
-            let baseline = 24i32;
+            // The window is sized in logical units but the buffer is physical pixels, so
+            // every layout number here is scaled or the text shrinks as the display's DPI
+            // rises.
+            let scale = self.window.scale_factor() as f32;
+            let mut pen_x = 12.0 * scale;
+            let baseline = (24.0 * scale) as i32;
             for ch in text.chars() {
-                let (metrics, bitmap) = self.font.rasterize(ch, 16.0);
+                let (metrics, bitmap) = self.font.rasterize(ch, 16.0 * scale);
                 for (i, a) in bitmap.iter().enumerate() {
                     let px = pen_x as i32 + metrics.xmin + (i % metrics.width.max(1)) as i32;
                     let py = baseline - metrics.height as i32 - metrics.ymin
                         + (i / metrics.width.max(1)) as i32;
                     if px >= 0 && py >= 0 && (px as u32) < w && (py as u32) < h {
-                        let v = *a as u32;
-                        let shade = 0x20 + (v * (0xF0 - 0x20) / 255);
-                        buf[(py as u32 * w + px as u32) as usize] =
-                            (shade << 16) | (shade << 8) | shade;
+                        let idx = (py as u32 * w + px as u32) as usize;
+                        // Source-over, not replace: glyph boxes overlap, and overwriting
+                        // would let one glyph's transparent margin erase its neighbour's
+                        // antialiasing back to the background.
+                        let dst = buf[idx] & 0xFF;
+                        let shade = dst + (*a as u32 * (FG.saturating_sub(dst)) / 255);
+                        buf[idx] = (shade << 16) | (shade << 8) | shade;
                     }
                 }
                 pen_x += metrics.advance_width;
@@ -414,6 +454,53 @@ impl Pill {
         }
         let _ = buf.present();
     }
+}
+
+/// Take the pill out of the activation chain for good.
+///
+/// winit's `active` attribute only steers the *first* `ShowWindow`: `apply_diff` sends
+/// `SW_SHOWNOACTIVATE` once and then sets `MARKER_ACTIVATE`, so every later `set_visible(true)`
+/// is a plain activating `SW_SHOW`. Since a show happens at the start of every recording —
+/// precisely when the target window must keep focus or the injected text lands in the pill's
+/// owner instead — the guarantee has to come from the window itself. `WS_EX_NOACTIVATE` makes
+/// `SW_SHOW` non-activating at the OS level, for every show.
+///
+/// Must be re-run after every visibility change; see `Pill::show`.
+///
+/// Failure is an error, not a warning: a pill that can steal focus is worse than no pill, and
+/// `Pill::new`'s caller drops it.
+#[cfg(windows)]
+fn deny_activation(window: &Window) -> Result<()> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_NOACTIVATE,
+    };
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = window.window_handle().context("pill window handle")?;
+    let RawWindowHandle::Win32(h) = handle.as_raw() else {
+        anyhow::bail!("pill window is not a Win32 window");
+    };
+    let hwnd = HWND(h.hwnd.get() as *mut std::ffi::c_void);
+    let wanted = WS_EX_NOACTIVATE.0 as isize;
+    // SAFETY: `hwnd` is this window's live handle and both calls only read/write its own
+    // extended style word.
+    let readback = unsafe {
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | wanted);
+        GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
+    };
+    // SetWindowLongPtrW returns the old value, which is indistinguishable from failure, so
+    // the style is read back instead of trusting the return.
+    if readback & wanted == 0 {
+        anyhow::bail!("WS_EX_NOACTIVATE did not take on the pill window");
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn deny_activation(_window: &Window) -> Result<()> {
+    Ok(()) // Plans 2/3: the X11/Wayland/AppKit equivalents.
 }
 
 #[cfg(windows)]
