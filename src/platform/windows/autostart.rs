@@ -32,7 +32,17 @@ fn command_line(exe: &Path, config: Option<&Path>) -> Result<String> {
 /// console-subsystem, so the Run key would flash a console window at every logon.
 pub fn enable(config: Option<&Path>) -> Result<()> {
     let exe = std::env::current_exe().context("current exe")?;
-    let command = command_line(&crate::daemon::daemon_exe(&exe), config)?;
+    let daemon = crate::daemon::daemon_exe(&exe);
+    // A Run value is only ever executed at the next logon, where a wrong path fails silently
+    // and goes on failing. `byovox` refuses to spawn a daemon that is not beside it;
+    // registering one refuses for the same reason, while someone is still reading the output.
+    if !daemon.exists() {
+        anyhow::bail!(
+            "{} not found — autostart would fail at every logon",
+            daemon.display()
+        );
+    }
+    let command = command_line(&daemon, config)?;
     // Registry errors say only "The system cannot find the file specified", so every call
     // carries the key it was talking about.
     let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
