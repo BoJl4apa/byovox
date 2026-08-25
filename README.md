@@ -162,11 +162,11 @@ stderr as well as to the file — that is how you watch one that will not come u
 Three languages, layouts switched dozens of times a day. Hosted dictation infers the language
 from the audio alone, and across a close set it gets it wrong often enough to matter — the
 failure being not a garbled word but a whole sentence coming back in the wrong language rather
-than transcribed. The self-hosted clients on offer solved the privacy half and not this one:
-they treat the STT provider as a fixed vendor, so the fields that would fix it are not theirs
-to send — an explicit `language`, a candidate list, a `prompt` carrying the names and jargon
-whisper otherwise mangles. So byovox reads the keyboard layout instead, the one signal that
-already knows, per window, which language you are about to speak.
+than transcribed. The self-hosted client tried first solved the privacy half and not this one:
+it had no way to send an explicit `language`, a candidate list, or a `prompt` carrying the
+names and jargon whisper otherwise mangles, and read its config once at start. So byovox
+sends all three per request and reads the keyboard layout to decide them — the one signal
+that already knows, per window, which language you are about to speak.
 The rest is warmth and locality: models resident on a machine on your own network mean nothing
 you say crosses the internet, and the second dictation is not slower than the first.
 
