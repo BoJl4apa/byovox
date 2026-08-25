@@ -18,6 +18,13 @@ static SENDER: OnceLock<Mutex<Option<Sender<HotkeyEvent>>>> = OnceLock::new();
 static TARGET_VK: AtomicU32 = AtomicU32::new(0);
 static CANCEL_VK: AtomicU32 = AtomicU32::new(0);
 static DOWN: AtomicBool = AtomicBool::new(false);
+/// True once a hook is live. Guards against a second `run`, whose chained hook would
+/// double every event, and lets a caller wait for the hook to be installed.
+static INSTALLED: AtomicBool = AtomicBool::new(false);
+
+fn sender_slot() -> &'static Mutex<Option<Sender<HotkeyEvent>>> {
+    SENDER.get_or_init(|| Mutex::new(None))
+}
 
 pub fn vk_for(name: &str) -> Option<u32> {
     Some(match name {
@@ -35,7 +42,12 @@ pub fn vk_for(name: &str) -> Option<u32> {
         "Insert" => 0x2D,
         "Escape" => 0x1B,
         f if f.starts_with('F') => {
-            let n: u32 = f[1..].parse().ok()?;
+            // Exactly two ASCII digits: `parse` alone would accept `F+13` and `F0013`.
+            let digits = &f[1..];
+            if digits.len() != 2 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            let n: u32 = digits.parse().ok()?;
             if (13..=24).contains(&n) {
                 0x70 + n - 1
             } else {
@@ -53,17 +65,24 @@ pub struct HookHotkey {
 
 impl HookHotkey {
     pub fn new(key: &str, cancel_key: &str) -> Result<HookHotkey, String> {
-        Ok(HookHotkey {
-            vk: vk_for(key).ok_or_else(|| format!("no virtual key for `{key}`"))?,
-            cancel_vk: vk_for(cancel_key)
-                .ok_or_else(|| format!("no virtual key for `{cancel_key}`"))?,
-        })
+        let vk = vk_for(key).ok_or_else(|| format!("no virtual key for `{key}`"))?;
+        let cancel_vk =
+            vk_for(cancel_key).ok_or_else(|| format!("no virtual key for `{cancel_key}`"))?;
+        if vk == cancel_vk {
+            // The target branch wins in `hook_proc`, so cancel could never fire.
+            return Err(format!(
+                "hotkey and cancel key are both `{key}`; they must differ"
+            ));
+        }
+        Ok(HookHotkey { vk, cancel_vk })
     }
 }
 
 fn emit(ev: HotkeyEvent) {
+    // Recovering from poisoning rather than unwrapping: a panic here would unwind out of
+    // an `extern "system"` callback, which aborts the process.
     if let Some(m) = SENDER.get()
-        && let Some(tx) = m.lock().unwrap().as_ref()
+        && let Some(tx) = m.lock().unwrap_or_else(|p| p.into_inner()).as_ref()
     {
         let _ = tx.send(ev);
     }
@@ -79,8 +98,10 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         if kb.vkCode == TARGET_VK.load(Ordering::Relaxed) {
             if is_down && !DOWN.swap(true, Ordering::Relaxed) {
                 emit(HotkeyEvent::Pressed); // first down only; auto-repeat is ignored
-            } else if is_up {
-                DOWN.store(false, Ordering::Relaxed);
+            } else if is_up && DOWN.swap(false, Ordering::Relaxed) {
+                // Only a latched press releases: a key already held when the daemon
+                // started, a second keyboard's key-up, or a stuck-key clear from another
+                // process must not produce a `Released` with no `Pressed` before it.
                 emit(HotkeyEvent::Released);
             }
         } else if kb.vkCode == CANCEL_VK.load(Ordering::Relaxed) && is_down {
@@ -92,15 +113,23 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
 
 impl Hotkey for HookHotkey {
     fn run(self: Box<Self>, tx: Sender<HotkeyEvent>) {
+        if INSTALLED.load(Ordering::SeqCst) {
+            // Checked before the sender is stored, so the running hook keeps its consumer.
+            tracing::error!("a keyboard hook is already installed; refusing to install a second");
+            return;
+        }
         TARGET_VK.store(self.vk, Ordering::Relaxed);
         CANCEL_VK.store(self.cancel_vk, Ordering::Relaxed);
-        *SENDER.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(tx);
+        *sender_slot().lock().unwrap_or_else(|p| p.into_inner()) = Some(tx);
         // SAFETY: standard hook installation; the hook is removed when the process exits.
         let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0) };
         if let Err(e) = hook {
             tracing::error!(error = %e, "SetWindowsHookExW failed");
+            // Drop the sender so the consumer's receive ends instead of blocking forever.
+            *sender_slot().lock().unwrap_or_else(|p| p.into_inner()) = None;
             return;
         }
+        INSTALLED.store(true, Ordering::SeqCst);
         let mut msg = MSG::default();
         // SAFETY: plain message pump on this thread; GetMessageW returns 0 on WM_QUIT.
         unsafe {
@@ -125,6 +154,8 @@ mod tests {
         assert_eq!(vk_for("F24"), Some(0x87));
         assert_eq!(vk_for("Escape"), Some(0x1B));
         assert_eq!(vk_for("Nope"), None);
+        assert_eq!(vk_for("F+13"), None);
+        assert_eq!(vk_for("F0013"), None);
     }
 
     #[test]
@@ -134,17 +165,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn hotkey_and_cancel_key_must_differ() {
+        match HookHotkey::new("ControlRight", "ControlRight") {
+            Err(e) => assert!(e.contains("must differ"), "{e}"),
+            Ok(_) => panic!("the same key for hotkey and cancel must be rejected"),
+        }
+        assert!(HookHotkey::new("ControlRight", "Escape").is_ok());
+    }
+
     /// Drives the real hook with synthetic keystrokes: `SendInput` events reach a
     /// `WH_KEYBOARD_LL` hook, so this is the one executable check that the backend
-    /// latches auto-repeat and reports press/release/cancel. Run with
-    /// `cargo test -- --ignored` on a desktop session; installs a global hook.
-    #[cfg(windows)]
+    /// latches auto-repeat and reports press/release/cancel.
+    ///
+    /// `#[ignore]`d, and never run in CI, because it is not a self-contained unit test:
+    /// it installs a **global** hook that is never unhooked and leaves a message-pumping
+    /// thread alive for the rest of the process, so it cannot run twice in one process
+    /// (the `INSTALLED` guard refuses the second install); and it injects **real global
+    /// keystrokes** — the Escape it sends goes to whatever window has focus, not to the
+    /// test. Run it deliberately, on a desktop session, with `cargo test -- --ignored`.
     #[test]
     #[ignore]
     fn injected_keys_drive_the_hook() {
         use std::sync::mpsc::{RecvTimeoutError, channel};
         use std::thread::sleep;
-        use std::time::Duration;
+        use std::time::{Duration, Instant};
         use windows::Win32::UI::Input::KeyboardAndMouse::{
             INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
             KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY,
@@ -175,7 +220,14 @@ mod tests {
         std::thread::spawn(move || {
             Box::new(HookHotkey::new("ControlRight", "Escape").unwrap()).run(tx)
         });
-        sleep(Duration::from_millis(500)); // let the hook install
+
+        // Wait for the install rather than guessing at a sleep: injecting before the hook
+        // is live would drop the events and fail the assert for the wrong reason.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !INSTALLED.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "hook not installed within 2 s");
+            sleep(Duration::from_millis(10));
+        }
 
         key(RCONTROL, KEYEVENTF_EXTENDEDKEY); // first down -> Pressed
         sleep(Duration::from_secs(2));
