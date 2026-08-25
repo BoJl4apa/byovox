@@ -17,7 +17,7 @@ model = "whisper-1"
 # (right for a server that authenticates by network identity).
 api_key_env = ""
 # Vocabulary priming sent as the whisper `prompt` on every request. Names and jargon
-# whisper would otherwise mangle, e.g. "Glossary: Alice, Acme, the dotfiles tool, the password vault".
+# whisper would otherwise mangle, e.g. "Glossary: Acme, Kubernetes, Postgres, LiteLLM".
 prompt = ""
 # Whole-request timeout in seconds (connect is always 5 s).
 timeout_s = 30

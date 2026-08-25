@@ -239,7 +239,7 @@ it at the same file the rest of that toolchain uses). Token values are never log
 base_url    = "http://your-whisper-host:8770/v1"
 model       = "whisper-1"
 api_key_env = ""           # env var holding a bearer token; empty = no Authorization header
-prompt      = ""           # vocabulary priming, e.g. "Glossary: Alice, Acme, the dotfiles tool"
+prompt      = ""           # vocabulary priming, e.g. "Glossary: Acme, Kubernetes, Postgres"
 timeout_s   = 30
 
 [language]                 # see Language policy
@@ -344,7 +344,7 @@ so paste is blocked too and the outcome is clipboard-only); the `none` rung on G
 Wayland with `byovox last` retrieval; pill, tray, cue; autostart; `check`.
 
 **Corpus evaluation stays private.** The maintainer's recorded corpus, references and
-scoring live in the maintainer's own repo, scored with knowledge-arm's `score_transcript`.
+scoring live in the maintainer's own repo, scored by the maintainer's own tooling.
 byovox ships only synthetic fixtures.
 
 ## Repository
