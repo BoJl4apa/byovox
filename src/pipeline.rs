@@ -709,17 +709,22 @@ mod tests {
     /// The gate has to be invisible to everything that is not silence: a scored transcript
     /// under the threshold, an unscored one from a server that sends no segments, and any
     /// transcript at all once the threshold is 0.
+    ///
+    /// The first case carries the very words the gated test drops, at a real speech score
+    /// against a live threshold. That pair — same text, opposite score — is what "the score
+    /// decides, the text does not" means, and it is what a later "let us also blocklist the
+    /// stock phrases" change would break.
     #[test]
     fn only_a_score_above_the_threshold_gates() {
         for (what, stt, threshold) in [
             (
-                "real speech scores near zero",
-                FakeTranscriber::scored("hello there", 0.04),
+                "the stock phrase itself, when whisper scores it as speech",
+                FakeTranscriber::scored("Thank you for watching!", 0.04),
                 0.6,
             ),
             (
                 "an unscored server leaves nothing to judge",
-                FakeTranscriber::ok("hello there"),
+                FakeTranscriber::ok("Thank you for watching!"),
                 0.6,
             ),
             (
@@ -742,6 +747,27 @@ mod tests {
             );
             assert_eq!(r.rung1.texts.lock().unwrap().len(), 1, "{what}");
         }
+    }
+
+    /// The same words, twice, against the same live threshold: dropped at 0.75, inserted at
+    /// 0.04. Nothing about the text can be what decided either.
+    #[test]
+    fn the_same_words_are_dropped_or_inserted_by_their_score_alone() {
+        let words = "Thank you for watching!";
+        let outcome = |p: f32| {
+            let mut r = rig(FakeTranscriber::scored(words, p), None, false, false);
+            r.p.cfg.no_speech_threshold = 0.6;
+            let out = dictate(&mut r, Duration::from_secs(1));
+            (out, r.rung1.texts.lock().unwrap().clone())
+        };
+        assert_eq!(outcome(0.75), (Some(Outcome::Empty), vec![]));
+        assert_eq!(
+            outcome(0.04),
+            (
+                Some(Outcome::Inserted { rung: "type" }),
+                vec![words.to_string()]
+            )
+        );
     }
 
     /// Everything `run` logs at INFO and above, as plain text. `set_default` installs the
