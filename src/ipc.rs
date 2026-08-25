@@ -3,11 +3,21 @@
 //! check: if a daemon answers `status`, one is running.
 
 use std::io::{BufRead, BufReader, Write};
+use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
-use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, prelude::*};
+use interprocess::ConnectWaitMode;
+use interprocess::local_socket::{
+    ConnectOptions, GenericNamespaced, ListenerOptions, Stream, prelude::*,
+};
 use serde::{Deserialize, Serialize};
+
+/// How long a client waits for the whole round trip — connect, write, one reply line. Every
+/// handler answers immediately (it locks `Shared`, builds a `Reply` and returns), so a wait
+/// this long means the peer is wedged, not busy.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(tag = "cmd", rename_all = "lowercase")]
@@ -123,11 +133,47 @@ pub fn send(name: &str, req: Request) -> Result<Reply> {
     send_raw(name, &format!("{}\n", serde_json::to_string(&req)?))
 }
 
+/// The round trip runs on its own thread so the wait is bounded on every platform. Windows
+/// named pipes reject `set_recv_timeout` outright — `interprocess` answers it with
+/// `ErrorKind::Unsupported`, "named pipes do not support I/O timeouts" — so a blocking
+/// `read_line` against a peer that accepts and never answers can only be bounded from
+/// outside. On a timeout the worker is left behind, still parked on the read: every caller
+/// but one is a CLI subcommand that exits next, and the one exception, `daemon_running` at
+/// daemon startup, leaks a single thread for the life of the process rather than hanging it.
 pub(crate) fn send_raw(name: &str, line: &str) -> Result<Reply> {
+    let (tx, rx) = channel();
+    let name = name.to_string();
+    let line = line.to_string();
+    std::thread::Builder::new()
+        .name("byovox-ipc-client".into())
+        .spawn(move || {
+            let _ = tx.send(round_trip(&name, &line));
+        })
+        .context("spawning the IPC client thread")?;
+    match rx.recv_timeout(REPLY_TIMEOUT) {
+        Ok(reply) => reply,
+        Err(RecvTimeoutError::Timeout) => Err(anyhow::anyhow!(
+            "the byovox daemon did not answer within {} s",
+            REPLY_TIMEOUT.as_secs()
+        )),
+        Err(RecvTimeoutError::Disconnected) => Err(anyhow::anyhow!(
+            "the IPC client thread ended without a reply"
+        )),
+    }
+}
+
+fn round_trip(name: &str, line: &str) -> Result<Reply> {
     let ns = name
         .to_ns_name::<GenericNamespaced>()
         .context("socket name")?;
-    let mut conn = Stream::connect(ns).context("connecting to the byovox daemon")?;
+    // A bounded connect as well as a bounded wait. Windows documents this as returning as
+    // soon as possible rather than honouring the duration, so the thread above is the real
+    // guarantee; this closes the same hole on the Unix backend, which does honour it.
+    let mut conn: Stream = ConnectOptions::new()
+        .name(ns)
+        .wait_mode(ConnectWaitMode::Timeout(REPLY_TIMEOUT))
+        .connect_sync()
+        .context("connecting to the byovox daemon")?;
     conn.write_all(line.as_bytes())?;
     if !line.ends_with('\n') {
         conn.write_all(b"\n")?;
@@ -241,6 +287,37 @@ mod tests {
             .expect("a silent client wedged the listener")
             .expect("the status request failed");
         assert!(ok);
+    }
+
+    /// The one wedge the handler's own design cannot rule out: a peer that accepts the
+    /// connection and never writes a reply line. Before the round trip was bounded this call
+    /// never returned.
+    #[test]
+    fn a_peer_that_accepts_but_never_answers_times_out() {
+        let n = name();
+        let ns = n
+            .clone()
+            .to_ns_name::<GenericNamespaced>()
+            .expect("silent listener name");
+        let listener = ListenerOptions::new()
+            .name(ns)
+            .create_sync()
+            .expect("binding the silent listener");
+        std::thread::spawn(move || {
+            // Accept one connection and hold it open, writing nothing.
+            let held = listener.incoming().next();
+            std::thread::sleep(std::time::Duration::from_secs(20));
+            drop(held);
+        });
+
+        let started = std::time::Instant::now();
+        let err = send(&n, Request::Status).expect_err("a silent peer must not wedge the client");
+        let waited = started.elapsed();
+        assert!(
+            waited < std::time::Duration::from_secs(6),
+            "the client waited {waited:?}"
+        );
+        assert!(err.to_string().contains("did not answer"), "{err}");
     }
 
     #[test]
