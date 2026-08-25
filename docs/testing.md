@@ -11,6 +11,11 @@ Run `byovox check` first; every line below assumes it passed.
 - [ ] `byovox toggle` twice from a terminal: one dictation
 
 ## Language routing
+
+With `[language.by_layout] he = "he"` configured (see
+[`docs/config.example.toml`](config.example.toml)) — the shipped default leaves that map empty,
+and an unmapped layout routes to `language.default`, so every row below would log `auto`.
+
 - [ ] Notepad with an English layout: log line says `lang=auto`
 - [ ] switch that window to Hebrew (Win+Space): log line says `lang=he`, Hebrew comes back
 - [ ] a *different* window on Hebrew while Notepad stays English: dictating into Notepad still logs `auto` (per-window layout)
@@ -36,7 +41,8 @@ Run `byovox check` first; every line below assumes it passed.
 ## Last run
 
 2026-08-25, Windows, release build. Rows an unattended run can exercise were run; the rest
-need a human at the keyboard and are still unticked above.
+need a human at the keyboard. The boxes above stay unticked — they are the template for each
+release run.
 
 Exercised by automation:
 

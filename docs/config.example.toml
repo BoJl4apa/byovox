@@ -56,8 +56,10 @@ prompt_file = ""
 timeout_s = 20
 
 [hotkey]
-# W3C UI Events `code` name. Bare modifiers work on Windows and on Linux via evdev:
-# ControlRight, ControlLeft, AltRight, ShiftRight, CapsLock, ScrollLock, Pause, F13..F24.
+# W3C UI Events `code` name. Bare modifiers work on Windows and on Linux via evdev.
+# Accepted, in full: ControlLeft, ControlRight, AltLeft, AltRight, ShiftLeft, ShiftRight,
+# MetaLeft, MetaRight, CapsLock, ScrollLock, Pause, Insert, Escape, F13, F14, F15, F16, F17,
+# F18, F19, F20, F21, F22, F23, F24. Anything else is refused at startup and by `byovox check`.
 key = "ControlRight"
 # "hold": press = record, release = send. "toggle": press to start, press again to send.
 mode = "hold"

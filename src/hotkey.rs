@@ -70,3 +70,26 @@ pub fn validate_key_name(name: &str) -> Result<(), String> {
 pub trait Hotkey: Send {
     fn run(self: Box<Self>, tx: Sender<HotkeyEvent>);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::KEY_NAMES;
+    use crate::config::EXAMPLE;
+
+    /// grok-2: `docs/config.example.toml` is the reference a user reads before setting
+    /// `hotkey.key`, and its list had drifted — `Insert`, `Escape`, `AltLeft`, `MetaLeft` and
+    /// `MetaRight` were accepted by `validate_key_name` but named nowhere a reader looks.
+    /// `check` prints the full list too, but only after a wrong guess has been refused.
+    #[test]
+    fn every_accepted_key_name_is_documented_in_the_example() {
+        let missing: Vec<&str> = KEY_NAMES
+            .iter()
+            .copied()
+            .filter(|name| !EXAMPLE.contains(name))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "accepted by hotkey::KEY_NAMES, absent from docs/config.example.toml: {missing:?}"
+        );
+    }
+}

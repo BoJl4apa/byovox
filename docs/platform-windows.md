@@ -6,12 +6,13 @@ What Windows does differently, and the two things about it that surprise people.
 
 byovox installs a low-level keyboard hook (`WH_KEYBOARD_LL`) rather than registering a hotkey
 with the shell, which is why a **bare modifier** works as a push-to-talk key: `ControlRight`
-(the default), `AltRight`, `CapsLock`, `ScrollLock`, `Pause`, `Insert`, `F13`–`F24`. The
-accepted `hotkey.key` names are listed in [`config.example.toml`](config.example.toml).
+(the default), `AltRight`, `CapsLock`, `ScrollLock`, `Pause`, `Insert`, `F13`–`F24`. Every
+accepted `hotkey.key` name is listed in [`config.example.toml`](config.example.toml); anything
+else is refused at startup and by `byovox check`, which prints the full list.
 
 The hook sees every key on the desktop, including synthesised ones, so byovox stamps the
-keystrokes it sends itself with a marker and ignores those: dictating text that contains the
-hotkey's own character cannot retrigger a recording.
+keystrokes it sends itself with a marker and ignores those: the Ctrl+V the `paste` rung sends
+cannot read as a hotkey press.
 
 No elevation, no driver, no service — the hook lives in the daemon's message loop and dies
 with it.
@@ -39,8 +40,14 @@ keyboard hook and a live microphone inside an administrator process.
 
 The layout byovox reads is the **foreground window's**, taken from that window's own thread —
 which is exactly what Windows' "let me use a different input method for each app window"
-setting controls. Win+Space therefore reroutes only the window you are in, so a Hebrew editor
-and an English terminal dictate in different languages with nothing configured per app.
+setting controls. Win+Space therefore reroutes only the window you are in, not the desktop.
+
+Reading the layout is not the same as routing on it. A layout becomes an explicit STT language
+only if it has an entry in `[language.by_layout]`, and the shipped default leaves that map
+empty: without `he = "he"` in it, a Hebrew window dictates under `language.default` exactly
+like an English one, and the log line says `lang=auto` either way. Map the layouts you dictate
+in — see [`config.example.toml`](config.example.toml) — and a Hebrew editor and an English
+terminal then route to different languages with nothing configured per app.
 
 ## Microphone level
 
@@ -69,4 +76,6 @@ value has to be written again.
 | capture log, when enabled | `%APPDATA%\byovox\data\capture` |
 
 Transcript text is logged only at `logging.level = "debug"`; at `info` the log carries
-timings, the language sent and the rung used, never what you said.
+timings, the language sent and the rung used, never what you said. The capture log is the
+exception: with `capture_log.enabled = true` it stores every raw and polished transcript, by
+design — that is what it is for.

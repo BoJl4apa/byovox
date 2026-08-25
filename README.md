@@ -15,7 +15,8 @@ setting.
   Constrained auto-detection (`language_candidates`) needs a whisper.cpp server that
   understands the field; everything else is standard.
 - Windows is the platform that is exercised end to end today. Linux (KDE Wayland first) and
-  macOS are in progress — see [`docs/superpowers/specs/`](docs/superpowers/specs/).
+  macOS are designed, not implemented — the per-OS backend table is in
+  [the design](docs/superpowers/specs/2026-08-24-byovox-design.md), under "Per-OS backends".
 - A dictation that reached the server is never lost: if cleanup fails, the raw text is
   typed instead; if no injection path works on your desktop, `byovox last` hands it back.
 
@@ -49,8 +50,8 @@ holding discards the recording. Quit from the tray, or `byovox quit`.
 | `byovox config` | print the effective configuration and where every key came from |
 | `byovox config --init` | write the documented default file (never overwrites one) |
 | `byovox status` | pipeline state and last error of the running daemon |
-| `byovox last` | print the transcript the daemon is still holding |
-| `byovox toggle` | start, then stop, a recording in the running daemon |
+| `byovox last` | print the most recent transcript (the one held if no rung worked) |
+| `byovox toggle` | start or stop a recording in the running daemon (two calls = one dictation) |
 | `byovox quit` | stop the daemon |
 | `byovox autostart --enable` / `--disable` | per-user autostart |
 
