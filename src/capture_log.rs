@@ -54,51 +54,26 @@ impl CaptureLog {
         Some(now_ms().saturating_sub(u64::from(self.keep_days) * DAY_MS))
     }
 
-    /// Delete expired WAVs and drop expired JSONL rows.
+    /// Drop expired JSONL rows and delete the WAVs those rows name.
     ///
-    /// Cheap in the common case, which matters because this runs after every dictation. The
-    /// WAV pass reads directory entries only — the timestamp is in the name, so nothing is
-    /// stat-ed — and the row pass reads the first line and stops there while it is still
-    /// fresh, which it is on every run but the first of each day, because rows are appended
-    /// in time order.
+    /// **The JSONL is the index, and the only source of deletion candidates.** The directory
+    /// is never scanned: a name is not evidence of ownership, and a user's own `2024-1.wav`
+    /// sitting in this directory would pass any shape test loose enough to match the real
+    /// thing. A capture is deleted because a row this log wrote says it belongs to that row,
+    /// and the name on the row is checked against the exact shape `record` writes as a second
+    /// gate. A WAV with no row is therefore never touched — including one orphaned by a JSONL
+    /// append that failed after its audio was written. That is the deliberate trade: an
+    /// occasional orphan the user can delete, rather than a pruner that can reach a file it
+    /// did not create.
+    ///
+    /// Cheap in the common case, which matters because this runs after every dictation: the
+    /// first row is read and the pass returns while it is still fresh, which it is on every
+    /// run but the first of each day, because rows are appended in time order.
     ///
     /// Failures are logged and swallowed: retention is housekeeping, and a directory that
     /// cannot be pruned is no reason to lose a dictation.
     fn prune(&self) {
         let Some(cutoff) = self.cutoff() else { return };
-        self.prune_wavs(cutoff);
-        self.prune_rows(cutoff);
-    }
-
-    /// Only files this log itself named — `<ts>-<n>.wav`, both halves parsing as integers.
-    /// Anything else in the directory belongs to someone else and is never touched.
-    fn prune_wavs(&self, cutoff: u64) {
-        let entries = match std::fs::read_dir(&self.dir) {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!(error = %e, path = %self.dir.display(), "capture log: prune could not read the directory");
-                return;
-            }
-        };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(ts) = name.to_str().and_then(wav_timestamp) else {
-                continue;
-            };
-            if ts < cutoff {
-                let path = entry.path();
-                if let Err(e) = std::fs::remove_file(&path) {
-                    tracing::warn!(error = %e, path = %path.display(), "capture log: prune could not delete a wav");
-                }
-            }
-        }
-    }
-
-    /// Rewrite the JSONL without its expired rows, and only when there are any.
-    ///
-    /// A row whose `ts` cannot be read is kept: this function deletes data, so anything it
-    /// does not understand survives rather than being discarded on a guess.
-    fn prune_rows(&self, cutoff: u64) {
         let path = self.dir.join(ROWS);
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
@@ -119,13 +94,16 @@ impl CaptureLog {
         {
             return;
         }
-        let total = text.lines().count();
-        let kept: Vec<&str> = text
+        // A row whose `ts` cannot be read is kept: this deletes data, so anything it does not
+        // understand survives rather than being discarded on a guess.
+        let (expired, kept): (Vec<&str>, Vec<&str>) = text
             .lines()
-            .filter(|l| row_timestamp(l).is_none_or(|ts| ts >= cutoff))
-            .collect();
-        if kept.len() == total {
+            .partition(|l| row_timestamp(l).is_some_and(|ts| ts < cutoff));
+        if expired.is_empty() {
             return;
+        }
+        for row in &expired {
+            self.remove_capture(row);
         }
         let mut body = kept.join("\n");
         if !body.is_empty() {
@@ -133,6 +111,31 @@ impl CaptureLog {
         }
         if let Err(e) = std::fs::write(&path, body) {
             tracing::warn!(error = %e, path = %path.display(), "capture log: prune could not rewrite the rows");
+        }
+    }
+
+    /// Delete the WAV one expired row names, if that row names one this log could have
+    /// written. The name is checked rather than trusted: the row is read back off disk, and a
+    /// `wav` field holding a path — `../../something` — must not be able to steer a delete out
+    /// of this directory. `is_own_capture_name` admits no separators, so the join is safe.
+    ///
+    /// A file that is already gone is not an error: the row is dropped either way, which is
+    /// what makes pruning idempotent after a partial run.
+    fn remove_capture(&self, row: &str) {
+        let Some(name) = serde_json::from_str::<serde_json::Value>(row)
+            .ok()
+            .and_then(|v| v.get("wav")?.as_str().map(str::to_owned))
+            .filter(|n| is_own_capture_name(n))
+        else {
+            return;
+        };
+        let path = self.dir.join(name);
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(error = %e, path = %path.display(), "capture log: prune could not delete a wav");
+            }
         }
     }
 }
@@ -144,14 +147,28 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// The timestamp in a WAV name this log wrote, or `None` for any other file. Both halves must
-/// parse, so `notes-2024.wav`, `dictations.jsonl` and anything a user dropped in the
-/// directory are left alone.
-fn wav_timestamp(name: &str) -> Option<u64> {
-    let stem = name.strip_suffix(".wav")?;
-    let (ts, n) = stem.split_once('-')?;
-    n.parse::<u64>().ok()?;
-    ts.parse::<u64>().ok()
+/// Whether `name` is the exact shape `record` writes: **thirteen** digits of unix
+/// milliseconds, `-`, a decimal counter, `.wav`.
+///
+/// The digit count is the whole point. "two integers separated by a dash" also describes
+/// `2024-1.wav` and `2019-12.wav` — plausible names in anyone's audio folder — and a pruner
+/// that accepted those would read `2024` as a timestamp from 1970 and delete a file it never
+/// created. Unix milliseconds have been 13 digits since 2001-09-09 and stay 13 until 2286.
+///
+/// This is a second gate, not the first: the caller only ever asks about a name that an
+/// expired row already claimed. It also keeps a `wav` field holding a path out of the join —
+/// no separator, dot or sign survives an all-ASCII-digits test.
+fn is_own_capture_name(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(".wav") else {
+        return false;
+    };
+    let Some((ts, n)) = stem.split_once('-') else {
+        return false;
+    };
+    ts.len() == 13
+        && ts.bytes().all(|b| b.is_ascii_digit())
+        && !n.is_empty()
+        && n.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// The `ts` of one JSONL row, or `None` when the line is not a row this log would recognise.
@@ -373,21 +390,99 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Pruning deletes files, so it only ever touches names this log itself wrote. Anything
-    /// else in the directory — a note, an export, the JSONL — is left alone however old.
+    /// Every file shape both reviewers pointed at. `2024-1.wav` and `2019-12.wav` are the
+    /// ones that mattered: a user's own recordings, two integers and a dash, which the old
+    /// pruner read as a 1970 timestamp and destroyed. `1-1.wav`, `0-0.wav` and
+    /// `20240101-1.wav` are the same defect at other digit counts.
+    ///
+    /// The retention here is 1 day and every stranger is far "older" than that by any reading
+    /// of its name, so a pruner that still scanned the directory would take all of them.
+    const STRANGERS: [&str; 9] = [
+        "2024-1.wav",
+        "2019-12.wav",
+        "1-1.wav",
+        "0-0.wav",
+        "20240101-1.wav",
+        "notes.wav",
+        "holiday-2019.wav",
+        "2019.wav",
+        "export.txt",
+    ];
+
     #[test]
     fn pruning_never_touches_a_file_the_log_did_not_name() {
         let dir = temp_dir("prune_only_own_files");
         std::fs::create_dir_all(&dir).unwrap();
         plant(&dir, 90, 0);
-        for stranger in ["notes.wav", "holiday-2019.wav", "2019.wav", "export.txt"] {
+        for stranger in STRANGERS {
             std::fs::write(dir.join(stranger), b"not mine").unwrap();
         }
 
         let _log = CaptureLog::new(dir.clone(), 1).unwrap();
 
-        for stranger in ["notes.wav", "holiday-2019.wav", "2019.wav", "export.txt"] {
+        for stranger in STRANGERS {
             assert!(dir.join(stranger).exists(), "{stranger} was deleted");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A capture is deleted because a row named it, not because its name looked right. A WAV
+    /// this log really did write, but that no row claims, is left alone — the case an
+    /// orphaned audio file (JSONL append failed after the audio landed) falls into.
+    #[test]
+    fn a_wav_with_no_row_is_never_deleted() {
+        let dir = temp_dir("prune_orphan_wav");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A real, correctly-shaped, long-expired capture name — with no row referencing it.
+        let orphan = "1700000000000-0.wav";
+        std::fs::write(dir.join(orphan), b"RIFForphan").unwrap();
+        // A separate expired capture that *does* have a row, so the pass actually runs.
+        let claimed = plant(&dir, 90, 1);
+
+        let _log = CaptureLog::new(dir.clone(), 30).unwrap();
+
+        assert!(
+            dir.join(orphan).exists(),
+            "an unclaimed wav was deleted; only rows may name a deletion"
+        );
+        assert!(!dir.join(&claimed).exists(), "the claimed wav survived");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An expired row whose audio is already gone must still drop the row, quietly: that is
+    /// what makes a prune interrupted half-way idempotent on the next run.
+    #[test]
+    fn an_expired_row_whose_wav_is_missing_drops_the_row_without_error() {
+        let dir = temp_dir("prune_missing_wav");
+        std::fs::create_dir_all(&dir).unwrap();
+        let gone = plant(&dir, 90, 0);
+        std::fs::remove_file(dir.join(&gone)).unwrap();
+        let fresh = plant(&dir, 1, 1);
+
+        let _log = CaptureLog::new(dir.clone(), 30).unwrap();
+
+        let rows = std::fs::read_to_string(dir.join(ROWS)).unwrap();
+        assert_eq!(rows.lines().count(), 1, "{rows}");
+        assert!(rows.contains(&fresh), "{rows}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `wav` field is read back off disk, so it is input. A row claiming a path must not be
+    /// able to steer a delete out of the capture directory.
+    #[test]
+    fn a_row_naming_a_path_cannot_reach_outside_the_directory() {
+        let dir = temp_dir("prune_traversal");
+        let outside = dir.join("outside.wav");
+        std::fs::create_dir_all(dir.join("inner")).unwrap();
+        std::fs::write(&outside, b"not a capture").unwrap();
+
+        let inner = dir.join("inner");
+        let ts = now_ms() - 90 * DAY_MS;
+        for claim in ["../outside.wav", "..\\outside.wav", "/outside.wav"] {
+            let row = serde_json::json!({"ts": ts, "wav": claim, "raw": "x"});
+            std::fs::write(inner.join(ROWS), format!("{row}\n")).unwrap();
+            let _log = CaptureLog::new(inner.clone(), 30).unwrap();
+            assert!(outside.exists(), "`{claim}` reached outside the directory");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -395,24 +490,34 @@ mod tests {
     /// The name test on its own, including the shapes a careless split would eat.
     #[test]
     fn only_a_timestamp_dash_counter_wav_is_ours() {
-        assert_eq!(
-            wav_timestamp("1700000000000-0.wav"),
-            Some(1_700_000_000_000)
-        );
-        assert_eq!(
-            wav_timestamp("1700000000000-12.wav"),
-            Some(1_700_000_000_000)
-        );
+        assert!(is_own_capture_name("1700000000000-0.wav"));
+        assert!(is_own_capture_name("1700000000000-12.wav"));
+        // The name `record` writes right now, whatever the clock says.
+        assert!(is_own_capture_name(&format!("{}-0.wav", now_ms())));
         for other in [
+            // The reviewers' cases: two integers and a dash, but not thirteen digits.
+            "2024-1.wav",
+            "2019-12.wav",
+            "1-1.wav",
+            "0-0.wav",
+            "20240101-1.wav",
+            // Fourteen digits is not thirteen either.
+            "17000000000000-0.wav",
             "notes.wav",
             "holiday-2019.wav",
             "2019.wav",
             "1700000000000-.wav",
             "-0.wav",
             "1700000000000-0.txt",
+            // A signed or spaced number is not all-digits.
+            "+700000000000-0.wav",
+            "1700000000000- 0.wav",
+            // Paths never survive the digit test, which is what keeps the join in bounds.
+            "../1700000000000-0.wav",
+            "sub/1700000000000-0.wav",
             ROWS,
         ] {
-            assert_eq!(wav_timestamp(other), None, "{other}");
+            assert!(!is_own_capture_name(other), "{other} was claimed as ours");
         }
     }
 
