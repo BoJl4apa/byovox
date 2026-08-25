@@ -20,7 +20,8 @@ use crate::pipeline::{DictationRecord, Recorder};
 /// names and the rows already carry.
 const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 
-/// The JSONL file, named once: `record` appends to it and `prune_rows` rewrites it.
+/// The JSONL file, named once: `record` appends to it and `prune` rewrites it. It is also the
+/// index of what this log owns — the only thing that authorises deleting a WAV.
 const ROWS: &str = "dictations.jsonl";
 
 pub struct CaptureLog {
@@ -66,9 +67,15 @@ impl CaptureLog {
     /// occasional orphan the user can delete, rather than a pruner that can reach a file it
     /// did not create.
     ///
-    /// Cheap in the common case, which matters because this runs after every dictation: the
-    /// first row is read and the pass returns while it is still fresh, which it is on every
-    /// run but the first of each day, because rows are appended in time order.
+    /// What it does, in order: read the whole JSONL; if the **first** row is still fresh,
+    /// return — rows are appended in time order, so a fresh first row means no row is expired,
+    /// and that is the path taken on every run but the first of each day, which is what keeps
+    /// this cheap enough to run after every dictation. Otherwise partition the lines into
+    /// expired and kept, delete the WAV each expired row names, and replace the file with the
+    /// kept rows via a temp file and a rename, so the JSONL is never observed half-written.
+    ///
+    /// The whole file is read and rewritten on that slower path. It is bounded by the corpus,
+    /// which is what `keep_days` exists to bound.
     ///
     /// Failures are logged and swallowed: retention is housekeeping, and a directory that
     /// cannot be pruned is no reason to lose a dictation.
