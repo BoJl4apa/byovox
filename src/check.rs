@@ -7,7 +7,10 @@ use std::time::{Duration, Instant};
 
 use crate::audio::{Audio, SAMPLE_RATE};
 use crate::capture::{Capture, CpalCapture, describe_default_device};
-use crate::config::{Config, HotkeyConfig, PolishConfig, SttConfig, expand_home, resolve_token};
+use crate::config::{
+    CLEARTEXT_WARNING, Config, HotkeyConfig, PolishConfig, SttConfig, expand_home,
+    is_cleartext_remote, resolve_token,
+};
 use crate::hotkey::{HotkeyMode, parse_chord, validate_key_name};
 use crate::lang::{LanguagePolicy, SttLanguage};
 use crate::pipeline::no_speech;
@@ -37,6 +40,27 @@ fn line(stage: &str, ok: Option<bool>, detail: &str) {
         None => "    ",
     };
     println!("{mark} {stage:<9} {detail}");
+}
+
+/// A row that is neither a pass nor a failure: something configured is working exactly as
+/// asked and is still worth saying out loud. Deliberately not a FAIL — plain HTTP over a
+/// private network is a legitimate choice, and `check`'s exit code has to keep meaning
+/// "byovox can dictate", or a script that gates on it starts lying.
+fn warn_line(stage: &str, detail: &str) {
+    println!("warn {stage:<9} {detail}");
+}
+
+/// Every configured endpoint that would put its traffic on the wire in clear. Polish is
+/// skipped when disabled: the daemon never calls it, so warning about its URL is noise.
+fn cleartext_endpoints(cfg: &Config) -> Vec<(&'static str, &str)> {
+    let mut out = Vec::new();
+    if is_cleartext_remote(&cfg.stt.base_url) {
+        out.push(("stt.base_url", cfg.stt.base_url.as_str()));
+    }
+    if cfg.polish.enabled && is_cleartext_remote(&cfg.polish.base_url) {
+        out.push(("polish.base_url", cfg.polish.base_url.as_str()));
+    }
+    out
 }
 
 /// The leading characters of a transcript, so no report line ever echoes a whole dictation.
@@ -148,6 +172,12 @@ pub fn run(cfg: &Config, config_path: &Path) -> bool {
         "defaults (no file yet — `byovox config --init`)".to_string()
     };
     line("config", Some(true), &source);
+
+    // Near the top, where the endpoints are still the subject: by the time the stt row has
+    // printed a happy round trip, "and by the way it was unencrypted" reads as an aside.
+    for (key, url) in cleartext_endpoints(cfg) {
+        warn_line("network", &format!("{key} {url} is {CLEARTEXT_WARNING}"));
+    }
 
     let policy = match LanguagePolicy::from_config(&cfg.language) {
         Ok(p) => p,
@@ -380,8 +410,9 @@ fn record() -> Result<Audio, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Audio, BUILT_IN_PROMPT, HotkeyConfig, PREFIX_CHARS, QUIET_DBFS, SAMPLE_RATE, hotkey_error,
-        hotkey_row, no_speech_row, prefix, prompt_text, stage_token, steady_state, strip_body,
+        Audio, BUILT_IN_PROMPT, HotkeyConfig, PREFIX_CHARS, QUIET_DBFS, SAMPLE_RATE,
+        cleartext_endpoints, hotkey_error, hotkey_row, no_speech_row, prefix, prompt_text,
+        stage_token, steady_state, strip_body,
     };
 
     /// `check` transcribes a second of room tone, so a high score beside invented text is the
@@ -545,6 +576,49 @@ mod tests {
             .expect("`polish.prompt_file <path>: <error>`");
         assert_eq!(path, "no-such-dir/no-such-prompt.txt");
         assert!(!io.is_empty());
+    }
+
+    /// Both endpoints get their own row, and a disabled polish stage gets none: the daemon
+    /// never calls it, so warning about a URL it will not use is noise.
+    #[test]
+    fn every_cleartext_endpoint_that_will_be_used_gets_a_row() {
+        use crate::config::{Config, PolishConfig, SttConfig};
+
+        let remote = |url: &str| Config {
+            stt: SttConfig {
+                base_url: url.into(),
+                ..Default::default()
+            },
+            polish: PolishConfig {
+                base_url: url.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let both = remote("http://10.0.0.5:8770/v1");
+        assert_eq!(
+            cleartext_endpoints(&both)
+                .iter()
+                .map(|(k, _)| *k)
+                .collect::<Vec<_>>(),
+            ["stt.base_url", "polish.base_url"]
+        );
+
+        // Polish off: its URL is never contacted, so it must not be reported.
+        let mut stt_only = remote("http://10.0.0.5:8770/v1");
+        stt_only.polish.enabled = false;
+        assert_eq!(
+            cleartext_endpoints(&stt_only)
+                .iter()
+                .map(|(k, _)| *k)
+                .collect::<Vec<_>>(),
+            ["stt.base_url"]
+        );
+
+        // The setup byovox recommends produces no rows at all.
+        assert!(cleartext_endpoints(&remote("http://127.0.0.1:8770/v1")).is_empty());
+        assert!(cleartext_endpoints(&remote("https://api.example.com/v1")).is_empty());
     }
 
     /// `detect` rejects these key names one row later; the hotkey row must not print them

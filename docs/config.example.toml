@@ -10,6 +10,13 @@
 
 [stt]
 # OpenAI-compatible base URL; byovox posts to {base_url}/audio/transcriptions.
+# Plain http:// to anywhere but this machine puts your voice, your transcript and your
+# bearer token on the wire in clear, and lets anyone on the path replace the reply with
+# text byovox will type into your window. `byovox check` prints a `warn network` row for
+# such an endpoint and the daemon logs one at startup; neither is fatal, because http://
+# across a WireGuard or Tailscale link is a reasonable choice. Over anything else, use
+# https:// — note that byovox verifies against the bundled Mozilla roots, not the Windows
+# certificate store, so a privately-signed certificate will not be accepted.
 base_url = "http://your-whisper-host:8770/v1"
 # Sent as the `model` field. Self-hosted whisper.cpp ignores it; hosted APIs need a real name.
 model = "whisper-1"

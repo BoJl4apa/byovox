@@ -229,6 +229,55 @@ pub fn resolve_token(env_name: &str, file: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
+/// The one wording for the plain-HTTP warning, so `byovox check` and the daemon's startup
+/// log cannot drift into saying different things about the same endpoint.
+pub const CLEARTEXT_WARNING: &str = "plain HTTP: voice, transcript and the bearer token cross the network in clear — \
+     use https or a private network";
+
+/// Whether this endpoint sends its traffic unencrypted across a network somebody else can be
+/// on. True only for `http://` to a non-loopback host.
+///
+/// Loopback is quiet because it never reaches a wire: a whisper server on the same box is the
+/// setup byovox is happiest with. A hostname that is not `localhost` is assumed remote — this
+/// runs before any DNS lookup and must not perform one, and a name that happens to resolve to
+/// a loopback address is rare enough not to be worth a silent pass.
+///
+/// Hand-rolled rather than pulling in a URL crate: the question is only "scheme, then host",
+/// and `base_url` is a string the user typed, not a URL byovox ever parses for routing.
+pub fn is_cleartext_remote(base_url: &str) -> bool {
+    let url = base_url.trim();
+    let Some(rest) = url
+        .get(..7)
+        .filter(|p| p.eq_ignore_ascii_case("http://"))
+        .map(|_| &url[7..])
+    else {
+        return false;
+    };
+    // Authority only: everything before the path, query or fragment.
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        // Credentials in a URL are not something byovox supports, but they must not be
+        // mistaken for the host either.
+        .rsplit('@')
+        .next()
+        .unwrap_or_default();
+    // `[::1]:8770` keeps its brackets around the address; `host:8770` splits on the colon.
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => authority.split(':').next().unwrap_or_default(),
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return false;
+    }
+    // Covers all of 127.0.0.0/8 and ::1 without spelling any of them out.
+    match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => !ip.is_loopback(),
+        Err(_) => true,
+    }
+}
+
 /// `~/x` → home-relative; anything else unchanged.
 pub fn expand_home(p: &str) -> PathBuf {
     if let Some(rest) = p.strip_prefix("~/").or_else(|| p.strip_prefix("~\\"))
@@ -463,6 +512,46 @@ mod tests {
         assert_eq!(resolve_token("BLANK_TOKEN", blank.to_str().unwrap()), None);
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Plain HTTP to somewhere off this machine puts the audio, the transcript and the
+    /// bearer token on the wire in clear, and lets anyone on the path replace the reply with
+    /// text byovox will type. Loopback never reaches a wire and must stay quiet, or the
+    /// warning becomes noise for the setup byovox recommends.
+    #[test]
+    fn only_plain_http_to_somewhere_off_this_machine_warns() {
+        for quiet in [
+            "http://127.0.0.1",
+            "http://127.0.0.1:8770/v1",
+            "http://127.5.6.7:8770/v1",
+            "http://localhost",
+            "http://localhost:8770/v1",
+            "http://LocalHost:8770/v1",
+            "http://[::1]",
+            "http://[::1]:8770/v1",
+            "https://api.example.com/v1",
+            "https://10.0.0.5:8770/v1",
+            "HTTPS://api.example.com/v1",
+            // Not an absolute HTTP URL at all: `stt.base_url` is validated by the request
+            // failing, and this predicate must not invent a warning about it.
+            "",
+            "your-whisper-host:8770/v1",
+        ] {
+            assert!(!is_cleartext_remote(quiet), "{quiet} must not warn");
+        }
+        for warns in [
+            "http://10.0.0.5",
+            "http://10.0.0.5:8770/v1",
+            "http://203.0.113.10:4000/v1",
+            "http://your-whisper-host:8770/v1",
+            "http://[2001:db8::1]:8770/v1",
+            "HTTP://10.0.0.5:8770/v1",
+            "  http://10.0.0.5:8770/v1  ",
+            // Credentials must not be read as the host: the host here is example.com.
+            "http://user:pass@example.com/v1",
+        ] {
+            assert!(is_cleartext_remote(warns), "{warns} must warn");
+        }
     }
 
     /// A directory unique to this process *and* this test, so tests running in parallel

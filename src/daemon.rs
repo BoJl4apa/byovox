@@ -125,6 +125,26 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
     if ipc::daemon_running(&ipc::socket_name()) {
         bail!("already running");
     }
+    // One line, naming the keys rather than repeating itself per endpoint. `byovox check`
+    // says the same thing on the console; this is the copy an autostarted daemon leaves for
+    // someone reading the log later, where there was never a console to say it on.
+    let cleartext: Vec<&str> = [
+        (
+            "stt.base_url",
+            config::is_cleartext_remote(&cfg.stt.base_url),
+        ),
+        (
+            "polish.base_url",
+            cfg.polish.enabled && config::is_cleartext_remote(&cfg.polish.base_url),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(key, cleartext)| cleartext.then_some(key))
+    .collect();
+    if !cleartext.is_empty() {
+        tracing::warn!(keys = %cleartext.join(", "), "{}", config::CLEARTEXT_WARNING);
+    }
+
     let backends = platform::detect(&cfg)?;
     tracing::info!(hotkey = backends.names.hotkey, layout = backends.names.layout, rungs = ?backends.names.rungs, "backends");
 
