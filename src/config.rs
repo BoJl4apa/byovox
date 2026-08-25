@@ -20,6 +20,7 @@ pub struct Config {
     pub hotkey: HotkeyConfig,
     pub inject: InjectConfig,
     pub indicator: IndicatorConfig,
+    pub capture: CaptureConfig,
     pub capture_log: CaptureLogConfig,
     pub logging: LoggingConfig,
 }
@@ -158,6 +159,15 @@ impl Default for IndicatorConfig {
             cue: true,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct CaptureConfig {
+    /// Which microphone to record from: a case-insensitive substring of an input device's
+    /// name, empty for the system default. Resolved by `capture::select`, which is where the
+    /// first-match rule and the refusal live.
+    pub device: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -361,6 +371,14 @@ fn validate(cfg: &Config) -> Result<()> {
             );
         }
     }
+    // Padding only: `capture.device` is trimmed before it is matched, so this would silently
+    // record from the system default — the one device a user who set the key is trying to
+    // avoid. Empty is that choice made deliberately and stays legal.
+    if !cfg.capture.device.is_empty() && cfg.capture.device.trim().is_empty() {
+        bail!(
+            "capture.device is only whitespace: name a microphone, e.g. \"Microphone Array\", or leave it empty for the system default"
+        );
+    }
     let t = cfg.stt.no_speech_threshold;
     // `contains` is false for NaN too, which is the right answer for a threshold nothing
     // could ever compare against.
@@ -561,6 +579,31 @@ mod tests {
         for good in ["0.0", "1.0", "0.6"] {
             std::fs::write(&path, with(good)).unwrap();
             assert!(load(&path).is_ok(), "{good}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The microphone is the system default until the file names one — the behaviour byovox
+    /// had before the key existed. A value that is only padding is refused instead: trimmed it
+    /// is empty, so it would record from the default the user set the key to get away from.
+    #[test]
+    fn the_default_microphone_is_the_system_one_and_padding_is_refused() {
+        assert_eq!(CaptureConfig::default().device, "");
+        assert_eq!(Config::default().capture.device, "");
+
+        let dir = tempfile_dir("capture_device");
+        let path = dir.join("config.toml");
+        let with = |device: &str| {
+            format!(
+                "[stt]\nbase_url = \"http://x/v1\"\n[polish]\nenabled = false\n[capture]\ndevice = \"{device}\"\n"
+            )
+        };
+        std::fs::write(&path, with("   ")).unwrap();
+        let msg = format!("{:#}", load(&path).unwrap_err());
+        assert!(msg.contains("capture.device is only whitespace"), "{msg}");
+        for good in ["", "Microphone Array"] {
+            std::fs::write(&path, with(good)).unwrap();
+            assert!(load(&path).is_ok(), "{good:?}");
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }
