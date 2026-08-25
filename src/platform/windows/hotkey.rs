@@ -91,9 +91,11 @@ pub fn vk_for(name: &str) -> Option<u32> {
         "Insert" => 0x2D,
         "Escape" => 0x1B,
         // A chord's trigger: `A`-`Z` are VK 0x41-0x5A and `0`-`9` are 0x30-0x39, their own
-        // ASCII codes. These are *physical* keys — the VK is the key's position, not what it
-        // types — so `Z` stays the same key under a Cyrillic or Hebrew layout, where it types
-        // я or ז. Before the `F` arm, so a bare `F` is the letter and `F13` the function key.
+        // ASCII codes. A virtual key is assigned by the *active layout*, not by the key's
+        // position: a non-Latin layout (Cyrillic, Hebrew) keeps the US assignments for this
+        // block, so `Z` is the same key there even though it types я or ז — while another
+        // Latin layout follows its own printed letters, and on QWERTZ `Z` is the key QWERTY
+        // labels Y. Before the `F` arm, so a bare `F` is the letter and `F13` the function key.
         c if c.len() == 1 => {
             let b = c.as_bytes()[0];
             if !b.is_ascii_uppercase() && !b.is_ascii_digit() {

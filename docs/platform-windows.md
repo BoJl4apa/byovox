@@ -13,9 +13,12 @@ else is refused at startup and by `byovox check`, which prints the full list.
 The same hook is what makes a chord — `hotkey.key = "ControlLeft+ShiftLeft+Z"` — work, and it
 **swallows the trigger**: pressed on top of its modifiers the `Z` reaches byovox and stops
 there, so the editor underneath neither types a `z` nor sees a Ctrl+Shift+Z of its own.
-Pressed without them it types as usual. The names are **physical keys**, because the hook
-works in virtual-key codes rather than characters: `Z` is the key a US layout labels Z, and it
-stays that key on a Cyrillic or Hebrew layout, where it types я or ז.
+Pressed without them it types as usual. The names are **virtual keys**, which the active
+layout assigns — not physical positions. A non-Latin layout (Cyrillic, Hebrew, Greek) keeps
+the US assignments for the alphanumeric block, so `Z` stays the key a US layout labels Z even
+while it types я or ז. Another *Latin* layout follows its own printed letters instead: on
+AZERTY `A` is the key US labels Q, and on QWERTZ `Z` is the key US labels Y — under those, a
+chord key moves with the layout.
 
 A **disabled** daemon swallows nothing: the tray's Disable disarms the hook as well as the
 pipeline, so the chord's trigger types as usual until Enable puts it back. A chord already

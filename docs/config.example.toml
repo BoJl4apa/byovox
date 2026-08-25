@@ -78,8 +78,10 @@ timeout_s = 20
 # A chord's trigger is swallowed: the focused window never sees the combination, so
 # ControlLeft+ShiftLeft+Z does not also reach the editor underneath. The modifiers themselves
 # pass through untouched.
-# Names are *physical* keys, not the characters printed on them: Z is the key a US layout
-# labels Z and stays that key on a Cyrillic or Hebrew layout, where it types я or ז.
+# A letter names a virtual key, which the active layout assigns. A non-Latin layout keeps the
+# US assignments, so Z is the key a US layout labels Z on a Cyrillic or Hebrew layout too,
+# where it types я or ז; another Latin layout follows its own printed letters instead — on
+# QWERTZ, Z is the key QWERTY labels Y.
 key = "ControlRight"
 # "hold": press = record, release = send. "toggle": press to start, press again to send.
 # A chord in "hold" means holding all of it — the modifiers and the trigger — while you
