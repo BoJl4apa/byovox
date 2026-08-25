@@ -69,8 +69,8 @@ holding discards the recording. Quit from the tray, or `byovox quit`.
 
 - [`docs/config.example.toml`](docs/config.example.toml) — the configuration reference: every
   key at its default, with the reason it exists. `config --init` writes exactly this file.
-- [`docs/platform-windows.md`](docs/platform-windows.md) — bare-modifier hotkeys, elevated
-  windows, microphone level, autostart, where config and logs live.
+- [`docs/platform-windows.md`](docs/platform-windows.md) — bare-modifier hotkeys and chords,
+  elevated windows, microphone level, autostart, where config and logs live.
 - [`docs/testing.md`](docs/testing.md) — the manual checklist, run before a release tag.
 - [`docs/superpowers/specs/2026-08-24-byovox-design.md`](docs/superpowers/specs/2026-08-24-byovox-design.md)
   — the design.
