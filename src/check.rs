@@ -10,7 +10,6 @@ use crate::capture::{Capture, CpalCapture, describe_default_device};
 use crate::config::{Config, HotkeyConfig, PolishConfig, SttConfig, expand_home, resolve_token};
 use crate::hotkey::{HotkeyMode, validate_key_name};
 use crate::lang::{LanguagePolicy, SttLanguage};
-use crate::pipeline::summary;
 use crate::polish::{BUILT_IN_PROMPT, PolishClient, Polisher};
 use crate::stt::{SttClient, Transcriber};
 
@@ -47,6 +46,21 @@ fn prefix(s: &str) -> String {
         .take(PREFIX_CHARS)
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect()
+}
+
+/// A stage error with the server's response body cut off, and nothing else: `check` is the
+/// diagnosis surface, so the cause has to survive — a bare `transport` tells nobody anything.
+/// Only what `stt.rs`/`polish.rs` append after `HTTP <status>: ` goes, because that is up to
+/// 200 characters of raw body, which can be transcript text or a key a 401 echoed back.
+fn strip_body(e: &str) -> &str {
+    const MARK: &str = " HTTP ";
+    let Some(at) = e.find(MARK) else { return e };
+    let after = &e[at + MARK.len()..];
+    let status = after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    if status == 0 || !after[status..].starts_with(": ") {
+        return e;
+    }
+    &e[..at + MARK.len() + status]
 }
 
 /// The first thing wrong with the `[hotkey]` section, if anything is. The key names are the
@@ -279,8 +293,8 @@ fn sample_microphone() -> Result<(String, Audio), String> {
 }
 
 /// One transcription of the sampled clip, as the row detail to print. The client error is
-/// summarised, never printed whole: it carries up to 200 characters of response body, which
-/// on a 401 can be the server echoing the key it was presented with.
+/// kept whole apart from its response body, which on a 401 can be the server echoing the key
+/// it was presented with.
 fn stt_round_trip(
     cfg: &SttConfig,
     key: Option<String>,
@@ -297,7 +311,7 @@ fn stt_round_trip(
     let t = Instant::now();
     let text = client
         .transcribe(&audio.to_wav(), language, prompt)
-        .map_err(|e| summary(&e).to_string())?;
+        .map_err(|e| strip_body(&e).to_string())?;
     Ok(format!(
         "{:.2}s  \"{}\"",
         t.elapsed().as_secs_f32(),
@@ -307,7 +321,7 @@ fn stt_round_trip(
 
 /// One polish of a fixed sample dictation, as the row detail to print. Both the token and
 /// `prompt_file` are proven before the request, so neither can fail silently behind a
-/// gateway that answers anyway. The error is summarised for the same reason as STT's.
+/// gateway that answers anyway. The error loses its body for the same reason as STT's.
 fn polish_round_trip(cfg: &PolishConfig) -> Result<String, String> {
     let key = stage_token(&cfg.api_key_env, &cfg.api_key_file)?;
     if let Some(e) = prompt_file_error(&cfg.prompt_file) {
@@ -323,7 +337,7 @@ fn polish_round_trip(cfg: &PolishConfig) -> Result<String, String> {
     let t = Instant::now();
     let text = client
         .polish("um so this is uh a test")
-        .map_err(|e| summary(&e).to_string())?;
+        .map_err(|e| strip_body(&e).to_string())?;
     Ok(format!(
         "{:.2}s  \"{}\"",
         t.elapsed().as_secs_f32(),
@@ -342,7 +356,7 @@ fn record() -> Result<Audio, String> {
 mod tests {
     use super::{
         Audio, HotkeyConfig, PREFIX_CHARS, QUIET_DBFS, SAMPLE_RATE, hotkey_error, prefix,
-        prompt_file_error, stage_token, steady_state, summary,
+        prompt_file_error, stage_token, steady_state, strip_body,
     };
 
     /// A dictation is private: the report shows a prefix, cut on a character boundary so a
@@ -366,12 +380,31 @@ mod tests {
     }
 
     /// grok-1: a stage error carries up to 200 characters of response body, and a 401 body
-    /// can echo the key it was presented with. Rows print the summary, never the body.
+    /// can echo the key it was presented with. The status stays, the body goes.
     #[test]
     fn a_failed_stage_row_never_carries_a_response_body() {
         let e = r#"stt HTTP 401: {"error":"Incorrect API key provided: sk-live-SECRET"}"#;
-        assert_eq!(summary(e), "stt HTTP 401");
-        assert!(!summary(e).contains("sk-live-SECRET"));
+        assert_eq!(strip_body(e), "stt HTTP 401");
+        assert!(!strip_body(e).contains("sk-live-SECRET"));
+        assert_eq!(
+            strip_body(r#"polish HTTP 404: {"detail":"model not found"}"#),
+            "polish HTTP 404"
+        );
+    }
+
+    /// `check` is the diagnosis surface: an error that carries no response body carries a
+    /// cause instead, and cutting at the first colon would throw that away.
+    #[test]
+    fn an_error_without_a_response_body_reaches_the_row_whole() {
+        for e in [
+            "transport: io: Connection refused",
+            "polish transport: io: Connection refused",
+            "stt JSON: expected value at line 1 column 1",
+            "Microphone Array (48000 Hz, 2 ch, F32): microphone did not start within 5 s",
+            "token: env var EXAMPLE_API_KEY unset",
+        ] {
+            assert_eq!(strip_body(e), e);
+        }
     }
 
     /// The device's opening click reads full scale; measuring the peak over it would report
