@@ -5,6 +5,14 @@ edition = "2024"
 # Edition 2024 needs 1.85; let-chains (`if let … && let …`, used in config, ui, hotkey and
 # inject) are stable in edition 2024 from 1.88.
 rust-version = "1.88"
+description = "Push-to-talk dictation against a speech-to-text server you run"
+# The licence the LICENSE file already grants, said in the one place tooling reads:
+# `cargo deny` warns without it and `cargo publish` refuses outright.
+license = "MIT"
+repository = "https://github.com/BoJl4apa/byovox"
+readme = "README.md"
+keywords = ["dictation", "speech-to-text", "whisper", "push-to-talk", "hotkey"]
+categories = ["command-line-utilities", "accessibility", "multimedia::audio"]
 
 [dependencies]
 anyhow = "1.0.104"
