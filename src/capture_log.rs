@@ -26,11 +26,16 @@ impl CaptureLog {
     }
 }
 
+/// `serde_json::json!` panics on a `u128` past `u64::MAX`; saturating keeps `record` total.
+fn capped(v: u128) -> u64 {
+    u64::try_from(v).unwrap_or(u64::MAX)
+}
+
 impl Recorder for CaptureLog {
     fn record(&mut self, r: &DictationRecord<'_>) {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
+            .map(|d| capped(d.as_millis()))
             .unwrap_or(0);
         let wav_name = format!("{ts}-{}.wav", self.n);
         self.n += 1;
@@ -46,16 +51,19 @@ impl Recorder for CaptureLog {
             "raw": r.raw,
             "polished": r.polished,
             "rung": r.rung,
-            "stt_ms": r.stt_ms,
-            "polish_ms": r.polish_ms,
-            "inject_ms": r.inject_ms,
+            "stt_ms": capped(r.stt_ms),
+            "polish_ms": capped(r.polish_ms),
+            "inject_ms": capped(r.inject_ms),
         });
         let path = self.dir.join("dictations.jsonl");
+        // One `write_all`, newline included: `writeln!` on an unbuffered file streams the row
+        // in fragments, so a failure mid-row leaves a newline-less stub that the next row is
+        // appended to — one unparseable line where there should have been two.
         let appended = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)
-            .and_then(|mut f| writeln!(f, "{row}"));
+            .and_then(|mut f| f.write_all(format!("{row}\n").as_bytes()));
         if let Err(e) = appended {
             tracing::error!(error = %e, path = %path.display(), "capture log: appending row failed");
         }
@@ -103,6 +111,9 @@ mod tests {
         assert_eq!(row["language"], "he");
         assert_eq!(row["rung"], "type");
         assert_eq!(row["stt_ms"], 600);
+        assert_eq!(row["polish_ms"], 400);
+        assert_eq!(row["inject_ms"], 10);
+        assert!(row["ts"].is_number(), "ts: {}", row["ts"]);
         let wav = dir.join(row["wav"].as_str().unwrap());
         assert!(wav.exists(), "{}", wav.display());
         let _ = std::fs::remove_dir_all(&dir);
