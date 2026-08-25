@@ -22,6 +22,8 @@ setting.
 
 ## Quick start
 
+Rust 1.88 or newer.
+
 ```sh
 cargo install --path .   # or: cargo build --release, then use target/release/byovox
 byovox config --init     # writes the documented default file and prints its path
