@@ -40,25 +40,44 @@ attacker who is *not* that user, except where a row says otherwise.
 | **Network** | Over plain HTTP your **audio, your transcript and your bearer token all cross the network in clear text**, and anyone on the path can replace the response with text byovox will type. `http://` to a non-loopback host is still allowed, but it is now called out: `byovox check` prints a `warn network` row per affected endpoint, and the daemon logs one WARN at startup. Loopback is quiet. HTTPS is verified normally against a bundled Mozilla root store; there is no switch to disable verification. | A missing or weakened certificate check on an `https://` endpoint; a cleartext endpoint that is *not* reported. | Using `http://` after being told — a reasonable choice to `localhost` or across a WireGuard/Tailscale link, a bad one across anything else. `check` still exits 0: this is a warning, not a failure. A privately-signed certificate will not verify, because the roots are the bundled Mozilla set, not the Windows store. |
 | **Autostart** | `byovox autostart --enable` writes one value to `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` holding an absolute path to `byovox-daemon`, plus any `--config` you gave, absolutised. | byovox writing outside HKCU, or registering a relative path that would resolve elsewhere at logon. | That the registered binary sits somewhere you can write. Anything able to overwrite it is already running as you, and could add its own Run value instead. |
 | **Injection marker** | Events byovox synthesises carry a public constant in `dwExtraInfo`; the hook ignores events carrying it, so byovox does not react to its own typing. | byovox failing to stamp an event it sends, which would make it react to itself. | Another process stamping the same value to hide its synthetic keys from byovox's hotkey. It suppresses a hotkey, gains nothing, and any process that can call `SendInput` as you can already type anywhere. The constant is not a secret. |
-| **Supply chain** | `Cargo.lock` is committed and CI builds `--locked`. `cargo audit` and `cargo deny check` run on every push; a vulnerability fails the build. Release binaries are **not code-signed**. | A dependency vulnerability that CI should have caught. | SmartScreen warning on first run — that is the expected result of an unsigned binary. Verify what you run: build from source, or check the published checksum. |
+| **Supply chain** | `Cargo.lock` is committed and CI builds `--locked`, including the audit tools' own installs. `cargo audit` and `cargo deny check` run on every push; a vulnerability fails the build. A separate job builds against the declared MSRV, so `rust-version` is a checked promise rather than a claim. Release binaries are **not code-signed**. | A dependency vulnerability that CI should have caught; a build that does not match `Cargo.lock`. | SmartScreen warning on first run — the expected result of an unsigned binary. Until a release workflow exists, build from source (`cargo install --path .`), which is what the README documents. **Planned with that workflow: SHA-256 checksums published with every artefact, and GitHub build provenance attestations.** Authenticode signing needs a paid certificate and is not committed to. |
 
 ### Accepted by design
 
 These are properties of what byovox is, not bugs. They will not change:
 
 - The configured endpoint can type arbitrary text into your focused window, newlines included.
+  Sanitising removes the keystrokes nobody speaks, not the sentences you would not want typed.
 - The process can see every keystroke while it runs, because that is how a global hotkey works.
 - Anything running under your user account can reach the microphone, the IPC socket, the
   clipboard, the capture log and byovox's own memory. byovox draws no boundary against itself.
+
+### Known limitations, accepted
+
+Real, understood, and not being fixed — the cost of closing them exceeds what they buy:
+
+- **The IPC socket can be denied, not driven.** Anything on the machine may open the pipe
+  read-only and hold connection slots (255), or claim the name `byovox-<user>.sock` before
+  byovox starts, which makes byovox refuse to start or lets the squatter answer the CLI. No
+  transcript is exposed either way. Restricting the descriptor would close the first and not
+  the second, and buys nothing against same-user processes, which dominate this boundary.
+- **`logging.level = "debug"` writes transcripts to the log**, along with up to 200
+  characters of any error response body the server returned. That is what the level is for;
+  it is off by default and the log keeps 7 days.
+- **`INJECT_MARKER` is a public constant.** Another process can stamp it to hide its own
+  synthetic keys from byovox's hotkey. That suppresses a hotkey and gains nothing, and any
+  process able to call `SendInput` as you can already type anywhere. Hiding the constant
+  would be obscurity in a binary anyone can disassemble.
 
 ## Hardening checklist
 
 If any of the above matters to you:
 
 - Point `stt.base_url` and `polish.base_url` at `localhost`, or reach a remote host over
-  WireGuard/Tailscale, or use `https://` with a publicly-trusted certificate.
-- Leave `capture_log.enabled = false`. If you turn it on, delete the directory periodically —
-  nothing else will.
+  WireGuard/Tailscale, or use `https://` with a publicly-trusted certificate. `byovox check`
+  tells you which of your endpoints are in clear.
+- Leave `capture_log.enabled = false`. If you turn it on, keep `capture_log.keep_days` at a
+  number you are comfortable with — `0` means for ever.
 - Leave `logging.level = "info"`. `debug` writes your transcripts to disk.
 - Prefer the `type` rung over `paste` if clipboard history or cloud clipboard sync is on.
 - Review what your polish endpoint is: it sees every transcript before you do.
