@@ -24,7 +24,10 @@ model = "whisper-1"
 # (right for a server that authenticates by network identity).
 api_key_env = ""
 # Optional KEY=VALUE file consulted for that variable name when it is unset in the
-# environment (a place to keep one token shared with other tools).
+# environment (a place to keep one token shared with other tools). It holds a live
+# credential in plain text and byovox neither checks nor changes its permissions: keep it
+# readable by you alone (Windows: Properties > Security, remove the inherited groups;
+# Linux/macOS: chmod 600).
 api_key_file = ""
 # Vocabulary priming sent as the whisper `prompt` on every request. Names and jargon
 # whisper would otherwise mangle, e.g. "Glossary: Acme, Kubernetes, Postgres, LiteLLM".
@@ -68,7 +71,10 @@ model = "your-cleanup-alias"
 # Environment variable holding the bearer token for the gateway.
 api_key_env = ""
 # Optional KEY=VALUE file consulted for that variable name when it is unset in the
-# environment (a place to keep one token shared with other tools).
+# environment (a place to keep one token shared with other tools). It holds a live
+# credential in plain text and byovox neither checks nor changes its permissions: keep it
+# readable by you alone (Windows: Properties > Security, remove the inherited groups;
+# Linux/macOS: chmod 600).
 api_key_file = ""
 # Skip polish for utterances shorter than this many words (0 = always polish).
 min_words = 0
