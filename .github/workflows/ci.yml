@@ -19,3 +19,22 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+
+  # Dependency advisories and licence policy. One job rather than one per matrix OS: both
+  # tools read `Cargo.lock` and the whole crate graph, which does not vary by runner — the
+  # gtk3 advisories below are Linux-only code either way, and both tools see them anywhere.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # `--locked` on the tool installs too: a broken or tampered release of the audit
+      # tooling must not change what this job runs without a lockfile change to point at.
+      - run: cargo install cargo-audit --locked
+      - run: cargo install cargo-deny --locked
+      # Plain `cargo audit` is already the policy byovox wants: it exits non-zero on a
+      # vulnerability and zero on informational (unmaintained/unsound) advisories.
+      - run: cargo audit
+      # Vulnerabilities are always an error. `--warn unmaintained` demotes the advisories
+      # this tree cannot act on — see the reasoning in deny.toml.
+      - run: cargo deny check --warn unmaintained

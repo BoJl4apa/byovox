@@ -1,0 +1,62 @@
+# cargo-deny: dependency advisories and licence policy.
+#
+# Run locally with `cargo deny check`; CI runs the same command. The advisory database
+# is fetched from RustSec, so a run needs network access.
+
+[advisories]
+# Vulnerabilities are always an error in cargo-deny's v2 advisory schema, which is the
+# behaviour byovox wants: a CVE in the dependency graph fails the build.
+#
+# Unmaintained crates are collected for the whole graph, then demoted to warnings by the
+# `--warn unmaintained` flag CI passes. Every unmaintained advisory this tree carries is
+# transitive and has no upgrade path ("No safe upgrade is available!" for all of them):
+# the gtk3 stack under tray-icon/muda, which is compiled on Linux only, and ttf-parser
+# under fontdue. Failing the build on them would only teach people to add `ignore` lines.
+# They stay visible so a *new* one is noticed.
+unmaintained = "all"
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Permissive licences only, and only the ones this tree actually resolves to. byovox ships
+# under MIT, and a binary distribution must not pull in a licence whose obligations the
+# project has not accepted. Each entry below is required by at least one crate: removing
+# any one of them fails `cargo deny check licenses`.
+#
+# The four that are not the usual MIT/Apache pair:
+#   0BSD                 interprocess (the IPC socket), adler2, recvmsg
+#   BSL-1.0              clipboard-win, error-code — via arboard, the clipboard rungs
+#   CDLA-Permissive-2.0  webpki-roots — the Mozilla CA bundle ureq verifies HTTPS against
+#   MPL-2.0              option-ext (via directories) and the symphonia audio decoders
+#                        (via rodio, the tray cues). MPL is file-level copyleft: shipping
+#                        the crates unmodified inside a binary carries no obligation on
+#                        byovox's own source. Patching one of those files would.
+#
+# `r-efi` is dual-licensed MIT OR Apache-2.0 OR LGPL-2.1-or-later and resolves to a
+# permissive arm here, so no LGPL obligation is accepted — which is why LGPL is absent.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  "BSL-1.0",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+# A duplicate version is a size and audit-surface cost, not a correctness one: the graph
+# carries several (bitflags 1/2, libloading 0.7/0.8) from dependencies byovox does not own.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
