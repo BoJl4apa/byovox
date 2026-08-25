@@ -14,6 +14,7 @@ pub mod lang;
 pub mod layout;
 pub mod multipart;
 pub mod pipeline;
+pub mod platform;
 pub mod polish;
 pub mod stt;
 #[cfg(test)]
