@@ -87,12 +87,11 @@ cargo install --git https://github.com/BoJl4apa/byovox --locked  # ~2 min; byovo
 
 ### 4. Point it at your servers
 
-```sh
-byovox config --init      # writes the documented default file and prints its path
-```
-
-Open it and set three values — every command refuses to run while they are empty, and says
-which one — then the two byovox exists for:
+Run `byovox setup` to be asked for the endpoints — it probes each answer against your server as
+you give it, writes the commented config file, and finishes with `byovox check`. Or by hand:
+`byovox config --init` writes the documented default file and prints its path; open it and set
+three values — every command refuses to run while they are empty, and says which one — then the
+two byovox exists for:
 
 ```toml
 [stt]
@@ -147,6 +146,7 @@ stderr as well as to the file — that is how you watch one that will not come u
 |---|---|
 | `byovox` | start the daemon in the background: hotkey, tray icon, indicator |
 | `byovox run` | run it in this terminal instead, logging to stderr too |
+| `byovox setup` | interactive first-run: asks for the endpoints, probes them, writes the config |
 | `byovox check` | self-test — every stage, and which backend each one chose |
 | `byovox config` | print the effective configuration and where every key came from; `--init` writes the documented default file instead (never overwriting one) |
 | `byovox status` | pipeline state and last error of the running daemon |
