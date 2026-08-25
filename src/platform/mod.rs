@@ -27,8 +27,9 @@ pub struct Backends {
 }
 
 pub fn detect(cfg: &Config) -> Result<Backends> {
-    validate_key_name(&cfg.hotkey.key).map_err(anyhow::Error::msg)?;
-    validate_key_name(&cfg.hotkey.cancel_key).map_err(anyhow::Error::msg)?;
+    validate_key_name(&cfg.hotkey.key).map_err(|e| anyhow::anyhow!("hotkey.key: {e}"))?;
+    validate_key_name(&cfg.hotkey.cancel_key)
+        .map_err(|e| anyhow::anyhow!("hotkey.cancel_key: {e}"))?;
     let mode = InjectMode::parse(&cfg.inject.mode).ok_or_else(|| {
         anyhow::anyhow!(
             "inject.mode `{}`: expected auto | type | paste | clipboard-only",
@@ -38,16 +39,13 @@ pub fn detect(cfg: &Config) -> Result<Backends> {
     platform_detect(cfg, mode)
 }
 
+/// The rungs a mode selects, in the order the pipeline tries them. Owns no resource: all
+/// three are unit structs, so this is testable without a device.
 #[cfg(windows)]
-fn platform_detect(cfg: &Config, mode: InjectMode) -> Result<Backends> {
-    use windows::hotkey::HookHotkey;
+fn rungs_for(mode: InjectMode) -> Vec<Box<dyn Inject>> {
     use windows::inject::{ClipboardOnlyInject, PasteInject, TypeInject};
-    use windows::layout::WinLayout;
 
-    let hotkey =
-        HookHotkey::new(&cfg.hotkey.key, &cfg.hotkey.cancel_key).map_err(anyhow::Error::msg)?;
-    let capture = crate::capture::CpalCapture::open_default().map_err(anyhow::Error::msg)?;
-    let rungs: Vec<Box<dyn Inject>> = match mode {
+    match mode {
         InjectMode::Auto => vec![
             Box::new(TypeInject),
             Box::new(PasteInject),
@@ -56,7 +54,18 @@ fn platform_detect(cfg: &Config, mode: InjectMode) -> Result<Backends> {
         InjectMode::Type => vec![Box::new(TypeInject)],
         InjectMode::Paste => vec![Box::new(PasteInject)],
         InjectMode::ClipboardOnly => vec![Box::new(ClipboardOnlyInject)],
-    };
+    }
+}
+
+#[cfg(windows)]
+fn platform_detect(cfg: &Config, mode: InjectMode) -> Result<Backends> {
+    use windows::hotkey::HookHotkey;
+    use windows::layout::WinLayout;
+
+    let hotkey =
+        HookHotkey::new(&cfg.hotkey.key, &cfg.hotkey.cancel_key).map_err(anyhow::Error::msg)?;
+    let capture = crate::capture::CpalCapture::open_default().map_err(anyhow::Error::msg)?;
+    let rungs = rungs_for(mode);
     let names = BackendNames {
         hotkey: "hook",
         layout: "win32",
@@ -118,18 +127,43 @@ mod tests {
         assert!(rejection(&c).contains("Nope"));
     }
 
+    /// The selection itself, with no device in the way: the whole point of `rungs_for` being
+    /// separate. Names come from `Inject::name()`, so a rung renamed in its own module shows
+    /// up here rather than drifting from a literal list kept in parallel.
+    #[test]
+    fn every_mode_selects_its_rungs_in_order() {
+        let names = |m: InjectMode| -> Vec<&'static str> {
+            rungs_for(m).iter().map(|r| r.name()).collect()
+        };
+        assert_eq!(
+            names(InjectMode::Auto),
+            vec!["type", "paste", "clipboard-only"]
+        );
+        assert_eq!(names(InjectMode::Type), vec!["type"]);
+        assert_eq!(names(InjectMode::Paste), vec!["paste"]);
+        assert_eq!(names(InjectMode::ClipboardOnly), vec!["clipboard-only"]);
+    }
+
     /// The rejections `detect` makes before it touches hardware — the same assertions the
-    /// two tests above make, minus the microphone, so they still run on a CI runner.
+    /// two tests above make, minus the microphone, so they still run on a CI runner. Each
+    /// names the config field at fault, so the user knows which line to edit.
     #[test]
     fn bad_mode_or_key_is_rejected_before_any_device_is_opened() {
         let mut c = Config::default();
         c.inject.mode = "telepathy".into();
         let e = rejection(&c);
-        assert!(e.contains("telepathy"), "{e}");
+        assert!(e.starts_with("inject.mode `telepathy`"), "{e}");
 
         let mut c = Config::default();
         c.hotkey.key = "Nope".into();
         let e = rejection(&c);
+        assert!(e.starts_with("hotkey.key: "), "{e}");
+        assert!(e.contains("Nope"), "{e}");
+
+        let mut c = Config::default();
+        c.hotkey.cancel_key = "Nope".into();
+        let e = rejection(&c);
+        assert!(e.starts_with("hotkey.cancel_key: "), "{e}");
         assert!(e.contains("Nope"), "{e}");
     }
 
