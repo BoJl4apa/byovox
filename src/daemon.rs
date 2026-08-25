@@ -14,7 +14,7 @@ use anyhow::{Context, Result, bail};
 use crate::config::Config;
 use crate::hotkey::HotkeyMode;
 use crate::pipeline::{Pipeline, PipelineConfig};
-use crate::{capture_log, config, hotkey, ipc, lang, pipeline, platform, polish, stt, ui};
+use crate::{capture, capture_log, config, hotkey, ipc, lang, pipeline, platform, polish, stt, ui};
 
 /// How long the process stays up after the UI loop ends, so the IPC connection thread can
 /// write the `quit` reply its handler already returned.
@@ -70,6 +70,11 @@ fn validate(cfg: &Config) -> Result<()> {
         anyhow::anyhow!("hotkey.mode `{}`: expected hold | toggle", cfg.hotkey.mode)
     })?;
     lang::LanguagePolicy::from_config(&cfg.language)?;
+    // A `capture.device` that names nothing must be refused where it can still be read: the
+    // daemon this spawns has no console, and the microphone it would otherwise fail to open is
+    // not touched until the first dictation. Enumerating names opens no stream, and an empty
+    // selector — the default — is not looked up at all.
+    capture::validate_selector(&cfg.capture.device).map_err(anyhow::Error::msg)?;
     platform::validate(cfg)?;
     Ok(())
 }

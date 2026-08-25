@@ -92,7 +92,8 @@ fn platform_detect(cfg: &Config, mode: InjectMode) -> Result<Backends> {
 
     let hotkey =
         HookHotkey::new(&cfg.hotkey.key, &cfg.hotkey.cancel_key).map_err(anyhow::Error::msg)?;
-    let capture = crate::capture::CpalCapture::open_default().map_err(anyhow::Error::msg)?;
+    let capture =
+        crate::capture::CpalCapture::open(&cfg.capture.device).map_err(anyhow::Error::msg)?;
     let rungs = rungs_for(mode);
     let names = BackendNames {
         hotkey: "hook",
@@ -129,8 +130,8 @@ mod tests {
         }
     }
 
-    /// `#[ignore]`d because `detect` opens the default microphone: on a box with no input
-    /// device (a CI runner) it fails at `CpalCapture::open_default`, not at anything this
+    /// `#[ignore]`d because `detect` opens the microphone: on a box with no input
+    /// device (a CI runner) it fails at `CpalCapture::open`, not at anything this
     /// test is about. Run it on a desktop with `cargo test -- --ignored`.
     #[test]
     #[ignore]

@@ -39,6 +39,10 @@ struct Recording {
 }
 
 pub struct CpalCapture {
+    /// The `capture.device` selector this capture was opened with, so every recording's stream
+    /// reopens the microphone the config chose rather than whatever the system default has
+    /// become since the daemon started.
+    device: String,
     /// The layout the *running* stream opened with. Seeded from the default config at
     /// construction and overwritten by `start()` once the stream is up, because WASAPI
     /// re-reads `GetMixFormat` on every query and a shared-mode format change would
@@ -49,9 +53,12 @@ pub struct CpalCapture {
 }
 
 impl CpalCapture {
-    pub fn open_default() -> Result<CpalCapture, String> {
-        let (_device, cfg) = default_input()?;
+    /// `selector` is `capture.device`: empty for the system default input device, otherwise a
+    /// case-insensitive substring of the name of the one to record from.
+    pub fn open(selector: &str) -> Result<CpalCapture, String> {
+        let (_device, cfg) = input_device(selector)?;
         Ok(CpalCapture {
+            device: selector.to_string(),
             channels: cfg.channels(),
             rate: cfg.sample_rate(),
             worker: None,
@@ -59,13 +66,22 @@ impl CpalCapture {
     }
 }
 
-/// The default input device and its current default config, rejected here if we could not
-/// record it faithfully — so `check` reports an unrecordable device before the first
-/// push-to-talk rather than at the first dictation.
-fn default_input() -> Result<(cpal::Device, cpal::SupportedStreamConfig), String> {
-    let device = cpal::default_host()
-        .default_input_device()
-        .ok_or("no default input device")?;
+/// The input device `capture.device` selects and its current default config, rejected here if
+/// we could not record it faithfully — so `check` reports an unrecordable device before the
+/// first push-to-talk rather than at the first dictation.
+fn input_device(selector: &str) -> Result<(cpal::Device, cpal::SupportedStreamConfig), String> {
+    let device = match selector.trim() {
+        // Nothing is enumerated for the default: the selector exists to keep byovox off a
+        // device, so leaving it empty must reach WASAPI exactly as it did before it existed.
+        "" => cpal::default_host()
+            .default_input_device()
+            .ok_or("no default input device")?,
+        wanted => {
+            let mut devices = input_devices()?;
+            let chosen = resolve(wanted, &names(&devices))?;
+            devices.swap_remove(chosen)
+        }
+    };
     let cfg = device
         .default_input_config()
         .map_err(|e| format!("input config: {e}"))?;
@@ -75,6 +91,69 @@ fn default_input() -> Result<(cpal::Device, cpal::SupportedStreamConfig), String
     validate(cfg.sample_rate(), cfg.channels(), cfg.sample_format())
         .map_err(|e| format!("{}: {e}", device_name(&device)))?;
     Ok((device, cfg))
+}
+
+/// Every input device the host offers, in enumeration order — the order `select` resolves a
+/// selector in and the order `check` lists them for the user to copy a name out of.
+fn input_devices() -> Result<Vec<cpal::Device>, String> {
+    cpal::default_host()
+        .input_devices()
+        .map(|d| d.collect())
+        .map_err(|e| format!("listing input devices: {e}"))
+}
+
+fn names(devices: &[cpal::Device]) -> Vec<String> {
+    devices.iter().map(device_name).collect()
+}
+
+/// The names of every input device, for the list `check` prints and the one a bad
+/// `capture.device` is refused with.
+pub fn input_names() -> Result<Vec<String>, String> {
+    Ok(names(&input_devices()?))
+}
+
+/// Which device a non-empty `capture.device` names: the first whose name contains it, compared
+/// case-insensitively. A substring rather than the whole name because the name a host reports
+/// is the driver's, not the one on the Sound control panel, and a word out of it — `Array` —
+/// is what the user can be sure of.
+///
+/// The error names the key and the value; `resolve` adds the list of what it could have
+/// matched. Pure, so the rule is tested without a device.
+fn select(selector: &str, names: &[String]) -> Result<usize, String> {
+    let wanted = selector.trim().to_lowercase();
+    // Every substring contains the empty one, so an unguarded empty selector would match the
+    // first device enumerated and call it a choice. The default device is not chosen from a
+    // list; both callers keep it out of here, and this is the refusal if one ever stops.
+    if wanted.is_empty() {
+        return Err("capture.device is empty: that is the system default, not a name".into());
+    }
+    names
+        .iter()
+        .position(|n| n.to_lowercase().contains(&wanted))
+        .ok_or_else(|| {
+            format!(
+                "capture.device {:?} matched no input device",
+                selector.trim()
+            )
+        })
+}
+
+/// `select` with the names it could have matched appended: the only form of the refusal a user
+/// ever sees, so a bad `capture.device` says what the good ones are wherever it surfaces — the
+/// daemon's startup error, or a `check` row.
+fn resolve(selector: &str, names: &[String]) -> Result<usize, String> {
+    select(selector, names).map_err(|e| format!("{e}; available: {}", names.join(" | ")))
+}
+
+/// Fails when `capture.device` names no input device, naming the key and listing every name it
+/// could have matched. The daemon runs this at startup — before it installs a hook or opens
+/// anything — because a selector nothing matches would otherwise surface as a failed dictation
+/// long after the console that could have reported it is gone.
+pub fn validate_selector(selector: &str) -> Result<(), String> {
+    if selector.trim().is_empty() {
+        return Ok(());
+    }
+    resolve(selector, &input_names()?).map(|_| ())
 }
 
 /// The device's own name, or `unnamed` — never a reason to fail.
@@ -110,15 +189,34 @@ fn validate(rate: u32, channels: u16, format: cpal::SampleFormat) -> Result<(), 
     Ok(())
 }
 
-pub fn describe_default_device() -> Result<String, String> {
-    let (device, cfg) = default_input()?;
-    Ok(format!(
-        "{} ({} Hz, {} ch, {:?})",
-        device_name(&device),
-        cfg.sample_rate(),
-        cfg.channels(),
-        cfg.sample_format()
-    ))
+/// What a chosen microphone reports about itself: `check` prints it and decides from the same
+/// two fields whether it is about to record through a Bluetooth hands-free profile.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeviceInfo {
+    pub name: String,
+    pub rate: u32,
+    pub channels: u16,
+    pub format: cpal::SampleFormat,
+}
+
+impl std::fmt::Display for DeviceInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} ({} Hz, {} ch, {:?})",
+            self.name, self.rate, self.channels, self.format
+        )
+    }
+}
+
+pub fn describe_device(selector: &str) -> Result<DeviceInfo, String> {
+    let (device, cfg) = input_device(selector)?;
+    Ok(DeviceInfo {
+        name: device_name(&device),
+        rate: cfg.sample_rate(),
+        channels: cfg.channels(),
+        format: cfg.sample_format(),
+    })
 }
 
 impl Capture for CpalCapture {
@@ -135,10 +233,11 @@ impl Capture for CpalCapture {
         let (thread_buffer, thread_error) = (buffer.clone(), error.clone());
         let (stop_tx, stop_rx) = channel::<()>();
         let (ready_tx, ready_rx) = channel::<Result<(u32, u16), String>>();
+        let selector = self.device.clone();
         let handle = std::thread::Builder::new()
             .name("byovox-capture".into())
             .spawn(move || {
-                let built = build_stream(thread_buffer, thread_error);
+                let built = build_stream(&selector, thread_buffer, thread_error);
                 let (stream, rate, channels) = match built {
                     Ok(s) => s,
                     Err(e) => {
@@ -176,7 +275,7 @@ impl Capture for CpalCapture {
             }
             Err(RecvTimeoutError::Disconnected) => return Err("capture thread died".into()),
         };
-        // The stream may have opened at a different layout than open_default() saw. Abandoning
+        // The stream may have opened at a different layout than open() saw. Abandoning
         // here is safe for the same reason: the stream is playing, but dropping stop_tx ends it,
         // and its slots are this recording's.
         if let Err(e) = validate_layout(rate, channels) {
@@ -221,10 +320,11 @@ fn should_play(signal: Result<(), TryRecvError>) -> bool {
 
 /// Returns the stream plus the layout it actually opened with.
 fn build_stream(
+    selector: &str,
     buffer: Arc<Mutex<Vec<f32>>>,
     error: Arc<Mutex<Option<String>>>,
 ) -> Result<(cpal::Stream, u32, u16), String> {
-    let (device, cfg) = default_input()?;
+    let (device, cfg) = input_device(selector)?;
     let (rate, channels) = (cfg.sample_rate(), cfg.channels());
     let err_fn = move |e: cpal::StreamError| {
         tracing::error!(error = %e, "capture stream error");
@@ -271,8 +371,21 @@ fn build_stream(
 
 #[cfg(test)]
 mod tests {
-    use super::{Capture, CpalCapture, TryRecvError, should_play, validate, validate_layout};
+    use super::{
+        Capture, CpalCapture, DeviceInfo, TryRecvError, resolve, select, should_play, validate,
+        validate_layout,
+    };
     use cpal::SampleFormat;
+
+    /// Names in the shape a host reports them — the driver's, not the Sound panel's.
+    fn devices() -> Vec<String> {
+        [
+            "Microphone Array (Synaptics Audio)",
+            "Headset (PaMu Slide Hands-Free)",
+        ]
+        .map(String::from)
+        .to_vec()
+    }
 
     #[test]
     fn a_zero_rate_or_channel_count_is_rejected() {
@@ -331,10 +444,73 @@ mod tests {
     #[test]
     fn stop_before_any_start_is_an_error() {
         let mut cap = CpalCapture {
+            device: String::new(),
             channels: 2,
             rate: 48_000,
             worker: None,
         };
         assert_eq!(cap.stop().unwrap_err(), "not recording");
+    }
+
+    /// The selector is a substring, matched without regard to case: the name a host reports is
+    /// the driver's, and the user types the part of it they recognise.
+    #[test]
+    fn a_selector_matches_any_part_of_a_device_name_in_any_case() {
+        let d = devices();
+        assert_eq!(select("Microphone Array", &d), Ok(0));
+        assert_eq!(select("microphone array", &d), Ok(0));
+        assert_eq!(select("SYNAPTICS", &d), Ok(0));
+        assert_eq!(select("Hands-Free", &d), Ok(1));
+        // Padding in the file is not part of the name the user meant.
+        assert_eq!(select("  Headset  ", &d), Ok(1));
+    }
+
+    /// Two microphones can share a word — an external one and the built-in array both answer
+    /// to "Microphone". Enumeration order decides, and `check` prints which one that made it.
+    #[test]
+    fn the_first_device_in_enumeration_order_wins() {
+        let d = vec![
+            "Microphone (USB Audio)".to_string(),
+            "Microphone Array (Synaptics Audio)".to_string(),
+        ];
+        assert_eq!(select("Microphone", &d), Ok(0));
+        assert_eq!(select("Microphone Array", &d), Ok(1));
+    }
+
+    /// A name nothing matches is a typo or a device that is not plugged in, and either way the
+    /// refusal has to name the key, the value, and — once `resolve` has added them — every name
+    /// it could have been instead, since that is the whole list the user gets to correct it
+    /// from when the daemon refuses to start.
+    #[test]
+    fn a_selector_that_matches_nothing_names_the_key_the_value_and_the_alternatives() {
+        let e = select("nonexistent", &devices()).unwrap_err();
+        assert_eq!(e, "capture.device \"nonexistent\" matched no input device");
+        assert_eq!(
+            resolve("nonexistent", &devices()).unwrap_err(),
+            "capture.device \"nonexistent\" matched no input device; available: \
+             Microphone Array (Synaptics Audio) | Headset (PaMu Slide Hands-Free)"
+        );
+        assert_eq!(resolve("Headset", &devices()), Ok(1));
+        // Not a wildcard: an empty selector is the system default, and no caller resolves it
+        // through a list. Reaching here with one must not silently pick the first device.
+        assert!(select("", &devices()).is_err());
+        assert!(select("   ", &devices()).is_err());
+        assert!(select("Microphone Array", &[]).is_err());
+    }
+
+    /// `check`'s `mic` row is what a bug report pastes, so the device's own layout has to be
+    /// in it: the issue this selector exists for was diagnosed from `16000 Hz, 1 ch`.
+    #[test]
+    fn a_device_describes_itself_with_the_layout_it_reports() {
+        let info = DeviceInfo {
+            name: "Headset (PaMu Slide Hands-Free)".into(),
+            rate: 16_000,
+            channels: 1,
+            format: SampleFormat::F32,
+        };
+        assert_eq!(
+            info.to_string(),
+            "Headset (PaMu Slide Hands-Free) (16000 Hz, 1 ch, F32)"
+        );
     }
 }

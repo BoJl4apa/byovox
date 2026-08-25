@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::audio::{Audio, SAMPLE_RATE};
-use crate::capture::{Capture, CpalCapture, describe_default_device};
+use crate::capture::{Capture, CpalCapture, DeviceInfo, describe_device};
 use crate::config::{
     CLEARTEXT_WARNING, Config, HotkeyConfig, PolishConfig, SttConfig, expand_home,
     is_cleartext_remote, redact_userinfo, resolve_token,
@@ -277,24 +277,33 @@ pub fn run(cfg: &Config, config_path: &Path) -> bool {
         ),
     );
 
-    let audio = match sample_microphone() {
-        Ok((desc, a)) => {
-            let peak = a.peak_dbfs();
-            let warn = if peak < QUIET_DBFS {
-                "  ← very quiet: muted, or an OS audio enhancement attenuating the mic"
-            } else {
-                ""
-            };
-            line(
-                "mic",
-                Some(true),
-                &format!(
-                    "{desc}  peak {peak:.1} dBFS over {:.1}s{warn}",
-                    a.duration_secs()
-                ),
-            );
-            Some(a)
-        }
+    // Which microphone before anything is recorded from it, so a `capture.device` that names
+    // no device fails as the key it is rather than as a missing microphone.
+    let audio = match describe_device(&cfg.capture.device) {
+        Ok(info) => match sample_microphone(&cfg.capture.device, &info) {
+            Ok(a) => {
+                let peak = a.peak_dbfs();
+                let warn = if peak < QUIET_DBFS {
+                    "  ← very quiet: muted, or an OS audio enhancement attenuating the mic"
+                } else {
+                    ""
+                };
+                line(
+                    "mic",
+                    Some(true),
+                    &format!(
+                        "{info}  peak {peak:.1} dBFS over {:.1}s{warn}",
+                        a.duration_secs()
+                    ),
+                );
+                Some(a)
+            }
+            Err(e) => {
+                line("mic", Some(false), &e);
+                all_ok = false;
+                None
+            }
+        },
         Err(e) => {
             line("mic", Some(false), &e);
             all_ok = false;
@@ -373,18 +382,16 @@ pub fn run(cfg: &Config, config_path: &Path) -> bool {
     all_ok
 }
 
-/// One `SAMPLE`-long recording from the default input device — past its start transient —
-/// with the device description alongside. The only place `check` puts a microphone live:
-/// `platform::detect` merely reads the device's config, and the `Capture` it hands back is
-/// never started.
-fn sample_microphone() -> Result<(String, Audio), String> {
-    let desc = describe_default_device()?;
-    match record().and_then(|a| steady_state(&a)) {
-        Ok(a) => Ok((desc, a)),
-        // The error already names the rate, channels or format that was refused, or how
-        // little audio arrived; the device name says which device it was.
-        Err(e) => Err(format!("{desc}: {e}")),
-    }
+/// One `SAMPLE`-long recording from the microphone `capture.device` chose — past its start
+/// transient. The only place `check` puts a microphone live: `platform::detect` merely reads
+/// the device's config, and the `Capture` it hands back is never started.
+///
+/// The error already names the rate, channels or format that was refused, or how little audio
+/// arrived; `info` says which device it was.
+fn sample_microphone(selector: &str, info: &DeviceInfo) -> Result<Audio, String> {
+    record(selector)
+        .and_then(|a| steady_state(&a))
+        .map_err(|e| format!("{info}: {e}"))
 }
 
 /// One transcription of the sampled clip, as the row detail to print. The client error is
@@ -460,8 +467,8 @@ fn polish_round_trip(cfg: &PolishConfig) -> Result<String, String> {
     ))
 }
 
-fn record() -> Result<Audio, String> {
-    let mut cap = CpalCapture::open_default()?;
+fn record(selector: &str) -> Result<Audio, String> {
+    let mut cap = CpalCapture::open(selector)?;
     cap.start()?;
     std::thread::sleep(SAMPLE);
     cap.stop()
