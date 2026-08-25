@@ -80,7 +80,7 @@ pub enum Outcome {
 /// before the first `:`. Stage errors carry a response-body prefix after the colon, which
 /// can be transcript text — the full string goes to `debug!`, this summary goes everywhere
 /// a human can see it (the log line, the tray menu, `byovox status`).
-fn summary(e: &str) -> &str {
+pub(crate) fn summary(e: &str) -> &str {
     e.split_once(':').map_or(e, |(head, _)| head).trim()
 }
 
