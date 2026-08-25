@@ -142,7 +142,13 @@ fn select(selector: &str, names: &[String]) -> Result<usize, String> {
 /// ever sees, so a bad `capture.device` says what the good ones are wherever it surfaces — the
 /// daemon's startup error, or a `check` row.
 fn resolve(selector: &str, names: &[String]) -> Result<usize, String> {
-    select(selector, names).map_err(|e| format!("{e}; available: {}", names.join(" | ")))
+    select(selector, names).map_err(|e| {
+        if names.is_empty() {
+            format!("{e}; no input devices found")
+        } else {
+            format!("{e}; available: {}", names.join(" | "))
+        }
+    })
 }
 
 /// Fails when `capture.device` names no input device, naming the key and listing every name it

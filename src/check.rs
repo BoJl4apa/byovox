@@ -418,8 +418,8 @@ fn input_row() -> String {
 }
 
 /// What the `warn mic` row says about a Bluetooth headset's hands-free endpoint.
-const HANDS_FREE_WARNING: &str = "this is a Bluetooth hands-free profile: dictating through it switches the headset out \
-     of stereo for the duration — pin `capture.device` to another microphone";
+const HANDS_FREE_WARNING: &str = "this looks like a Bluetooth hands-free profile: dictating through one switches the \
+     headset out of stereo for the duration — pin `capture.device` to another microphone";
 
 /// Whether the microphone about to be used is a Bluetooth headset's hands-free endpoint.
 /// Windows names it `Headset (… Hands-Free)` and either word is enough on its own; the rate

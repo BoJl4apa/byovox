@@ -169,7 +169,7 @@ level = "info"
 
 [capture]
 # Which microphone to record from. Empty = whatever the system has as its default recording
-# device, which is what byovox used before this key existed.
+# device.
 # Worth setting when a Bluetooth headset is in the picture: connecting one makes it the
 # default input device, and opening a capture stream on it forces the headset out of A2DP
 # (stereo) into the hands-free profile (mono, 8-16 kHz) for as long as the stream is open —
@@ -177,7 +177,8 @@ level = "info"
 # transcript than the built-in array would have given. The done cue byovox plays is output
 # only and does not do this.
 # Matched as a case-insensitive substring of the device's name as the audio host reports it,
-# which is not always the name the Sound control panel shows: run `byovox check`, which prints
+# which is shorter than the Sound control panel's spelling ("Microphone Array" rather than
+# "Microphone Array (Synaptics Audio)"): run `byovox check`, which prints
 # the device it used and lists every input name on its `inputs` row, and copy a word out of
 # the one you want. If several match, the first the system enumerates wins. A value that
 # matches nothing is a startup error naming this key and listing those names — never a silent
