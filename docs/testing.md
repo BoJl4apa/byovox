@@ -37,6 +37,7 @@ and an unmapped layout routes to `language.default`, so every row below would lo
 - [ ] polish endpoint down (wrong port): raw transcript inserted, error cue, WARN in log
 
 ## Indicator
+- [ ] first press after the daemon starts: the recording cue is audible (the output device is opened at start, not by that press)
 - [ ] tray icon: grey idle, red recording, amber working, magenta for ~3 s on error
 - [ ] tray menu: Disable stops the hotkey; Toggle mode takes its check mark and the hotkey then starts/stops on separate presses; Show last transcript shows a dialog; Open config / Open logs open Explorer; Run check opens a console that shows every row and waits for Enter; Quit exits
 - [ ] with a chord hotkey and Disable active: pressing the chord types its trigger into the window (nothing is swallowed); Enable → the chord dictates again

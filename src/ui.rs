@@ -354,7 +354,8 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
             }
-            // Nothing to fail yet: the output device is opened by the first cue, not here.
+            // Opens the output device now (see `Cue`); a missing one is retried by the first
+            // cue, so this cannot fail the daemon.
             if self.opts.cue && self.cue.is_none() {
                 self.cue = Some(Cue::new());
             }
@@ -644,6 +645,12 @@ fn cursor_position() -> Option<(i32, i32)> {
 /// pick it up. Cues are decoration, so every failure is soft — but a dead endpoint must not
 /// write one WARN per dictation either, so a failure streak reports once and the next success
 /// re-arms it.
+///
+/// The sink is nevertheless opened once at start, from `resumed`: a tone queued in the same
+/// event-loop pass that opened the sink never reaches the device (measured over WASAPI
+/// loopback — the stream's first buffer is honoured only after the loop has yielded once),
+/// so a lazily opened sink would always lose the first cue after every open. Opened ahead
+/// of time, the first tone plays on time; the lazy path remains for the failure fallback.
 struct Cue {
     sink: Option<rodio::MixerDeviceSink>,
     /// Set when a failure has already been reported, cleared by the next success.
@@ -652,10 +659,26 @@ struct Cue {
 
 impl Cue {
     fn new() -> Cue {
-        Cue {
+        let mut cue = Cue {
             sink: None,
             warned: false,
+        };
+        if let Err(e) = cue.open() {
+            // Not a failure streak yet: the first cue retries and reports if it fails too.
+            tracing::debug!(error = %e, "audio output not ready at start; the first cue will retry");
         }
+        cue
+    }
+
+    fn open(&mut self) -> Result<&mut rodio::MixerDeviceSink> {
+        if self.sink.is_none() {
+            let mut sink = rodio::DeviceSinkBuilder::open_default_sink().context("audio output")?;
+            // Without rodio's `tracing` feature its drop notice is a raw `eprintln!`; byovox
+            // logs its own audio failures and a tray app must not scribble on stderr.
+            sink.log_on_drop(false);
+            self.sink = Some(sink);
+        }
+        Ok(self.sink.as_mut().expect("just opened"))
     }
 
     fn play(&mut self, hz: f32, ms: u64) {
@@ -677,18 +700,7 @@ impl Cue {
     /// a successful open is invisible here until something else forces a re-open.
     fn open_and_play(&mut self, hz: f32, ms: u64) -> Result<()> {
         use rodio::Source;
-        let sink = match &mut self.sink {
-            Some(sink) => sink,
-            None => {
-                let mut sink =
-                    rodio::DeviceSinkBuilder::open_default_sink().context("audio output")?;
-                // Without rodio's `tracing` feature its drop notice is a raw `eprintln!`;
-                // byovox logs its own audio failures and a tray app must not scribble on
-                // stderr.
-                sink.log_on_drop(false);
-                self.sink.insert(sink)
-            }
-        };
+        let sink = self.open()?;
         let src = rodio::source::SineWave::new(hz)
             .take_duration(Duration::from_millis(ms))
             .amplify(0.15);
