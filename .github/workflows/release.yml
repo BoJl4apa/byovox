@@ -63,9 +63,13 @@ jobs:
       #
       # Explicitly at the tag: under workflow_dispatch the ref is a branch, and a release
       # must be built from the commit the tag names, not from whatever that branch holds.
+      # Fully qualified, because a bare name makes checkout fetch both `refs/heads/<name>`
+      # and `refs/tags/<name>` and prefer the branch — a branch that happened to share the
+      # tag's name would be built and `--verify-tag` would still pass, since the tag does
+      # exist. `refs/tags/` leaves nothing to prefer.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ steps.tag.outputs.tag }}
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
 
       # Before the build, because it is the cheapest thing that can fail. A release whose
       # tag says 0.2.0 while the binary prints 0.1.0 sends every bug report to the wrong
