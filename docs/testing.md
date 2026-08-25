@@ -28,7 +28,8 @@ and an unmapped layout routes to `language.default`, so every row below would lo
 
 ## Indicator
 - [ ] tray icon: grey idle, red recording, amber working, magenta for ~3 s on error
-- [ ] tray menu: Disable stops the hotkey; Toggle mode takes its check mark and the hotkey then starts/stops on separate presses; Show last transcript shows a dialog; Open config / Open logs open Explorer; Run check opens a console; Quit exits
+- [ ] tray menu: Disable stops the hotkey; Toggle mode takes its check mark and the hotkey then starts/stops on separate presses; Show last transcript shows a dialog; Open config / Open logs open Explorer; Run check opens a console that shows every row and waits for Enter; Quit exits
+- [ ] Run check under `byovox run`: the rows land in *that* terminal, interleaved with the live log, and its "press Enter" competes with the shell for stdin — expected; run the menu item against the background daemon
 - [ ] the pill never gets a taskbar button, on the first show and after a hide/re-show
 - [ ] `indicator.pill = false` and `cue = false` each remove exactly that layer
 
@@ -38,7 +39,7 @@ and an unmapped layout routes to `language.default`, so every row below would lo
 - [ ] `byovox status` / `byovox last` reflect the last dictation
 - [ ] `capture_log.enabled = true`: WAV + JSONL row appear per dictation; transcript text absent from the INFO log
 - [ ] `byovox autostart --enable`, sign out/in: daemon running; `--disable` removes it
-- [ ] unknown key in config: exit 2 naming the key
+- [ ] unknown key in config: exit 2 naming the key, from the bare `byovox` as well as from `byovox run` — and no daemon left behind
 
 ## Last run
 
