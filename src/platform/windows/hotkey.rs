@@ -215,12 +215,18 @@ fn defuse_inputs() -> [INPUT; 2] {
 /// Tap `DEFUSE_VK` so the modifiers the app is still holding cannot read as a bare
 /// combination. Sent from the hook procedure itself: two events, and `SendInput` only queues
 /// them — the hook is re-entered for them after this call returns, and the marker makes that
-/// re-entry a no-op. A refusal needs no handling: `SendInput` is refused when the foreground
-/// window is elevated, and then UIPI never showed the hook the chord in the first place.
+/// re-entry a no-op.
+///
+/// The result is deliberately dropped, and this is the one place in the hook where a failure
+/// is silent (there is no logging from inside a hook procedure to report it with). Both
+/// refusal paths arrive with nothing left to defuse: `SendInput` is refused when the
+/// foreground window is elevated — and then UIPI never showed the hook the chord either —
+/// and while another thread holds `BlockInput`, which is blocking the very input this hook
+/// would not have seen.
 fn defuse_modifiers() {
     let inputs = defuse_inputs();
     // SAFETY: two well-formed INPUTs, size declared as the API requires.
-    unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
+    let _ = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
 }
 
 /// The tracker's verdict for one key event, or `None` when the key is no part of the chord.
