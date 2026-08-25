@@ -31,7 +31,16 @@ sha256sum -c SHA256SUMS                                              # published
 gh attestation verify byovox-v0.1.0-x86_64-pc-windows-msvc.zip --owner BoJl4apa
 ```
 
-The second is GitHub's build provenance: it says this exact archive came out of this
+`sha256sum` is a Unix tool, so that first line wants Git Bash or WSL. Plain PowerShell has
+no `-c` equivalent — print both digests and compare them yourself (`Get-FileHash` answers in
+upper case, `SHA256SUMS` is lower):
+
+```powershell
+(Get-FileHash byovox-v0.1.0-x86_64-pc-windows-msvc.zip -Algorithm SHA256).Hash
+Get-Content SHA256SUMS
+```
+
+`gh attestation verify` is GitHub's build provenance: it says this exact archive came out of this
 repository's release workflow, and names the commit it was built from — the one
 `byovox --version` prints. The binaries are **not code-signed**, so Windows SmartScreen
 warns the first time you run one (More info → Run anyway); `cargo install` avoids the
