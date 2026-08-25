@@ -1,13 +1,26 @@
 //! Speech-to-text client: one multipart POST to `{base_url}/audio/transcriptions`.
 //!
-//! Depends on `multipart` and `lang::SttLanguage`. Produces the trimmed transcript.
-//! Errors are strings the pipeline logs and shows; the single retry fires only when no
-//! response came back at all — a received status, however bad, is never retried.
+//! Depends on `multipart` and `lang::SttLanguage`. Produces the trimmed transcript and
+//! whisper's own no-speech score for it. Errors are strings the pipeline logs and shows;
+//! the single retry fires only when no response came back at all — a received status,
+//! however bad, is never retried.
 
 use std::time::Duration;
 
 use crate::lang::SttLanguage;
 use crate::multipart::Multipart;
+
+/// One transcription: the trimmed text, and how sure whisper is that the clip held no speech
+/// at all. `None` when the reply carried no `segments` — a server flavour that does not score
+/// its output leaves the gate nothing to judge, which is the old behaviour rather than a
+/// silent zero.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Transcript {
+    pub text: String,
+    /// The strongest `no_speech_prob` across the reply's segments: one hallucinated segment in
+    /// an otherwise silent hold is exactly what this is here to catch, so the maximum decides.
+    pub no_speech_prob: Option<f32>,
+}
 
 pub trait Transcriber: Send {
     fn transcribe(
@@ -15,22 +28,32 @@ pub trait Transcriber: Send {
         wav: &[u8],
         language: &SttLanguage,
         prompt: Option<&str>,
-    ) -> Result<String, String>;
+    ) -> Result<Transcript, String>;
 }
 
 pub struct SttClient {
     url: String,
     model: String,
     api_key: Option<String>,
+    /// Ask for `verbose_json` and read the scores out of it. Only a caller that will act on
+    /// a score turns this on — see `new`.
+    scored: bool,
     agent: ureq::Agent,
 }
 
 impl SttClient {
+    /// `scored` asks the server for `verbose_json`, the one format carrying
+    /// `segments[].no_speech_prob`. It is on only when something downstream will use the
+    /// number (`stt.no_speech_threshold > 0`), because not every OpenAI-compatible server
+    /// accepts that format — `gpt-4o-transcribe` answers `json` and `text` alone and 400s on
+    /// the rest. With it off the request is a plain `json` one and the score is `None`, so
+    /// turning the gate off restores a wire every such server takes.
     pub fn new(
         base_url: &str,
         model: &str,
         api_key: Option<String>,
         timeout: Duration,
+        scored: bool,
     ) -> SttClient {
         let config = ureq::Agent::config_builder()
             .timeout_connect(Some(Duration::from_secs(5)))
@@ -41,6 +64,7 @@ impl SttClient {
             url: format!("{}/audio/transcriptions", base_url.trim_end_matches('/')),
             model: model.to_string(),
             api_key,
+            scored,
             agent: config.into(),
         }
     }
@@ -85,17 +109,54 @@ fn body_prefix(body: &str) -> String {
     body.chars().take(200).collect()
 }
 
+/// The strongest `no_speech_prob` in a `verbose_json` reply, `None` when the reply carries no
+/// `segments` — absent or null are the same answer, a list of nothing — and when none of the
+/// segments is scored. A `segments` that is some other non-list, or a score that is not a
+/// number, is a reply this client does not understand: it fails loudly rather than handing
+/// the gate a silent `None` that would look exactly like an unscored server.
+fn max_no_speech_prob(v: &serde_json::Value, body: &str) -> Result<Option<f32>, String> {
+    let Some(segments) = v.get("segments").filter(|s| !s.is_null()) else {
+        return Ok(None);
+    };
+    let segments = segments.as_array().ok_or_else(|| {
+        format!(
+            "stt response segments is not an array: {}",
+            body_prefix(body)
+        )
+    })?;
+    let mut max: Option<f32> = None;
+    for s in segments {
+        let Some(p) = s.get("no_speech_prob") else {
+            continue;
+        };
+        let p = p.as_f64().ok_or_else(|| {
+            format!(
+                "stt response no_speech_prob is not a number: {}",
+                body_prefix(body)
+            )
+        })? as f32;
+        max = Some(max.map_or(p, |m| m.max(p)));
+    }
+    Ok(max)
+}
+
 impl Transcriber for SttClient {
     fn transcribe(
         &self,
         wav: &[u8],
         language: &SttLanguage,
         prompt: Option<&str>,
-    ) -> Result<String, String> {
+    ) -> Result<Transcript, String> {
         let mut m = Multipart::new();
         m.file("file", "clip.wav", "audio/wav", wav);
         m.text("model", &self.model);
-        m.text("response_format", "json");
+        // `verbose_json` is the only format that carries `segments[].no_speech_prob`, which
+        // is what tells a silent hold from a real one — and the only reason to ask for a
+        // format some servers refuse. Asked for only when a score is wanted.
+        m.text(
+            "response_format",
+            if self.scored { "verbose_json" } else { "json" },
+        );
         for (name, value) in language.form_fields() {
             m.text(name, &value);
         }
@@ -135,7 +196,17 @@ impl Transcriber for SttClient {
             .get("text")
             .and_then(|t| t.as_str())
             .ok_or_else(|| format!("stt response has no text field: {}", body_prefix(&text)))?;
-        Ok(transcript.trim().to_string())
+        Ok(Transcript {
+            text: transcript.trim().to_string(),
+            // An unscored client reads no score at all: a server that answers a `json`
+            // request with segments anyway cannot reach the gate, and no shape it puts in
+            // them can fail a request whose scores nothing will read.
+            no_speech_prob: if self.scored {
+                max_no_speech_prob(&v, &text)?
+            } else {
+                None
+            },
+        })
     }
 }
 
@@ -147,8 +218,14 @@ mod tests {
     use std::net::TcpListener;
     use std::time::Duration;
 
+    /// A client with the gate on, which is the shipped default.
     fn client(url: &str) -> SttClient {
-        SttClient::new(url, "whisper-1", None, Duration::from_secs(5))
+        SttClient::new(url, "whisper-1", None, Duration::from_secs(5), true)
+    }
+
+    /// A client with `stt.no_speech_threshold = 0`: nothing downstream reads a score.
+    fn unscored_client(url: &str) -> SttClient {
+        SttClient::new(url, "whisper-1", None, Duration::from_secs(5), false)
     }
 
     /// The `Authorization` value, found case-insensitively by name (RFC 9110 header
@@ -168,12 +245,12 @@ mod tests {
         let out = client(&format!("{}/v1", srv.url()))
             .transcribe(b"RIFFxxxx", &he, Some("Glossary: Acme"))
             .unwrap();
-        assert_eq!(out, "hello world");
+        assert_eq!(out.text, "hello world");
         let req = srv.requests().remove(0);
         assert!(req.starts_with("POST /v1/audio/transcriptions "), "{req}");
         assert!(req.contains("name=\"language\"\r\n\r\nhe\r\n"));
         assert!(req.contains("name=\"prompt\"\r\n\r\nGlossary: Acme\r\n"));
-        assert!(req.contains("name=\"response_format\"\r\n\r\njson\r\n"));
+        assert!(req.contains("name=\"response_format\"\r\n\r\nverbose_json\r\n"));
         assert!(req.contains("name=\"model\"\r\n\r\nwhisper-1\r\n"));
         // The file part, framed exactly: disposition, type, then the raw payload bytes.
         assert!(
@@ -183,6 +260,45 @@ mod tests {
             "{req}"
         );
         assert_eq!(auth_header(&req), None, "{req}");
+    }
+
+    /// Not every OpenAI-compatible server takes `verbose_json` — `gpt-4o-transcribe` rejects
+    /// it outright — so the format byovox asks for has to follow the one knob that decides
+    /// whether the score is wanted. With the gate off the request is the plain `json` one
+    /// every such server accepts, and nothing is read out of the reply's segments even if
+    /// the server volunteers them.
+    #[test]
+    fn the_gate_being_off_asks_for_plain_json_and_reads_no_score() {
+        let srv = MockServer::start(
+            200,
+            r#"{"text":"hello","segments":[{"id":0,"no_speech_prob":0.9}]}"#,
+        );
+        let out = unscored_client(srv.url())
+            .transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
+            .unwrap();
+        assert_eq!(out.text, "hello");
+        assert_eq!(out.no_speech_prob, None);
+        let req = srv.requests().remove(0);
+        assert!(
+            req.contains("name=\"response_format\"\r\n\r\njson\r\n"),
+            "{req}"
+        );
+        assert!(!req.contains("verbose_json"), "{req}");
+    }
+
+    /// The reply shapes that are a loud error for a scoring client are not even looked at by
+    /// an unscored one: the score it would refuse to guess at is a score nothing will read.
+    #[test]
+    fn the_gate_being_off_survives_a_reply_a_scoring_client_would_refuse() {
+        let srv = MockServer::start(
+            200,
+            r#"{"text":"hello","segments":[{"id":0,"no_speech_prob":"high"}]}"#,
+        );
+        let out = unscored_client(srv.url())
+            .transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
+            .unwrap();
+        assert_eq!(out.text, "hello");
+        assert_eq!(out.no_speech_prob, None);
     }
 
     #[test]
@@ -202,7 +318,13 @@ mod tests {
     #[test]
     fn bearer_header_when_key_given() {
         let srv = MockServer::start(200, r#"{"text":"x"}"#);
-        let c = SttClient::new(srv.url(), "m", Some("tok".into()), Duration::from_secs(5));
+        let c = SttClient::new(
+            srv.url(),
+            "m",
+            Some("tok".into()),
+            Duration::from_secs(5),
+            true,
+        );
         c.transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
             .unwrap();
         // ureq 3 writes header names lowercased (`http::HeaderName`); values keep their case.
@@ -265,7 +387,7 @@ mod tests {
         let out = client(srv.url())
             .transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
             .unwrap();
-        assert_eq!(out, "second try");
+        assert_eq!(out.text, "second try");
         assert_eq!(
             srv.requests().len(),
             1,
@@ -289,6 +411,92 @@ mod tests {
         let out = client(srv.url())
             .transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
             .unwrap();
-        assert_eq!(out, "");
+        assert_eq!(out.text, "");
+    }
+
+    /// A `verbose_json` reply, as whisper answers a hold that started with a word and ended
+    /// in silence: the loudest segment scores near zero, the silent one near one. The gate
+    /// has to see the silence, so the maximum is what comes back.
+    #[test]
+    fn the_strongest_segment_score_is_what_comes_back() {
+        let srv = MockServer::start(
+            200,
+            r#"{"task":"transcribe","language":"en","duration":1.4,
+                "text":" Thank you for watching! ",
+                "segments":[
+                  {"id":0,"start":0.0,"end":0.7,"text":"Thank you","no_speech_prob":0.04},
+                  {"id":1,"start":0.7,"end":1.4,"text":" for watching!","no_speech_prob":0.74}
+                ]}"#,
+        );
+        let out = client(srv.url())
+            .transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
+            .unwrap();
+        assert_eq!(out.text, "Thank you for watching!");
+        assert_eq!(out.no_speech_prob, Some(0.74));
+    }
+
+    /// A server that answers `verbose_json` with no segments scores nothing, and an unscored
+    /// reply must reach the pipeline as "unknown" rather than as a confident zero. A null
+    /// `segments` is that same well-formed answer — a list of nothing — and refusing it would
+    /// fail every dictation from such a server over a reply nothing is wrong with.
+    #[test]
+    fn a_reply_without_segments_carries_no_score() {
+        for body in [
+            r#"{"text":"hello","language":"en"}"#,
+            r#"{"text":"hello","segments":null}"#,
+            r#"{"text":"hello","segments":[]}"#,
+            // Segments that carry no score at all: nothing was measured.
+            r#"{"text":"hello","segments":[{"id":0,"text":"hello"}]}"#,
+        ] {
+            let srv = MockServer::start(200, body);
+            let out = client(srv.url())
+                .transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
+                .unwrap();
+            assert_eq!(out.text, "hello", "{body}");
+            assert_eq!(out.no_speech_prob, None, "{body}");
+        }
+    }
+
+    /// The inner null stays loud: a segment that exists and carries an unreadable score is a
+    /// score this client cannot read, not an absent one.
+    #[test]
+    fn a_null_score_inside_a_segment_is_still_an_error() {
+        let srv = MockServer::start(
+            200,
+            r#"{"text":"x","segments":[{"id":0,"no_speech_prob":null}]}"#,
+        );
+        let err = client(srv.url())
+            .transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
+            .unwrap_err();
+        assert!(
+            err.starts_with("stt response no_speech_prob is not a number: "),
+            "{err}"
+        );
+    }
+
+    /// A score this client cannot read is a reply it does not understand. Skipping it would
+    /// be indistinguishable from an unscored server, and the gate would silently stop gating.
+    #[test]
+    fn a_non_numeric_segment_score_is_an_error() {
+        let srv = MockServer::start(
+            200,
+            r#"{"text":"x","segments":[{"id":0,"no_speech_prob":"high"}]}"#,
+        );
+        let err = client(srv.url())
+            .transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
+            .unwrap_err();
+        assert!(
+            err.starts_with("stt response no_speech_prob is not a number: "),
+            "{err}"
+        );
+
+        let srv = MockServer::start(200, r#"{"text":"x","segments":"none"}"#);
+        let err = client(srv.url())
+            .transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
+            .unwrap_err();
+        assert!(
+            err.starts_with("stt response segments is not an array: "),
+            "{err}"
+        );
     }
 }

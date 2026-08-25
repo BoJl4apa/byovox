@@ -133,6 +133,7 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
         &cfg.stt.model,
         config::resolve_token(&cfg.stt.api_key_env, ""),
         Duration::from_secs(cfg.stt.timeout_s),
+        cfg.stt.no_speech_threshold > 0.0,
     );
     let polisher: Option<Box<dyn polish::Polisher>> = if cfg.polish.enabled {
         let prompt = if cfg.polish.prompt_file.is_empty() {
@@ -178,6 +179,8 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
             prompt: Some(cfg.stt.prompt.clone()).filter(|p| !p.is_empty()),
             trailing_space: cfg.inject.trailing_space,
             polish_model: cfg.polish.model.clone(),
+            // Narrowed here: the file holds a TOML f64, whisper scores in f32.
+            no_speech_threshold: cfg.stt.no_speech_threshold as f32,
         },
         backends.capture,
         backends.layout,

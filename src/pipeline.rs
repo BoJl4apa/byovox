@@ -24,6 +24,9 @@ pub struct PipelineConfig {
     pub polish_min_words: usize,
     pub prompt: Option<String>,
     pub trailing_space: bool,
+    /// Discard a transcript whose `no_speech_prob` is above this; `0.0` keeps every one.
+    /// `config::load` has already refused anything outside `0.0..=1.0`.
+    pub no_speech_threshold: f32,
     /// `polish.model`, recorded on every capture-log row that the polish stage ran for, so
     /// rows from before and after a model change stay distinguishable.
     pub polish_model: String,
@@ -67,6 +70,10 @@ pub struct DictationRecord<'a> {
     pub layout: Option<Lang>,
     pub language: &'a SttLanguage,
     pub raw: &'a str,
+    /// What whisper scored this clip, `None` when the server did not score it. Rows for
+    /// dictations the no-speech gate dropped carry it too — that is the corpus this
+    /// threshold is tuned from, and without the row the evidence is gone.
+    pub no_speech_prob: Option<f32>,
     pub polished: Option<&'a str>,
     /// The polish model, `None` when the stage did not run (disabled, or under min_words).
     pub polish_model: Option<&'a str>,
@@ -130,6 +137,17 @@ pub fn pump(pipe: &mut Pipeline, rx: &Receiver<HotkeyEvent>) {
 /// a human can see it (the log line, the tray menu, `byovox status`).
 fn summary(e: &str) -> &str {
     e.split_once(':').map_or(e, |(head, _)| head).trim()
+}
+
+/// The score that condemns a transcript as silence, if any: `Some(p)` exactly when this
+/// dictation is one the gate drops. A threshold of `0` gates nothing, and a reply the server
+/// did not score is never gated.
+///
+/// The one place the comparison is written. `byovox check` reports what the daemon would do,
+/// so it has to decide the same way, on the same `f32` the daemon narrows the configured
+/// `f64` to — comparing at two widths makes the two disagree over a band one ulp wide.
+pub fn no_speech(prob: Option<f32>, threshold: f32) -> Option<f32> {
+    prob.filter(|p| threshold > 0.0 && *p > threshold)
 }
 
 enum State {
@@ -282,7 +300,7 @@ impl Pipeline {
         // Encoding is byovox's own cost; `stt_ms` reports the server round-trip alone.
         let wav = audio.to_wav();
         let t = Instant::now();
-        let raw = match self
+        let transcript = match self
             .stt
             .transcribe(&wav, &language, self.cfg.prompt.as_deref())
         {
@@ -295,10 +313,39 @@ impl Pipeline {
             }
         };
         let stt_ms = t.elapsed().as_millis();
+        let no_speech_prob = transcript.no_speech_prob;
+        let raw = transcript.text;
         tracing::debug!(raw = %raw, "transcript");
         if raw.trim().is_empty() {
             self.set_state(State::Idle, IndicatorState::Idle);
             tracing::info!(lang = %language.label(), stt_ms, "empty transcript");
+            return Outcome::Empty;
+        }
+        // Over near-silence whisper invents a stock phrase — "Thank you for watching!" — and
+        // reports its own doubt alongside it. The probability decides, never the text: a real
+        // one-word utterance must never be dropped for what it happens to say. The row is
+        // still written, because these are the captures the threshold is tuned from; nothing
+        // else happens, so `byovox last` cannot hand back something never dictated.
+        if let Some(p) = no_speech(no_speech_prob, self.cfg.no_speech_threshold) {
+            if let Some(rec) = &mut self.recorder {
+                rec.record(&DictationRecord {
+                    audio: &audio,
+                    layout,
+                    language: &language,
+                    raw: &raw,
+                    no_speech_prob,
+                    polished: None,
+                    polish_model: None,
+                    rung: None,
+                    stt_ms,
+                    polish_ms: 0,
+                    inject_ms: 0,
+                });
+            }
+            self.set_state(State::Idle, IndicatorState::Idle);
+            // No text on the line: what whisper made up over silence is still a transcript,
+            // and transcripts appear at debug only.
+            tracing::info!(p = %format!("{p:.2}"), lang = %language.label(), stt_ms, "no speech detected");
             return Outcome::Empty;
         }
 
@@ -362,6 +409,7 @@ impl Pipeline {
                 layout,
                 language: &language,
                 raw: &raw,
+                no_speech_prob,
                 polished: polished.as_deref(),
                 polish_model,
                 rung: rung_used,
@@ -415,6 +463,7 @@ mod tests {
     use crate::hotkey::HotkeyMode;
     use crate::indicator::IndicatorState as S;
     use crate::lang::Lang;
+    use crate::stt::Transcript;
     use crate::testutil::fakes::*;
     use std::time::{Duration, Instant};
 
@@ -469,6 +518,7 @@ mod tests {
             prompt: Some("Glossary: Acme".into()),
             trailing_space: false,
             polish_model: "cleanup-1".into(),
+            no_speech_threshold: 0.6,
         };
         let p = Pipeline::new(
             cfg,
@@ -623,6 +673,180 @@ mod tests {
                 "{what} would play the done cue: {states:?}"
             );
         }
+    }
+
+    /// Field finding: over a near-silent hold whisper returns a confident stock phrase and
+    /// scores it as silence. Nothing may reach the polisher, the keyboard or `byovox last` —
+    /// but the capture row survives, because that corpus is where the threshold came from.
+    #[test]
+    fn a_transcript_whisper_scored_as_silence_is_dropped() {
+        let mut r = rig(
+            FakeTranscriber::scored("Thank you for watching!", 0.75),
+            Some(FakePolisher::ok("Thank you for watching.")),
+            false,
+            false,
+        );
+        assert_eq!(
+            dictate(&mut r, Duration::from_secs(1)),
+            Some(Outcome::Empty)
+        );
+        assert!(r.polish.calls.lock().unwrap().is_empty());
+        assert!(r.rung1.texts.lock().unwrap().is_empty());
+        assert!(r.rung2.texts.lock().unwrap().is_empty());
+        assert!(
+            r.p.shared().lock().unwrap().last_transcript.is_none(),
+            "`byovox last` would hand back something that was never dictated"
+        );
+        assert_eq!(r.ind.0.lock().unwrap().last(), Some(&S::Idle));
+        let recs = r.rec.0.lock().unwrap();
+        assert_eq!(recs.len(), 1, "the corpus keeps the evidence");
+        assert_eq!(recs[0].raw, "Thank you for watching!");
+        assert_eq!(recs[0].no_speech_prob, Some(0.75));
+        assert_eq!(recs[0].polished, None);
+        assert_eq!(recs[0].rung, None);
+    }
+
+    /// The gate has to be invisible to everything that is not silence: a scored transcript
+    /// under the threshold, an unscored one from a server that sends no segments, and any
+    /// transcript at all once the threshold is 0.
+    ///
+    /// The first case carries the very words the gated test drops, at a real speech score
+    /// against a live threshold. That pair — same text, opposite score — is what "the score
+    /// decides, the text does not" means, and it is what a later "let us also blocklist the
+    /// stock phrases" change would break.
+    #[test]
+    fn only_a_score_above_the_threshold_gates() {
+        for (what, stt, threshold) in [
+            (
+                "the stock phrase itself, when whisper scores it as speech",
+                FakeTranscriber::scored("Thank you for watching!", 0.04),
+                0.6,
+            ),
+            (
+                "an unscored server leaves nothing to judge",
+                FakeTranscriber::ok("Thank you for watching!"),
+                0.6,
+            ),
+            (
+                "exactly at the threshold is not above it",
+                FakeTranscriber::scored("hello there", 0.6),
+                0.6,
+            ),
+            (
+                "0 turns the gate off",
+                FakeTranscriber::scored("Thank you for watching!", 0.99),
+                0.0,
+            ),
+        ] {
+            let mut r = rig(stt, None, false, false);
+            r.p.cfg.no_speech_threshold = threshold;
+            assert_eq!(
+                dictate(&mut r, Duration::from_secs(1)),
+                Some(Outcome::Inserted { rung: "type" }),
+                "{what}"
+            );
+            assert_eq!(r.rung1.texts.lock().unwrap().len(), 1, "{what}");
+        }
+    }
+
+    /// The same words, twice, against the same live threshold: dropped at 0.75, inserted at
+    /// 0.04. Nothing about the text can be what decided either.
+    #[test]
+    fn the_same_words_are_dropped_or_inserted_by_their_score_alone() {
+        let words = "Thank you for watching!";
+        let outcome = |p: f32| {
+            let mut r = rig(FakeTranscriber::scored(words, p), None, false, false);
+            r.p.cfg.no_speech_threshold = 0.6;
+            let out = dictate(&mut r, Duration::from_secs(1));
+            (out, r.rung1.texts.lock().unwrap().clone())
+        };
+        assert_eq!(outcome(0.75), (Some(Outcome::Empty), vec![]));
+        assert_eq!(
+            outcome(0.04),
+            (
+                Some(Outcome::Inserted { rung: "type" }),
+                vec![words.to_string()]
+            )
+        );
+    }
+
+    thread_local! {
+        /// Where this thread's log lines go while `logged` is running, and nowhere when it
+        /// is not. Every test thread has its own, so a test running beside `logged` neither
+        /// reads its lines nor adds to them.
+        static SINK: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// The writer behind the one collector this binary installs: a line reaches the buffer of
+    /// the thread that emitted it, if that thread armed one, and is dropped otherwise — which
+    /// is also what keeps the suite's own output pristine.
+    struct ThreadSink;
+    impl std::io::Write for ThreadSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            SINK.with(|s| {
+                if let Some(armed) = s.borrow_mut().as_mut() {
+                    armed.extend_from_slice(buf);
+                }
+            });
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for ThreadSink {
+        type Writer = ThreadSink;
+        fn make_writer(&'a self) -> ThreadSink {
+            ThreadSink
+        }
+    }
+
+    /// Everything `run` logs at INFO and above, as plain text.
+    ///
+    /// The collector is installed **globally**, once, rather than scoped to this thread with
+    /// `set_default`. `tracing` caches each callsite's interest process-wide, and a scoped
+    /// collector loses the race: whichever test thread reaches `tracing::info!` first decides
+    /// the cache, and a thread with no collector of its own caches "never" — after which this
+    /// helper captures nothing, intermittently and only when the whole suite runs. With one
+    /// global collector every thread's interest resolves the same way and the routing is done
+    /// by the writer instead.
+    fn logged(run: impl FnOnce()) -> String {
+        static INSTALLED: std::sync::Once = std::sync::Once::new();
+        INSTALLED.call_once(|| {
+            tracing_subscriber::fmt()
+                .with_writer(ThreadSink)
+                // Colour codes would land between a field name and its value.
+                .with_ansi(false)
+                .with_max_level(tracing::Level::INFO)
+                .init();
+        });
+        SINK.with(|s| *s.borrow_mut() = Some(Vec::new()));
+        run();
+        let captured = SINK.with(|s| s.borrow_mut().take()).unwrap_or_default();
+        String::from_utf8(captured).unwrap()
+    }
+
+    /// The gate's line has to say enough to tune the threshold from — the probability that
+    /// decided it — and no more: what whisper invents over silence is still a transcript, and
+    /// transcripts are a `debug!` thing here, never an `info!` one.
+    #[test]
+    fn the_gated_line_carries_the_probability_and_no_text() {
+        let mut r = rig(
+            FakeTranscriber::scored("Thank you for watching!", 0.75),
+            None,
+            false,
+            false,
+        );
+        let log = logged(|| {
+            assert_eq!(
+                dictate(&mut r, Duration::from_secs(1)),
+                Some(Outcome::Empty)
+            );
+        });
+        assert!(log.contains("no speech detected"), "{log}");
+        assert!(log.contains("p=0.75"), "{log}");
+        assert!(log.contains("lang=he"), "{log}");
+        assert!(!log.contains("Thank you"), "{log}");
     }
 
     #[test]
@@ -800,7 +1024,7 @@ mod tests {
     #[test]
     fn the_recorder_sees_the_finished_dictation() {
         let mut r = rig(
-            FakeTranscriber::ok("um hello"),
+            FakeTranscriber::scored("um hello", 0.03),
             Some(FakePolisher::ok("Hello.")),
             false,
             false,
@@ -814,6 +1038,7 @@ mod tests {
         assert_eq!(recs[0].layout, Lang::parse("he"));
         assert_eq!(recs[0].language, "he");
         assert_eq!(recs[0].raw, "um hello");
+        assert_eq!(recs[0].no_speech_prob, Some(0.03));
         assert_eq!(recs[0].polished.as_deref(), Some("Hello."));
         assert_eq!(recs[0].polish_model.as_deref(), Some("cleanup-1"));
         assert_eq!(recs[0].rung, Some("type"));
@@ -841,11 +1066,14 @@ mod tests {
             _wav: &[u8],
             _language: &SttLanguage,
             _prompt: Option<&str>,
-        ) -> Result<String, String> {
+        ) -> Result<Transcript, String> {
             if let Some(tx) = self.tx.lock().unwrap().take() {
                 tx.send(self.event).expect("the pump still holds rx");
             }
-            Ok("hi there".into())
+            Ok(Transcript {
+                text: "hi there".into(),
+                no_speech_prob: None,
+            })
         }
     }
 
@@ -866,6 +1094,7 @@ mod tests {
                 prompt: None,
                 trailing_space: false,
                 polish_model: String::new(),
+                no_speech_threshold: 0.6,
             },
             Box::new(cap),
             Box::new(FakeLayout(None)),

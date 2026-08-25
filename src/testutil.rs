@@ -122,7 +122,7 @@ pub mod fakes {
     use crate::layout::Layout;
     use crate::pipeline::{DictationRecord, Recorder};
     use crate::polish::Polisher;
-    use crate::stt::Transcriber;
+    use crate::stt::{Transcriber, Transcript};
 
     /// Counts every open and close so a test can pin the "never leave the microphone
     /// open" invariant; the counters are shared, so a clone observes the pipeline's copy.
@@ -185,13 +185,28 @@ pub mod fakes {
 
     #[derive(Clone)]
     pub struct FakeTranscriber {
-        pub result: Result<String, String>,
+        pub result: Result<Transcript, String>,
         pub calls: Arc<Mutex<Vec<TranscribeCall>>>,
     }
     impl FakeTranscriber {
+        /// A transcript no server scored — the reply shape from a whisper flavour that sends
+        /// no `segments`.
         pub fn ok(text: &str) -> Self {
             Self {
-                result: Ok(text.into()),
+                result: Ok(Transcript {
+                    text: text.into(),
+                    no_speech_prob: None,
+                }),
+                calls: Default::default(),
+            }
+        }
+        /// A transcript whisper scored: `p` is the probability the no-speech gate judges.
+        pub fn scored(text: &str, p: f32) -> Self {
+            Self {
+                result: Ok(Transcript {
+                    text: text.into(),
+                    no_speech_prob: Some(p),
+                }),
                 calls: Default::default(),
             }
         }
@@ -208,7 +223,7 @@ pub mod fakes {
             _wav: &[u8],
             language: &SttLanguage,
             prompt: Option<&str>,
-        ) -> Result<String, String> {
+        ) -> Result<Transcript, String> {
             self.calls
                 .lock()
                 .unwrap()
@@ -279,13 +294,15 @@ pub mod fakes {
         }
     }
 
-    /// An owned copy of one `DictationRecord`, since the record itself only borrows.
-    #[derive(Clone, Debug, PartialEq, Eq)]
+    /// An owned copy of one `DictationRecord`, since the record itself only borrows. Not
+    /// `Eq`: `no_speech_prob` is a float.
+    #[derive(Clone, Debug, PartialEq)]
     pub struct RecordedDictation {
         pub samples: usize,
         pub layout: Option<Lang>,
         pub language: String,
         pub raw: String,
+        pub no_speech_prob: Option<f32>,
         pub polished: Option<String>,
         pub polish_model: Option<String>,
         pub rung: Option<&'static str>,
@@ -303,6 +320,7 @@ pub mod fakes {
                 layout: r.layout,
                 language: r.language.label(),
                 raw: r.raw.to_string(),
+                no_speech_prob: r.no_speech_prob,
                 polished: r.polished.map(str::to_string),
                 polish_model: r.polish_model.map(str::to_string),
                 rung: r.rung,
