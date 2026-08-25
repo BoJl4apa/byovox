@@ -70,9 +70,10 @@ impl CaptureLog {
     /// What it does, in order: read the whole JSONL; if the **first** row is still fresh,
     /// return — rows are appended in time order, so a fresh first row means no row is expired,
     /// and that is the path taken on every run but the first of each day, which is what keeps
-    /// this cheap enough to run after every dictation. Otherwise partition the lines into
-    /// expired and kept, delete the WAV each expired row names, and replace the file with the
-    /// kept rows via a temp file and a rename, so the JSONL is never observed half-written.
+    /// this cheap enough to run after every dictation. Otherwise walk the lines in order,
+    /// deleting the WAV each expired row names and keeping every row whose audio is still
+    /// there, then replace the file with the kept rows via a temp file and a rename, so the
+    /// JSONL is never observed half-written.
     ///
     /// The whole file is read and rewritten on that slower path. It is bounded by the corpus,
     /// which is what `keep_days` exists to bound.
@@ -101,16 +102,24 @@ impl CaptureLog {
         {
             return;
         }
+        // Built in one pass, in the file's own order, because that order is load-bearing: the
+        // fast path above trusts the *first* row to be the oldest. A retained row must stay
+        // where it is, or the next prune would see a fresh first row and never look again.
+        //
         // A row whose `ts` cannot be read is kept: this deletes data, so anything it does not
-        // understand survives rather than being discarded on a guess.
-        let (expired, kept): (Vec<&str>, Vec<&str>) = text
-            .lines()
-            .partition(|l| row_timestamp(l).is_some_and(|ts| ts < cutoff));
-        if expired.is_empty() {
-            return;
+        // understand survives rather than being discarded on a guess. A row whose audio could
+        // not be deleted is kept for a different reason — see `remove_capture`.
+        let total = text.lines().count();
+        let mut kept: Vec<&str> = Vec::with_capacity(total);
+        for line in text.lines() {
+            let expired = row_timestamp(line).is_some_and(|ts| ts < cutoff);
+            if expired && self.remove_capture(line) {
+                continue;
+            }
+            kept.push(line);
         }
-        for row in &expired {
-            self.remove_capture(row);
+        if kept.len() == total {
+            return;
         }
         let mut body = kept.join("\n");
         if !body.is_empty() {
@@ -127,27 +136,38 @@ impl CaptureLog {
         }
     }
 
-    /// Delete the WAV one expired row names, if that row names one this log could have
-    /// written. The name is checked rather than trusted: the row is read back off disk, and a
-    /// `wav` field holding a path — `../../something` — must not be able to steer a delete out
-    /// of this directory. `is_own_capture_name` admits no separators, so the join is safe.
+    /// Delete the WAV one expired row names, and report **whether that row may now go**.
     ///
-    /// A file that is already gone is not an error: the row is dropped either way, which is
-    /// what makes pruning idempotent after a partial run.
-    fn remove_capture(&self, row: &str) {
+    /// The row is the only handle on its audio — nothing scans the directory any more — so
+    /// dropping a row whose file survived would orphan that file for ever, past `keep_days`,
+    /// with nothing left that could ever find it again. A delete that fails for any reason
+    /// but "already gone" therefore keeps its row, and the next prune tries again. On Windows
+    /// that is the ordinary case, not a hypothetical: a media player or an indexer holding the
+    /// WAV open without `FILE_SHARE_DELETE` fails the delete with a sharing violation, and the
+    /// file is deletable a second later.
+    ///
+    /// `true` (the row may go) for: deleted; already gone, which is what makes pruning
+    /// idempotent after a half-finished run; and a row naming nothing this log could have
+    /// written, where there is no file to retry and keeping the row would wedge the prune.
+    ///
+    /// The name is checked rather than trusted: the row is read back off disk, and a `wav`
+    /// field holding a path — `../../something` — must not be able to steer a delete out of
+    /// this directory. `is_own_capture_name` admits no separators, so the join is safe.
+    fn remove_capture(&self, row: &str) -> bool {
         let Some(name) = serde_json::from_str::<serde_json::Value>(row)
             .ok()
             .and_then(|v| v.get("wav")?.as_str().map(str::to_owned))
             .filter(|n| is_own_capture_name(n))
         else {
-            return;
+            return true;
         };
         let path = self.dir.join(name);
         match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
             Err(e) => {
-                tracing::warn!(error = %e, path = %path.display(), "capture log: prune could not delete a wav");
+                tracing::warn!(error = %e, path = %path.display(), "capture log: prune could not delete a wav; keeping its row to retry");
+                false
             }
         }
     }
@@ -507,6 +527,82 @@ mod tests {
         let rows = std::fs::read_to_string(dir.join(ROWS)).unwrap();
         assert_eq!(rows.lines().count(), 1, "{rows}");
         assert!(rows.contains(&fresh), "{rows}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The row is the only handle on its audio, so a delete that failed must not drop it —
+    /// the WAV would outlive `keep_days` with nothing left that could ever find it.
+    ///
+    /// A real deny-delete lock, not a simulated one: opening the file without
+    /// `FILE_SHARE_DELETE` is exactly what a media player or an indexer does on Windows, and
+    /// it makes `remove_file` fail with a sharing violation (os error 32).
+    #[cfg(windows)]
+    #[test]
+    fn a_wav_that_cannot_be_deleted_keeps_its_row_for_the_next_prune() {
+        use std::os::windows::fs::OpenOptionsExt;
+        /// Share reads only: no `FILE_SHARE_DELETE`, so the file cannot be unlinked.
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+
+        let dir = temp_dir("prune_locked_wav");
+        std::fs::create_dir_all(&dir).unwrap();
+        let locked = plant(&dir, 90, 0);
+        let fresh = plant(&dir, 1, 1);
+
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(dir.join(&locked))
+            .expect("hold the wav open");
+
+        let log = crate::testutil::logged(|| {
+            CaptureLog::new(dir.clone(), 30).unwrap();
+        });
+
+        assert!(
+            dir.join(&locked).exists(),
+            "the lock did not actually block the delete; the test proves nothing"
+        );
+        let rows = std::fs::read_to_string(dir.join(ROWS)).unwrap();
+        assert_eq!(
+            rows.lines().count(),
+            2,
+            "the row was dropped anyway: {rows}"
+        );
+        assert!(rows.contains(&locked), "{rows}");
+        assert!(log.contains("keeping its row to retry"), "{log}");
+        assert!(log.contains("os error 32"), "{log}");
+        // The retained row stays first, so the next prune's fast path cannot skip it.
+        assert!(
+            rows.lines().next().unwrap().contains(&locked),
+            "time order broke; the fast path would never retry: {rows}"
+        );
+
+        // The lock goes, and the retry finishes the job.
+        drop(held);
+        let log = CaptureLog::new(dir.clone(), 30).unwrap();
+        let _ = log;
+        assert!(!dir.join(&locked).exists(), "the retry did not delete it");
+        let rows = std::fs::read_to_string(dir.join(ROWS)).unwrap();
+        assert_eq!(rows.lines().count(), 1, "{rows}");
+        assert!(rows.contains(&fresh), "{rows}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An expired row naming something this log could not have written has no file to retry,
+    /// so it must not wedge the prune: the row goes and the stranger is left alone.
+    #[test]
+    fn an_expired_row_naming_a_file_we_do_not_own_still_drops() {
+        let dir = temp_dir("prune_unowned_name");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("2024-1.wav"), b"not mine").unwrap();
+        let ts = now_ms() - 90 * DAY_MS;
+        let row = serde_json::json!({"ts": ts, "wav": "2024-1.wav", "raw": "x"});
+        std::fs::write(dir.join(ROWS), format!("{row}\n")).unwrap();
+
+        let _log = CaptureLog::new(dir.clone(), 30).unwrap();
+
+        assert!(dir.join("2024-1.wav").exists(), "a stranger was deleted");
+        assert_eq!(std::fs::read_to_string(dir.join(ROWS)).unwrap(), "");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

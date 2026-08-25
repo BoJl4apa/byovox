@@ -333,3 +333,66 @@ pub mod fakes {
         }
     }
 }
+
+// ---- log capture ------------------------------------------------------------------
+//
+// One global collector for the whole test binary. `tracing` caches each callsite's interest
+// process-wide, so a second `.init()` would panic and a per-module scoped collector would
+// lose a race with whichever thread reached the callsite first. Both `pipeline` and
+// `capture_log` assert on log lines, so the sink lives here rather than in either of them.
+
+thread_local! {
+    /// Where this thread's log lines go while `logged` is running, and nowhere when it
+    /// is not. Every test thread has its own, so a test running beside `logged` neither
+    /// reads its lines nor adds to them.
+    static SINK: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The writer behind the one collector this binary installs: a line reaches the buffer of
+/// the thread that emitted it, if that thread armed one, and is dropped otherwise — which
+/// is also what keeps the suite's own output pristine.
+struct ThreadSink;
+impl std::io::Write for ThreadSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        SINK.with(|s| {
+            if let Some(armed) = s.borrow_mut().as_mut() {
+                armed.extend_from_slice(buf);
+            }
+        });
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for ThreadSink {
+    type Writer = ThreadSink;
+    fn make_writer(&'a self) -> ThreadSink {
+        ThreadSink
+    }
+}
+
+/// Everything `run` logs at INFO and above, as plain text.
+///
+/// The collector is installed **globally**, once, rather than scoped to this thread with
+/// `set_default`. `tracing` caches each callsite's interest process-wide, and a scoped
+/// collector loses the race: whichever test thread reaches `tracing::info!` first decides
+/// the cache, and a thread with no collector of its own caches "never" — after which this
+/// helper captures nothing, intermittently and only when the whole suite runs. With one
+/// global collector every thread's interest resolves the same way and the routing is done
+/// by the writer instead.
+pub fn logged(run: impl FnOnce()) -> String {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        tracing_subscriber::fmt()
+            .with_writer(ThreadSink)
+            // Colour codes would land between a field name and its value.
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .init();
+    });
+    SINK.with(|s| *s.borrow_mut() = Some(Vec::new()));
+    run();
+    let captured = SINK.with(|s| s.borrow_mut().take()).unwrap_or_default();
+    String::from_utf8(captured).unwrap()
+}
