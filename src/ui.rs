@@ -293,8 +293,11 @@ impl App {
             MenuAction::OpenConfig => open_path(&self.config_path),
             MenuAction::OpenLogs => open_path(&self.log_dir),
             MenuAction::RunCheck => {
+                // The sibling CLI, not this process: the tray normally runs inside
+                // `byovox-daemon`, which has neither the `check` subcommand nor a console to
+                // print it into. Being console-subsystem is what gets `check` its window.
                 if let Ok(exe) = std::env::current_exe() {
-                    let _ = std::process::Command::new(exe)
+                    let _ = std::process::Command::new(crate::daemon::cli_exe(&exe))
                         .arg("check")
                         .arg("--pause")
                         .spawn();

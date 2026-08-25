@@ -24,6 +24,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Run the daemon in this console, logging to stderr as well as to the file
+    Run,
     /// Start or stop recording in the running daemon
     Toggle,
     /// Stop the running daemon
@@ -60,7 +62,8 @@ fn main() {
     let given = cli.config.clone();
     let path = cli.config.unwrap_or_else(config::default_path);
     let result = match cli.cmd {
-        None => daemon::run(daemon::Options {
+        None => spawn_daemon(given),
+        Some(Cmd::Run) => daemon::run(daemon::Options {
             config_path: given,
             log_to_stderr: true,
         }),
@@ -76,6 +79,47 @@ fn main() {
         eprintln!("byovox: {e:#}");
         std::process::exit(2);
     }
+}
+
+/// The bare invocation: start the windowless daemon binary and give the shell its prompt back.
+///
+/// Detached, with no console inherited from this one and none created, so closing the terminal
+/// that typed `byovox` cannot take the tray icon with it. Nothing is waited for: `byovox
+/// status` is how you ask whether it came up, and `byovox run` is how you watch one start when
+/// it did not.
+fn spawn_daemon(config: Option<PathBuf>) -> Result<()> {
+    // Answered here rather than by letting the second daemon lose its own single-instance
+    // check, because that one loses inside a process with no stderr for anyone to read.
+    if ipc::daemon_running(&ipc::socket_name()) {
+        bail!("already running");
+    }
+    let exe = std::env::current_exe().context("current exe")?;
+    let daemon_exe = daemon::daemon_exe(&exe);
+    if !daemon_exe.exists() {
+        bail!(
+            "{} not found — the daemon is installed beside this binary",
+            daemon_exe.display()
+        );
+    }
+    let mut cmd = std::process::Command::new(&daemon_exe);
+    if let Some(c) = &config {
+        cmd.arg("--config").arg(c);
+    }
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // DETACHED_PROCESS (0x00000008): do not inherit this console, so the daemon never
+        // receives its close event. CREATE_NO_WINDOW (0x08000000): nor open one of its own.
+        cmd.creation_flags(0x0000_0008 | 0x0800_0000);
+    }
+    let child = cmd
+        .spawn()
+        .with_context(|| format!("starting {}", daemon_exe.display()))?;
+    println!("byovox daemon started (pid {})", child.id());
+    Ok(())
 }
 
 fn relay(req: ipc::Request) -> Result<()> {
@@ -195,7 +239,7 @@ mod tests {
 
     #[test]
     fn no_subcommand_is_the_daemon_and_config_is_global() {
-        let c = Cli::try_parse_from(["byovox"]).expect("a bare invocation is the daemon");
+        let c = Cli::try_parse_from(["byovox"]).expect("a bare invocation starts the daemon");
         assert!(c.cmd.is_none());
         assert!(c.config.is_none());
 
@@ -217,6 +261,14 @@ mod tests {
                 .cmd,
             Some(Cmd::Check { pause: true })
         ));
+    }
+
+    /// The foreground daemon, for watching one start. Same global `--config` as the rest.
+    #[test]
+    fn run_is_the_foreground_daemon() {
+        let c = Cli::try_parse_from(["byovox", "run", "--config", "x.toml"]).expect("run");
+        assert!(matches!(c.cmd, Some(Cmd::Run)));
+        assert_eq!(c.config.as_deref(), Some(std::path::Path::new("x.toml")));
     }
 
     #[test]

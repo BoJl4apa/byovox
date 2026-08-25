@@ -1,7 +1,7 @@
 //! byovox — push-to-talk dictation against a speech-to-text server you run.
 //!
-//! Every module lives here, the daemon included; `src/main.rs` is a thin binary over this
-//! library.
+//! Every module lives here, the daemon included; the two binaries are thin shells over it —
+//! `src/main.rs` is the console CLI, `src/bin/byovox-daemon.rs` the windowless daemon.
 
 pub mod audio;
 pub mod capture;

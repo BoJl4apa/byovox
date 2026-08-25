@@ -5,7 +5,7 @@
 //! into the winit event loop it then runs on this thread. Depends on nearly every other
 //! module; produces a process that lives until `quit`. Both binaries call `run`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
 use std::time::Duration;
 
@@ -27,6 +27,21 @@ pub struct Options {
     /// Whether to log to stderr as well as to the file. `byovox run` does; `byovox-daemon`
     /// has no console to log into.
     pub log_to_stderr: bool,
+}
+
+/// The windowless daemon binary that lives beside a given executable.
+///
+/// The pair ship in one directory — `cargo build` and `cargo install` both put them there —
+/// and three places cross between them: the CLI spawns the daemon, autostart registers it,
+/// and the tray spawns the CLI back for `check`. Resolved from `current_exe` rather than
+/// `PATH`, so a build tree and an installed copy can never end up talking to each other.
+pub fn daemon_exe(exe: &Path) -> PathBuf {
+    exe.with_file_name(format!("byovox-daemon{}", std::env::consts::EXE_SUFFIX))
+}
+
+/// The console CLI that lives beside a given executable. The other direction of the pair.
+pub fn cli_exe(exe: &Path) -> PathBuf {
+    exe.with_file_name(format!("byovox{}", std::env::consts::EXE_SUFFIX))
 }
 
 /// Owns the appender guard so that every fatal raised once logging is up reaches the log
@@ -341,6 +356,23 @@ fn init_logging(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every cross-binary call resolves the other one this way, so the naming convention is
+    /// worth a test that does not need either file to exist.
+    #[test]
+    fn each_binary_resolves_the_other_beside_itself() {
+        let suffix = std::env::consts::EXE_SUFFIX;
+        let dir = Path::new("install").join("bin");
+        let cli = dir.join(format!("byovox{suffix}"));
+        let daemon = dir.join(format!("byovox-daemon{suffix}"));
+
+        assert_eq!(daemon_exe(&cli), daemon);
+        assert_eq!(cli_exe(&daemon), cli);
+        // Idempotent: `byovox run` is the daemon inside the CLI binary, and the tray's
+        // `check` must still find a CLI there.
+        assert_eq!(cli_exe(&cli), cli);
+        assert_eq!(daemon_exe(&daemon), daemon);
+    }
 
     /// The tray's Disable is the only way to reach this state and it is not scriptable, so
     /// the decision is proven here rather than against a running daemon.
