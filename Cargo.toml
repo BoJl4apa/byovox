@@ -28,6 +28,19 @@ pkg-url = "{ repo }/releases/download/v{ version }/byovox-v{ version }-{ target 
 pkg-fmt = "zip"
 bin-dir = "{ bin }{ binary-ext }"
 
+# Declared rather than auto-discovered from `src/main.rs` and `src/bin/`. Two other things
+# name these binaries — the archive `.github/workflows/release.yml` builds, and `bin-dir`
+# above, which tells binstall to expect exactly them at the top of it — and neither can be
+# checked against a target that only exists because cargo went looking. `byovox` cannot
+# start a daemon that is not beside it, so shipping one of the two is shipping neither.
+[[bin]]
+name = "byovox"
+path = "src/main.rs"
+
+[[bin]]
+name = "byovox-daemon"
+path = "src/bin/byovox-daemon.rs"
+
 [dependencies]
 anyhow = "1.0.104"
 arboard = "3.6.1"
