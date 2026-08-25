@@ -10,7 +10,11 @@ name: release
 on:
   push:
     tags: ["v*"]
-  # So an already-pushed tag can be released (or re-released) without moving it.
+  # So an already-pushed tag can be released without moving it — after a run that failed on
+  # something the tag is not to blame for. Not a re-release: the publish step below is
+  # `gh release create`, which refuses a tag that already has a release, so replacing a
+  # published one means `gh release delete <tag> --yes` (no `--cleanup-tag`) first. Deleting
+  # is left a deliberate human act rather than something a dispatch does on its own.
   workflow_dispatch:
     inputs:
       tag:
