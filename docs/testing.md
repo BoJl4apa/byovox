@@ -1,5 +1,7 @@
 # Manual checklist
 
+Run this against the release build (`cargo build --release`) before a tag is pushed — that
+binary is what the release workflow publishes, and nothing else here is exercised by CI.
 Run `byovox check` first; every line below assumes it passed.
 
 ## Hotkey

@@ -22,11 +22,32 @@ setting.
 
 ## Quick start
 
-Rust 1.88 or newer.
+**Download** the Windows x86_64 archive from the
+[Releases page](https://github.com/BoJl4apa/byovox/releases), or let cargo fetch the same
+one: `cargo binstall byovox`. Both binaries live at the top of the zip and must stay
+together. Verify what you downloaded before you run it:
+
+```sh
+sha256sum -c SHA256SUMS                                              # published beside the zip
+gh attestation verify byovox-v0.1.0-x86_64-pc-windows-msvc.zip --owner BoJl4apa
+```
+
+The second is GitHub's build provenance: it says this exact archive came out of this
+repository's release workflow, and names the commit it was built from — the one
+`byovox --version` prints. The binaries are **not code-signed**, so Windows SmartScreen
+warns the first time you run one (More info → Run anyway); `cargo install` avoids the
+warning because the binary is then built on your own machine.
+
+**Or build it.** Rust 1.88 or newer.
 
 ```sh
 cargo install --git https://github.com/BoJl4apa/byovox --locked   # ~2 min; installs byovox and byovox-daemon
                           # (from a checkout: cargo install --path . --locked)
+```
+
+Either way, write the config file:
+
+```sh
 byovox config --init      # writes the documented default file and prints its path
 ```
 
