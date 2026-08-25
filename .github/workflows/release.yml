@@ -1,0 +1,123 @@
+name: release
+
+# A tag becomes a downloadable, verifiable Windows build: a zip, a SHA256SUMS beside it, and
+# a GitHub build-provenance attestation over both the zip and the two binaries inside it.
+#
+# Windows only, deliberately. The Linux and macOS hotkey, injection and layout backends are
+# designed but not implemented — a published Linux artefact would install a binary that
+# starts and then refuses to dictate, which is worse for the person who downloaded it than
+# no download at all. When a backend lands, add its target to this workflow with it.
+on:
+  push:
+    tags: ["v*"]
+  # So an already-pushed tag can be released (or re-released) without moving it.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release, e.g. v0.1.0"
+        required: true
+
+# Exactly what publishing needs: the release and its assets, and the two the attestation
+# action mints and records its signature with. Nothing wider.
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      # The two triggers name the tag in different places; every later step reads it from
+      # here so there is one answer. `prerelease` follows semver: a hyphen in the tag
+      # (v0.1.0-rc1) is a pre-release suffix, and GitHub is told so rather than offering it
+      # as the latest download.
+      - id: tag
+        shell: bash
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          case "$tag" in
+            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *)   echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      # Explicitly at the tag: under workflow_dispatch the ref is a branch, and a release
+      # must be built from the commit the tag names, not from whatever that branch holds.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      # Before the build, because it is the cheapest thing that can fail. A release whose
+      # tag says 0.2.0 while the binary prints 0.1.0 sends every bug report to the wrong
+      # commit. The base of the tag must equal the package version; a suffix is allowed
+      # only as a pre-release of that same version (v0.1.0-rc1 releases 0.1.0).
+      - name: Tag must name the version the binary prints
+        shell: bash
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          base="${tag#v}"; base="${base%%-*}"
+          version="$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
+          if [ "$base" != "$version" ]; then
+            echo "::error::tag $tag claims version $base, Cargo.toml says $version" >&2
+            exit 1
+          fi
+          echo "$tag builds $version"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # `--locked` so the download is built from the dependency versions Cargo.lock names —
+      # the same ones CI tested. Both binaries: `byovox` cannot start a daemon that is not
+      # beside it.
+      - run: cargo build --release --locked
+
+      # The runner is x86_64, so the host triple is the target the archive name claims.
+      # Flat: cargo-binstall (see [package.metadata.binstall]) and a person double-clicking
+      # the zip both expect the binaries at the top level.
+      - name: Assemble the archive and its checksum
+        shell: pwsh
+        run: |
+          $stage = "dist/stage"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -Destination $stage -Path @(
+            "target/release/byovox.exe",
+            "target/release/byovox-daemon.exe",
+            "LICENSE",
+            "README.md",
+            "SECURITY.md",
+            "docs/config.example.toml"
+          )
+          $zip = "byovox-${{ steps.tag.outputs.tag }}-x86_64-pc-windows-msvc.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath "dist/$zip"
+          # `sha256sum -c SHA256SUMS` is the check the README tells people to run, so the
+          # file is written the way coreutils reads one: lowercase digest, two spaces, the
+          # bare filename, and LF endings — PowerShell's default CRLF would leave a stray
+          # carriage return in the filename it looks for.
+          $sum = (Get-FileHash "dist/$zip" -Algorithm SHA256).Hash.ToLower()
+          [IO.File]::WriteAllText((Join-Path $PWD "dist/SHA256SUMS"), "$sum  $zip`n")
+          Get-Content "dist/SHA256SUMS"
+
+      # The zip, and the two binaries separately: an unzipped byovox.exe on someone's disk
+      # is then verifiable on its own, without keeping the archive it came in.
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/byovox-${{ steps.tag.outputs.tag }}-x86_64-pc-windows-msvc.zip
+            target/release/byovox.exe
+            target/release/byovox-daemon.exe
+
+      # `--verify-tag` refuses to invent a tag: a typo in the dispatch input fails here
+      # rather than publishing a release pointing at a tag nobody pushed.
+      - name: Publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          args=(--generate-notes --verify-tag)
+          if [ "${{ steps.tag.outputs.prerelease }}" = "true" ]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$tag" "${args[@]}" \
+            "dist/byovox-$tag-x86_64-pc-windows-msvc.zip" \
+            dist/SHA256SUMS
