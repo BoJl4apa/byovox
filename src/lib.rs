@@ -5,6 +5,7 @@
 pub mod audio;
 pub mod capture;
 pub mod capture_log;
+pub mod check;
 pub mod config;
 pub mod hotkey;
 pub mod indicator;
