@@ -1,7 +1,10 @@
 //! byovox — push-to-talk dictation against a speech-to-text server you run.
 //! CLI entry: subcommand dispatch. The daemon itself lives in `byovox::daemon`.
 
-use byovox::{check, config, daemon, ipc, platform};
+use byovox::{check, config, daemon, ipc};
+// Only the Windows autostart path names it; on other targets the import would be unused.
+#[cfg(windows)]
+use byovox::platform;
 
 use std::path::PathBuf;
 use std::time::Duration;
