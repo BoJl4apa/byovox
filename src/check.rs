@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn an_error_without_a_response_body_reaches_the_row_whole() {
         for e in [
-            "transport: io: Connection refused",
+            "stt transport: io: Connection refused",
             "polish transport: io: Connection refused",
             "stt JSON: expected value at line 1 column 1",
             "Microphone Array (48000 Hz, 2 ch, F32): microphone did not start within 5 s",

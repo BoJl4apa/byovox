@@ -871,6 +871,12 @@ mod tests {
             summary("polish response has no content field: SECRET TRANSCRIPT"),
             "polish response has no content field"
         );
+        // Both stages name themselves, so a dead endpoint never reduces to the bare word
+        // `transport` on the tray, the tray tooltip and `byovox status`.
+        assert_eq!(
+            summary("stt transport: io: Connection refused"),
+            "stt transport"
+        );
         assert_eq!(
             summary("polish transport: connection refused"),
             "polish transport"

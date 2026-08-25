@@ -117,7 +117,11 @@ impl Transcriber for SttClient {
             Attempt::BodyUnreadable { status, error } => {
                 return Err(format!("stt HTTP {status}: body unreadable: {error}"));
             }
-            Attempt::SendFailed(e) => return Err(format!("transport: {e}")),
+            // The stage names itself: `pipeline::summary` keeps only the head before the
+            // first colon, so a bare `transport` is all the tray tooltip, the tray status
+            // line and `byovox status` would say about the commonest failure there is —
+            // server down, wrong port, VPN off.
+            Attempt::SendFailed(e) => return Err(format!("stt transport: {e}")),
         };
         if !(200..300).contains(&status) {
             return Err(format!("stt HTTP {status}: {}", body_prefix(&text)));
@@ -213,18 +217,21 @@ mod tests {
         assert_eq!(srv.requests().len(), 1, "4xx/5xx must not be retried");
     }
 
+    /// The commonest failure there is, and `pipeline::summary` keeps only the head before
+    /// the first colon — so the stage has to be in that head or every human surface says
+    /// nothing but `transport`.
     #[test]
-    fn connection_refused_is_an_error() {
+    fn connection_refused_is_an_error_that_names_the_stage() {
         // Bind a port, learn it, then drop the listener: nothing is listening there, so
         // the connection is refused outright instead of waiting on a dropped SYN.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener);
         let c = client(&format!("http://{addr}"));
-        assert!(
-            c.transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
-                .is_err()
-        );
+        let err = c
+            .transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
+            .unwrap_err();
+        assert!(err.starts_with("stt transport: "), "{err}");
     }
 
     #[test]
