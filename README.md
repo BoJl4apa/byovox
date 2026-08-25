@@ -65,6 +65,23 @@ holding discards the recording. Quit from the tray, or `byovox quit`.
 
 `--config <path>` points any of them at a different file.
 
+## Security model
+
+byovox watches the keyboard, opens the microphone and types into your windows, so three
+things are worth knowing before you install it. The full threat model — what is in scope,
+what is not — is in [SECURITY.md](SECURITY.md), along with how to report a vulnerability.
+
+- **The endpoint you configure can type into your windows.** Whatever the STT and polish
+  servers return is sent as real keystrokes, and a newline is a real Enter. Point byovox at
+  servers you run or trust, and prefer `localhost`, a WireGuard/Tailscale link, or `https://`
+  over plain HTTP across an untrusted network — the token travels with the request.
+- **The capture log stores your voice and your text in plain files.** It is off by default;
+  `capture_log.enabled = true` writes a WAV and the transcript for every dictation, and
+  prunes nothing. Transcripts also reach the log file at `logging.level = "debug"`.
+- **The hook sees every key but records none.** Key events are compared against your hotkey
+  and cancel key and are never logged, stored or sent anywhere; only a chord's trigger is
+  swallowed. Anything running as you could do the same — byovox draws no boundary there.
+
 ## Documentation
 
 - [`docs/config.example.toml`](docs/config.example.toml) — the configuration reference: every
@@ -72,6 +89,7 @@ holding discards the recording. Quit from the tray, or `byovox quit`.
 - [`docs/platform-windows.md`](docs/platform-windows.md) — bare-modifier hotkeys and chords,
   elevated windows, microphone level, autostart, where config and logs live.
 - [`docs/testing.md`](docs/testing.md) — the manual checklist, run before a release tag.
+- [`SECURITY.md`](SECURITY.md) — the threat model, and how to report a vulnerability.
 - [`docs/superpowers/specs/2026-08-24-byovox-design.md`](docs/superpowers/specs/2026-08-24-byovox-design.md)
   — the design.
 
