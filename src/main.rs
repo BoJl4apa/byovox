@@ -241,27 +241,43 @@ fn log_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("logs"))
 }
 
-/// One level or directive list into a filter, loudly.
+/// A directive list into a filter, loudly. `EnvFilter::new` is `parse_lossy`: it drops what
+/// it cannot parse and hands back a filter with no directives, so a typo would silently log
+/// nothing. `try_new` says so instead.
 ///
-/// There are three ways to end up with a filter that silently logs nothing, and all three are
-/// closed here. `EnvFilter::new` is `parse_lossy`: it drops what it cannot parse and hands back
-/// a filter with no directives. An empty value parses cleanly to that same nothing. And
-/// `try_new` alone is not enough either, because a bare word is a valid *target* directive —
-/// `try_new("inf")` succeeds, then matches nothing byovox emits. So a value carrying no
-/// directive syntax is held to being what the key is named after: a level.
-fn parse_filter(source: &str, value: &str) -> Result<tracing_subscriber::EnvFilter> {
+/// This is the whole `RUST_LOG` grammar, on purpose: a bare target (`RUST_LOG=byovox`), a
+/// span directive (`RUST_LOG=[my_span]`) and an empty value are all things someone typing an
+/// env var means, and none of them is a level.
+fn parse_directives(source: &str, value: &str) -> Result<tracing_subscriber::EnvFilter> {
+    tracing_subscriber::EnvFilter::try_new(value).with_context(|| format!("{source} `{value}`"))
+}
+
+/// `logging.level` on top of that grammar, held to the key's own name.
+///
+/// A config file is written once and read for months, so its two silent failures are closed:
+/// an empty value parses cleanly to a filter with no directives, and a bare word is a valid
+/// *target* directive — `try_new("inf")` succeeds, then matches nothing byovox emits. Neither
+/// rule may apply to `RUST_LOG`, where both spellings are legitimate.
+fn parse_level(value: &str) -> Result<tracing_subscriber::EnvFilter> {
+    const SOURCE: &str = "logging.level";
     let value = value.trim();
     if value.is_empty() {
-        bail!("{source} is empty; expected a level like `info` or a directive list");
+        bail!("{SOURCE} is empty; expected a level like `info` or a directive list");
     }
     if !value.contains(['=', ','])
         && value
             .parse::<tracing_subscriber::filter::LevelFilter>()
             .is_err()
     {
-        bail!("{source} `{value}`: expected trace | debug | info | warn | error | off");
+        bail!("{SOURCE} `{value}`: expected trace | debug | info | warn | error | off");
     }
-    tracing_subscriber::EnvFilter::try_new(value).with_context(|| format!("{source} `{value}`"))
+    parse_directives(SOURCE, value)
+}
+
+/// The file and line a panic came from, never its payload — a payload can carry transcript
+/// text (any `expect` on a string built from one), and the default hook prints it to stderr.
+fn panic_location(loc: Option<&std::panic::Location<'_>>) -> String {
+    loc.map_or_else(|| "unknown location".to_string(), |l| l.to_string())
 }
 
 fn init_logging(level: &str) -> Result<tracing_appender::non_blocking::WorkerGuard> {
@@ -279,8 +295,8 @@ fn init_logging(level: &str) -> Result<tracing_appender::non_blocking::WorkerGua
     // cannot tell "unset" from "invalid": a garbage `RUST_LOG` must fail, not fall through to
     // the config level and trade one silent degradation for another.
     let filter = match std::env::var("RUST_LOG") {
-        Ok(v) => parse_filter("RUST_LOG", &v)?,
-        Err(_) => parse_filter("logging.level", level)?,
+        Ok(v) => parse_directives("RUST_LOG", &v)?,
+        Err(_) => parse_level(level)?,
     };
     tracing_subscriber::registry()
         .with(filter)
@@ -296,6 +312,12 @@ fn init_logging(level: &str) -> Result<tracing_appender::non_blocking::WorkerGua
 fn daemon(path: PathBuf) -> Result<()> {
     let cfg = config::load(&path)?;
     let guard = init_logging(&cfg.logging.level)?;
+    // Installed only for the daemon, and only once logging is up. The default hook writes the
+    // payload to stderr, which the transcript must never reach; the location is what a bug
+    // report needs anyway.
+    std::panic::set_hook(Box::new(|info| {
+        tracing::error!(at = panic_location(info.location()), "panicked");
+    }));
     if let Err(e) = start(cfg, path) {
         // `{e:#}` to match main's rendering: the bare Display would drop the context chain.
         tracing::error!(
@@ -557,21 +579,44 @@ mod tests {
 
     #[test]
     fn a_bad_level_is_rejected_rather_than_silently_disabling_logging() {
-        assert!(parse_filter("logging.level", "info").is_ok());
-        assert!(parse_filter("logging.level", "INFO").is_ok());
-        assert!(parse_filter("logging.level", "byovox=debug,warn").is_ok());
+        assert!(parse_level("info").is_ok());
+        assert!(parse_level("INFO").is_ok());
+        assert!(parse_level("byovox=debug,warn").is_ok());
 
-        let err = parse_filter("logging.level", "").expect_err("an empty level must be rejected");
+        let err = parse_level("").expect_err("an empty level must be rejected");
         assert!(err.to_string().contains("empty"), "{err}");
 
         // The realistic typo. `EnvFilter::try_new` accepts it as a *target* named `inf`, so
         // it would parse and then match nothing byovox emits.
-        let err = parse_filter("logging.level", "inf").expect_err("a typo must be rejected");
+        let err = parse_level("inf").expect_err("a typo must be rejected");
         assert!(err.to_string().contains("expected trace"), "{err}");
         assert!(err.to_string().contains("logging.level"), "{err}");
+    }
 
-        let err =
-            parse_filter("RUST_LOG", "warn=chatty").expect_err("a bad level must be rejected");
+    /// The level shape is a rule about a config key, not about `RUST_LOG`. Someone typing an
+    /// env var means the `RUST_LOG` grammar, and a bare target, a span directive and an empty
+    /// value are all legitimate there — rejecting them made the standard variable unusable.
+    #[test]
+    fn rust_log_keeps_the_whole_directive_grammar() {
+        for value in ["byovox", "[my_span]", "", "byovox=debug,warn", "off"] {
+            assert!(
+                parse_directives("RUST_LOG", value).is_ok(),
+                "RUST_LOG={value:?} must still work"
+            );
+        }
+        // Genuinely unparseable is still a hard error, and still names the source.
+        let err = parse_directives("RUST_LOG", "warn=chatty").expect_err("not a directive list");
         assert!(err.to_string().contains("RUST_LOG"), "{err}");
+    }
+
+    /// A panic payload can carry transcript text — any `expect` on a string built from one —
+    /// and the default hook prints it to stderr. The location is what a bug report needs.
+    #[test]
+    #[track_caller]
+    fn a_panic_is_logged_by_location_only() {
+        let here = panic_location(Some(std::panic::Location::caller()));
+        assert!(here.contains("main.rs"), "{here}");
+        assert!(here.contains(':'), "file:line, {here}");
+        assert_eq!(panic_location(None), "unknown location");
     }
 }
