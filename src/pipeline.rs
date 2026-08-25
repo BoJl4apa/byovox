@@ -17,7 +17,9 @@ use crate::polish::{Polisher, word_count};
 use crate::stt::Transcriber;
 
 pub struct PipelineConfig {
-    pub mode: HotkeyMode,
+    /// `hotkey.mode` as configured. Only ever read by `Pipeline::new`, which seeds
+    /// `Shared::mode` with it — the tray owns the live value from then on.
+    pub initial_mode: HotkeyMode,
     pub min_hold: Duration,
     pub polish_min_words: usize,
     pub prompt: Option<String>,
@@ -34,16 +36,22 @@ pub struct Shared {
     /// The tray's Enable/Disable toggle. A disabled pipeline starts nothing; an event
     /// arriving during a recording closes the microphone and discards the audio.
     pub enabled: bool,
+    /// The live hotkey mode, seeded from `PipelineConfig::initial_mode` and flipped by the
+    /// tray's Mode item. `handle` reads it here rather than from `cfg`, so switching modes
+    /// for one long dictation needs no TOML edit and no restart.
+    pub mode: HotkeyMode,
     pub last_transcript: Option<String>,
     pub last_error: Option<String>,
 }
 
 impl Default for Shared {
-    /// A fresh pipeline is idle and listening; `bool::default()` would make it deaf.
+    /// A fresh pipeline is idle and listening; `bool::default()` would make it deaf. The
+    /// mode is a placeholder: `Pipeline::new` overwrites it with the configured one.
     fn default() -> Shared {
         Shared {
             state: "idle",
             enabled: true,
+            mode: HotkeyMode::Hold,
             last_transcript: None,
             last_error: None,
         }
@@ -162,7 +170,10 @@ impl Pipeline {
         indicator: Box<dyn Indicator>,
         recorder: Option<Box<dyn Recorder>>,
     ) -> Pipeline {
-        let shared = Arc::new(Mutex::new(Shared::default()));
+        let shared = Arc::new(Mutex::new(Shared {
+            mode: cfg.initial_mode,
+            ..Default::default()
+        }));
         Pipeline {
             cfg,
             capture,
@@ -184,10 +195,15 @@ impl Pipeline {
 
     pub fn handle(&mut self, ev: HotkeyEvent, now: Instant) -> Option<Outcome> {
         let recording = matches!(self.state, State::Recording { .. });
-        // The tray flips `enabled` from another thread, possibly mid-dictation. A disabled
-        // pipeline is deaf, but it never leaves the microphone open: the first event to
-        // arrive during a recording closes it and drops the audio.
-        if !self.shared.lock().unwrap().enabled {
+        // Both are the tray's to change, from another thread and possibly mid-dictation, so
+        // they are read once per event under one lock.
+        let (enabled, mode) = {
+            let shared = self.shared.lock().unwrap();
+            (shared.enabled, shared.mode)
+        };
+        // A disabled pipeline is deaf, but it never leaves the microphone open: the first
+        // event to arrive during a recording closes it and drops the audio.
+        if !enabled {
             if recording {
                 let _ = self.capture.stop();
                 self.set_state(State::Idle, IndicatorState::Idle);
@@ -198,7 +214,7 @@ impl Pipeline {
         }
         // In toggle mode a physical press is a toggle and releases are ignored, so a
         // backend that only knows press/release still drives both modes.
-        match (ev, self.cfg.mode, recording) {
+        match (ev, mode, recording) {
             (HotkeyEvent::Pressed, HotkeyMode::Hold, false)
             | (HotkeyEvent::Pressed, HotkeyMode::Toggle, false)
             | (HotkeyEvent::Toggle, _, false) => {
@@ -293,7 +309,7 @@ impl Pipeline {
             .filter(|_| word_count(&raw) >= self.cfg.polish_min_words);
         // Named on the row only when the stage actually ran — a failed polish still used the
         // model, a skipped one did not.
-        let polish_model = polisher.is_some().then(|| self.cfg.polish_model.as_str());
+        let polish_model = polisher.is_some().then_some(self.cfg.polish_model.as_str());
         let t = Instant::now();
         let polished = match polisher {
             Some(p) => match p.polish(&raw) {
@@ -445,7 +461,7 @@ mod tests {
         let ind = FakeIndicator::default();
         let rec = FakeRecorder::default();
         let cfg = PipelineConfig {
-            mode: HotkeyMode::Hold,
+            initial_mode: HotkeyMode::Hold,
             min_hold: Duration::from_millis(250),
             polish_min_words: 0,
             prompt: Some("Glossary: Acme".into()),
@@ -619,7 +635,7 @@ mod tests {
     #[test]
     fn toggle_mode_starts_and_stops_on_toggle() {
         let mut r = rig(FakeTranscriber::ok("hi"), None, false, false);
-        r.p.cfg.mode = HotkeyMode::Toggle;
+        r.p.shared().lock().unwrap().mode = HotkeyMode::Toggle;
         let t0 = Instant::now();
         assert!(r.p.handle(HotkeyEvent::Toggle, t0).is_none());
         assert!(
@@ -814,7 +830,7 @@ mod tests {
         let policy = LanguagePolicy::from_config(&LanguageConfig::default()).unwrap();
         Pipeline::new(
             PipelineConfig {
-                mode,
+                initial_mode: mode,
                 min_hold: Duration::ZERO,
                 polish_min_words: 0,
                 prompt: None,

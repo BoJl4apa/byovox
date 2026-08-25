@@ -365,7 +365,7 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
     let (event_loop, proxy) = ui::build_event_loop()?;
     let mut pipe = Pipeline::new(
         PipelineConfig {
-            mode,
+            initial_mode: mode,
             min_hold: Duration::from_millis(cfg.hotkey.min_hold_ms),
             polish_min_words: cfg.polish.min_words,
             prompt: Some(cfg.stt.prompt.clone()).filter(|p| !p.is_empty()),

@@ -8,14 +8,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId, WindowLevel};
 
-use crate::hotkey::HotkeyEvent;
+use crate::hotkey::{HotkeyEvent, HotkeyMode};
 use crate::indicator::{Indicator, IndicatorState};
 use crate::pipeline::Shared;
 
@@ -25,6 +25,7 @@ const ERROR_HOLD: Duration = Duration::from_secs(3);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuAction {
     ToggleEnabled,
+    ToggleMode,
     ShowLast,
     OpenConfig,
     OpenLogs,
@@ -86,6 +87,15 @@ pub fn icon_rgba(state: IndicatorState) -> Vec<u8> {
     px
 }
 
+/// The mode the tray's Mode item selects next. Two modes, so the item is a check mark on
+/// "Toggle mode" rather than a submenu.
+fn other_mode(current: HotkeyMode) -> HotkeyMode {
+    match current {
+        HotkeyMode::Hold => HotkeyMode::Toggle,
+        HotkeyMode::Toggle => HotkeyMode::Hold,
+    }
+}
+
 pub fn pill_text(state: IndicatorState) -> Option<&'static str> {
     match state {
         IndicatorState::Recording => Some("●  recording"),
@@ -108,11 +118,14 @@ struct App {
     cue: Option<Cue>,
     error_until: Option<Instant>,
     enabled: bool,
+    mode: HotkeyMode,
 }
 
 struct MenuItems {
     status: MenuItem,
     enabled: MenuItem,
+    /// Checked = toggle, cleared = hold.
+    mode: CheckMenuItem,
     show_last: MenuItem,
     open_config: MenuItem,
     open_logs: MenuItem,
@@ -126,6 +139,7 @@ impl App {
         let items = MenuItems {
             status: MenuItem::new("byovox: idle", false, None),
             enabled: MenuItem::new(if self.enabled { "Disable" } else { "Enable" }, true, None),
+            mode: CheckMenuItem::new("Toggle mode", true, self.mode == HotkeyMode::Toggle, None),
             show_last: MenuItem::new("Show last transcript", true, None),
             open_config: MenuItem::new("Open config", true, None),
             open_logs: MenuItem::new("Open logs", true, None),
@@ -136,6 +150,7 @@ impl App {
             &items.status,
             &PredefinedMenuItem::separator(),
             &items.enabled,
+            &items.mode,
             &items.show_last,
             &items.open_config,
             &items.open_logs,
@@ -154,6 +169,7 @@ impl App {
         let proxy = Mutex::new(self.proxy.clone());
         let ids = [
             (items.enabled.id().clone(), MenuAction::ToggleEnabled),
+            (items.mode.id().clone(), MenuAction::ToggleMode),
             (items.show_last.id().clone(), MenuAction::ShowLast),
             (items.open_config.id().clone(), MenuAction::OpenConfig),
             (items.open_logs.id().clone(), MenuAction::OpenLogs),
@@ -222,6 +238,21 @@ impl App {
                     items
                         .enabled
                         .set_text(if self.enabled { "Disable" } else { "Enable" });
+                }
+            }
+            MenuAction::ToggleMode => {
+                self.mode = other_mode(self.mode);
+                // A mode change mid-recording would strand the microphone — in toggle mode
+                // the matching release is ignored — so the recording is cancelled first.
+                // Cancel is a no-op unless the pipeline is recording, and it is obeyed in
+                // either mode.
+                let _ = self.hotkey_tx.send(HotkeyEvent::Cancel);
+                self.shared.lock().unwrap().mode = self.mode;
+                tracing::info!(mode = ?self.mode, "hotkey mode changed from the tray");
+                // muda flips the check itself on click; it is set from our own state so the
+                // mark and the pipeline cannot disagree.
+                if let Some(items) = &self.items {
+                    items.mode.set_checked(self.mode == HotkeyMode::Toggle);
                 }
             }
             MenuAction::ShowLast => {
@@ -314,9 +345,12 @@ pub fn run(
     log_dir: PathBuf,
 ) -> Result<()> {
     let proxy = event_loop.create_proxy();
-    // The menu's Enable/Disable label has to start where the pipeline actually is, not at an
-    // assumed `true`.
-    let enabled = shared.lock().unwrap().enabled;
+    // The menu's Enable/Disable label and Mode check have to start where the pipeline
+    // actually is, not at an assumed `true` and an assumed hold.
+    let (enabled, mode) = {
+        let s = shared.lock().unwrap();
+        (s.enabled, s.mode)
+    };
     let mut app = App {
         opts,
         shared,
@@ -330,6 +364,7 @@ pub fn run(
         cue: None,
         error_until: None,
         enabled,
+        mode,
     };
     event_loop.run_app(&mut app).context("event loop")?;
     Ok(())
@@ -640,6 +675,15 @@ mod tests {
         let c = (16 * 32 + 16) * 4;
         assert!(rec[c] > rec[c + 1] && rec[c] > rec[c + 2]);
         assert!(idle[c] == idle[c + 1] && idle[c] == idle[c + 2]);
+    }
+
+    /// The tray's Mode item is a check mark, so the click has to land on the other mode
+    /// and the mark has to follow the mode rather than muda's own auto-flip.
+    #[test]
+    fn the_mode_item_flips_between_hold_and_toggle() {
+        assert_eq!(other_mode(HotkeyMode::Hold), HotkeyMode::Toggle);
+        assert_eq!(other_mode(HotkeyMode::Toggle), HotkeyMode::Hold);
+        assert_eq!(other_mode(other_mode(HotkeyMode::Hold)), HotkeyMode::Hold);
     }
 
     #[test]

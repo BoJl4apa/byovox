@@ -28,7 +28,8 @@ and an unmapped layout routes to `language.default`, so every row below would lo
 
 ## Indicator
 - [ ] tray icon: grey idle, red recording, amber working, magenta for ~3 s on error
-- [ ] tray menu: Disable stops the hotkey; Show last transcript shows a dialog; Open config / Open logs open Explorer; Run check opens a console; Quit exits
+- [ ] tray menu: Disable stops the hotkey; Toggle mode takes its check mark and the hotkey then starts/stops on separate presses; Show last transcript shows a dialog; Open config / Open logs open Explorer; Run check opens a console; Quit exits
+- [ ] the pill never gets a taskbar button, on the first show and after a hide/re-show
 - [ ] `indicator.pill = false` and `cue = false` each remove exactly that layer
 
 ## Operations
