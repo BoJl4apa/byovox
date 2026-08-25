@@ -5,7 +5,7 @@ use byovox::{capture_log, check, config, hotkey, ipc, lang, pipeline, platform, 
 
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -433,11 +433,7 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
     std::thread::Builder::new()
         .name("byovox-pipeline".into())
         .spawn(move || {
-            let run = std::panic::AssertUnwindSafe(|| {
-                for ev in rx {
-                    pipe.handle(ev, Instant::now());
-                }
-            });
+            let run = std::panic::AssertUnwindSafe(|| pipeline::pump(&mut pipe, &rx));
             if std::panic::catch_unwind(run).is_err() {
                 tracing::error!("pipeline thread panicked; stopping byovox");
             }

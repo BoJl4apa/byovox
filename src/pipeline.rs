@@ -2,6 +2,7 @@
 //! boxed trait. One `handle` call per hotkey event; the return value is the outcome of a
 //! finished dictation, if one finished.
 
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -74,6 +75,36 @@ pub enum Outcome {
     /// The microphone could not be closed; no audio, so no request was made.
     CaptureFailed(String),
     SttFailed(String),
+}
+
+impl Outcome {
+    /// Whether the dictation reached Working — Transcribing/Polishing/Inserting — and so
+    /// occupied the pipeline thread long enough for hotkey events to queue up behind it.
+    /// `Discarded` (tap, cancel, disabled) and `CaptureFailed` are decided before the first
+    /// request, so nothing can have been waiting on them.
+    fn reached_working(&self) -> bool {
+        !matches!(self, Outcome::Discarded | Outcome::CaptureFailed(_))
+    }
+}
+
+/// Drive one pipeline from its event channel until every sender is gone.
+///
+/// The spec is explicit that "a press while Transcribing/Polishing/Inserting is ignored".
+/// `handle` runs a whole dictation synchronously, so an event that arrives meanwhile sits in
+/// the channel and would be obeyed afterwards — against a state machine that is by then back
+/// at Idle, and with a timestamp taken at drain time rather than event time. In toggle mode
+/// (including the IPC `toggle` path) that deferred event has nothing to pair with: it opens
+/// the microphone and leaves it open until the next toggle or `quit`. So everything queued
+/// behind a dictation is dropped, which is what "ignored" means here.
+pub fn pump(pipe: &mut Pipeline, rx: &Receiver<HotkeyEvent>) {
+    while let Ok(ev) = rx.recv() {
+        if pipe
+            .handle(ev, Instant::now())
+            .is_some_and(|out| out.reached_working())
+        {
+            while rx.try_recv().is_ok() {}
+        }
+    }
 }
 
 /// The head of a stage error, for WARN and above and for `Shared::last_error`: everything
@@ -713,6 +744,121 @@ mod tests {
                 "{ms} ms is not a plausible fake-backend timing"
             );
         }
+    }
+
+    /// A transcriber that posts a hotkey event into the pipeline's own channel while the
+    /// pipeline is Working — the window the spec says events are ignored in. Nothing else
+    /// can reproduce it: `handle` runs the whole dictation synchronously.
+    /// The sender is dropped as it is used: holding it would keep the channel connected and
+    /// `pump` would block on `recv` for ever instead of returning.
+    struct PressesWhileWorking {
+        tx: Mutex<Option<std::sync::mpsc::Sender<HotkeyEvent>>>,
+        event: HotkeyEvent,
+    }
+    impl Transcriber for PressesWhileWorking {
+        fn transcribe(
+            &self,
+            _wav: &[u8],
+            _language: &SttLanguage,
+            _prompt: Option<&str>,
+        ) -> Result<String, String> {
+            if let Some(tx) = self.tx.lock().unwrap().take() {
+                tx.send(self.event).expect("the pump still holds rx");
+            }
+            Ok("hi there".into())
+        }
+    }
+
+    /// A pipeline wired for `pump`: no minimum hold, so two events sent back to back are a
+    /// dictation rather than a discarded tap.
+    fn pump_rig(
+        mode: HotkeyMode,
+        cap: FakeCapture,
+        stt: Box<dyn Transcriber>,
+        ind: FakeIndicator,
+    ) -> Pipeline {
+        let policy = LanguagePolicy::from_config(&LanguageConfig::default()).unwrap();
+        Pipeline::new(
+            PipelineConfig {
+                mode,
+                min_hold: Duration::ZERO,
+                polish_min_words: 0,
+                prompt: None,
+                trailing_space: false,
+            },
+            Box::new(cap),
+            Box::new(FakeLayout(None)),
+            policy,
+            stt,
+            None,
+            vec![Box::new(FakeInject::new("type", false))],
+            Box::new(ind),
+            None,
+        )
+    }
+
+    /// B1: an event that arrives during Transcribing/Polishing/Inserting must be ignored,
+    /// not deferred. Obeyed afterwards it opens the microphone against a state machine that
+    /// is back at Idle — and in toggle mode nothing pairs with it, so the recording never
+    /// ends.
+    #[test]
+    fn an_event_arriving_while_working_never_starts_a_recording() {
+        for (mode, start, stop) in [
+            (HotkeyMode::Toggle, HotkeyEvent::Toggle, HotkeyEvent::Toggle),
+            (
+                HotkeyMode::Hold,
+                HotkeyEvent::Pressed,
+                HotkeyEvent::Released,
+            ),
+        ] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let cap = FakeCapture::new(16_000);
+            let ind = FakeIndicator::default();
+            let stt = PressesWhileWorking {
+                tx: Mutex::new(Some(tx.clone())),
+                event: start,
+            };
+            let mut p = pump_rig(mode, cap.clone(), Box::new(stt), ind.clone());
+
+            tx.send(start).unwrap();
+            tx.send(stop).unwrap();
+            drop(tx); // the transcriber's clone is the last one, and it drops it as it sends
+            pump(&mut p, &rx);
+
+            assert_eq!(
+                (cap.starts(), cap.stops()),
+                (1, 1),
+                "{mode:?}: the microphone reopened for a {start:?} delivered while Working"
+            );
+            assert_eq!(p.shared().lock().unwrap().state, "idle", "{mode:?}");
+            assert_eq!(ind.0.lock().unwrap().last(), Some(&S::Idle), "{mode:?}");
+        }
+    }
+
+    /// The drain must not eat a press that queued behind something that never reached
+    /// Working — a sub-`min_hold` tap closes the microphone in microseconds, and the press
+    /// after it is a dictation the user is asking for.
+    #[test]
+    fn a_press_behind_a_discarded_tap_still_dictates() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cap = FakeCapture::new(16_000);
+        let ind = FakeIndicator::default();
+        let mut p = pump_rig(
+            HotkeyMode::Toggle,
+            cap.clone(),
+            Box::new(FakeTranscriber::ok("hi there")),
+            ind.clone(),
+        );
+        p.cfg.min_hold = Duration::from_secs(10); // every hold here is a tap
+
+        tx.send(HotkeyEvent::Toggle).unwrap(); // start
+        tx.send(HotkeyEvent::Toggle).unwrap(); // stop: discarded as a tap
+        tx.send(HotkeyEvent::Toggle).unwrap(); // the next dictation, already queued
+        drop(tx);
+        pump(&mut p, &rx);
+
+        assert_eq!(cap.starts(), 2, "the press after a tap was dropped");
+        assert_eq!(p.shared().lock().unwrap().state, "recording");
     }
 
     #[test]
