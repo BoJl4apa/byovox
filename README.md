@@ -6,8 +6,8 @@
 
 Push-to-talk dictation against a speech-to-text server **you** run: hold a key, speak, release,
 and the transcript — optionally cleaned up by a language model you also run — is typed into the
-focused window. And what no other client does: byovox routes the language from the **keyboard
-layout of the window you are in**, read at the moment you press the key.
+focused window. The language comes from the **keyboard layout of the window you are in**, read
+at the moment you press the key.
 
 ## Is this for you?
 
@@ -30,8 +30,8 @@ layout of the window you are in**, read at the moment you press the key.
 - **Never lossy:** a dictation that reached the server is inserted even if every later stage
   fails; if no injection path works at all, `byovox last` hands the text back.
 - A tray icon, a recording pill, three short cues — no settings window, no auto-update, no
-  telemetry — and one TOML file, which holds no token, only the name of a variable to read one
-  from.
+  telemetry — and one TOML file, which holds no token: only the name of a variable, or the path
+  of a file, to read one from.
 
 ## Quick start
 
@@ -44,12 +44,13 @@ and run it with a model you have:
 whisper-server -m ggml-large-v3-turbo.bin --host 127.0.0.1 --port 8770 -l auto --convert
 ```
 
-`-l auto` is the flag to get right. whisper-server's own default is `-l en`, and a forced
-language is not a hint but an instruction to **produce** that language: speak Russian under
-`-l en` and the reply is an English translation, not a transcript. `auto` is also what makes
-byovox's policy mean anything, since byovox sends *no* `language` field when the policy
-resolves to auto and the server's default then decides. (`--convert` needs ffmpeg; byovox posts
-16 kHz mono WAV already, so it is optional here.)
+`-l auto` is the flag to get right. `-l` names the spoken language and the server's own default
+is `en` — but a forced language that does not match the speech does not fail loudly: what comes
+back is text in the forced language, so Russian spoken under `-l en` returns English.
+(Deliberate translation is `--translate`, a separate flag; byovox leaves it off.) `auto` is also
+what makes byovox's policy mean anything, since byovox sends *no* `language` field when the
+policy resolves to auto and the server's default then decides. (`--convert` needs ffmpeg;
+byovox posts 16 kHz mono WAV already, so it is optional here.)
 
 ### 2. Optionally, a cleanup model
 
@@ -90,8 +91,8 @@ cargo install --git https://github.com/BoJl4apa/byovox --locked  # ~2 min; byovo
 Run `byovox setup` to be asked for the endpoints — it probes each answer against your server as
 you give it, writes the commented config file, and finishes with `byovox check`. Or by hand:
 `byovox config --init` writes the documented default file and prints its path; open it and set
-three values — every command refuses to run while they are empty, and says which one — then the
-two byovox exists for:
+three values — byovox refuses to start the daemon or run `check` while they are empty, and names
+the missing key — then the two keys byovox exists for:
 
 ```toml
 [stt]
@@ -126,9 +127,8 @@ all required stages passed
 ```
 
 `check` records one second of room tone, so a high `p_nospeech` beside an invented stock phrase
-is the healthy result, not a broken server. A `warn network` row appears for any endpoint whose
-traffic would go in clear, and a `mic` peak under −40 dBFS says so outright — usually a Windows
-audio enhancement attenuating the device. Then:
+is the healthy result, not a broken server. A `mic` peak under −40 dBFS says so outright — a
+muted device, or a Windows audio enhancement attenuating it. Then:
 
 ```sh
 byovox         # starts the daemon in the background and prints its pid: tray icon, hotkey live
@@ -155,18 +155,18 @@ stderr as well as to the file — that is how you watch one that will not come u
 | `byovox quit` | stop the daemon |
 | `byovox autostart --enable` / `--disable` | per-user autostart |
 
-`--config <path>` points any of them at a different file.
+`--config <path>` points the ones that read it at a different file.
 
 ## Why this exists
 
 Three languages, layouts switched dozens of times a day. Hosted dictation infers the language
 from the audio alone, and across a close set it gets it wrong often enough to matter — the
-failure being not a garbled word but a whole sentence returned *translated* into the wrong
-language, which is what a model told to produce a language does. Self-hosted clients solved the
-privacy half and not this one: they treat the STT provider as a fixed vendor, so the fields
-that would fix it are not theirs to send — an explicit `language`, a candidate list, a `prompt`
-carrying the names and jargon whisper otherwise mangles. And none of them reads the keyboard
-layout, the one signal that already knows, per window, which language you are about to speak.
+failure being not a garbled word but a whole sentence coming back in the wrong language rather
+than transcribed. The self-hosted clients on offer solved the privacy half and not this one:
+they treat the STT provider as a fixed vendor, so the fields that would fix it are not theirs
+to send — an explicit `language`, a candidate list, a `prompt` carrying the names and jargon
+whisper otherwise mangles. So byovox reads the keyboard layout instead, the one signal that
+already knows, per window, which language you are about to speak.
 The rest is warmth and locality: models resident on a machine on your own network mean nothing
 you say crosses the internet, and the second dictation is not slower than the first.
 
@@ -185,10 +185,11 @@ than this README. The full argument, and what was measured to get there, is in
 | Language routed from the window's keyboard layout | yes | ? | follows the input language you switch with Win+Space | ? |
 | Constrained auto-detect (candidate list) | yes — `language_candidates` | yes — selecting languages narrows the set Flow chooses from | ? | ? |
 | Works offline / on a private network | yes | ? | no — requires an internet connection | yes — runs without OpenTypeless cloud services |
-| Platform | Windows | Mac, Windows, iOS, Android | Windows 10, Windows 11 | Windows, macOS, Linux |
+| Platform | Windows | Mac, Windows, iPhone, Android | Windows 10, Windows 11 | Windows, macOS, Linux |
 
 **?** — that project's own public documentation does not say, and this table does not guess.
-Every other cell comes from the linked pages, read 2026-08-26.
+Every other cell comes from the linked pages, read 2026-08-26 — except that Windows Voice
+Typing ships as part of Windows and has no source release.
 
 ## Security model
 
@@ -201,7 +202,8 @@ what is not — is in [SECURITY.md](SECURITY.md), along with how to report a vul
   characters and bidi overrides are stripped before anything is typed, and a transcript over
   `inject.max_chars` is held rather than typed — but the *text* is still the server's to
   choose. Point byovox at servers you run or trust, and prefer `localhost`, a
-  WireGuard/Tailscale link, or `https://` over plain HTTP — the token rides on the request.
+  WireGuard/Tailscale link, or `https://` over plain HTTP — the token rides on the request, and
+  a non-loopback `http://` endpoint gets a `warn network` row from `byovox check`.
 - **The capture log stores your voice and your text in plain files.** It is off by default;
   `capture_log.enabled = true` writes a WAV and the transcript for every dictation, kept for
   `capture_log.keep_days` (30 by default, `0` for ever). Transcripts also reach the log file
