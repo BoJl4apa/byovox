@@ -165,7 +165,10 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
         } else {
             config::expand_home(&cfg.capture_log.dir)
         };
-        Some(Box::new(capture_log::CaptureLog::new(dir)?))
+        Some(Box::new(capture_log::CaptureLog::new(
+            dir,
+            cfg.capture_log.keep_days,
+        )?))
     } else {
         None
     };

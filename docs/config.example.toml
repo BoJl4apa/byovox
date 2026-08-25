@@ -127,6 +127,14 @@ enabled = false
 # (Windows), ~/.local/share/byovox/capture (Linux),
 # ~/Library/Application Support/byovox/capture (macOS).
 dir = ""
+# Delete captures older than this many days. What accumulates here is recordings of your
+# voice and verbatim transcripts — including anything you dictated by mistake — so it does
+# not grow for ever by default. Pruning runs at startup and after each dictation, and only
+# ever touches files byovox itself named (`<timestamp>-<n>.wav`) plus the rows in
+# dictations.jsonl; anything else you keep in this directory is left alone.
+# 0 keeps everything: the right setting if you are deliberately building a corpus to tune
+# no_speech_threshold or your own correction rules — which is what byovox's own author runs.
+keep_days = 30
 
 [logging]
 # trace | debug | info | warn | error. Transcript text appears only at debug.

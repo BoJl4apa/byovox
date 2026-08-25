@@ -78,8 +78,9 @@ what is not — is in [SECURITY.md](SECURITY.md), along with how to report a vul
   choose. Point byovox at servers you run or trust, and prefer `localhost`, a
   WireGuard/Tailscale link, or `https://` over plain HTTP — the token rides on the request.
 - **The capture log stores your voice and your text in plain files.** It is off by default;
-  `capture_log.enabled = true` writes a WAV and the transcript for every dictation, and
-  prunes nothing. Transcripts also reach the log file at `logging.level = "debug"`.
+  `capture_log.enabled = true` writes a WAV and the transcript for every dictation, kept for
+  `capture_log.keep_days` (30 by default, `0` for ever). Transcripts also reach the log file
+  at `logging.level = "debug"`.
 - **The hook sees every key but records none.** Key events are compared against your hotkey
   and cancel key and are never logged, stored or sent anywhere; only a chord's trigger is
   swallowed. Anything running as you could do the same — byovox draws no boundary there.

@@ -154,13 +154,25 @@ impl Default for IndicatorConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CaptureLogConfig {
     pub enabled: bool,
     /// empty = `data_dir()` + `capture`, i.e. `%APPDATA%\byovox\data\capture` on Windows,
     /// `~/.local/share/byovox/capture` on Linux.
     pub dir: String,
+    /// Delete captures older than this many days; `0` keeps them for ever. The corpus is
+    /// voice recordings and verbatim transcripts, so it does not grow unbounded by default.
+    pub keep_days: u32,
+}
+impl Default for CaptureLogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dir: String::new(),
+            keep_days: 30,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
