@@ -318,10 +318,28 @@ fn stt_round_trip(
         .transcribe(&audio.to_wav(), language, prompt)
         .map_err(|e| strip_body(&e).to_string())?;
     Ok(format!(
-        "{:.2}s  \"{}\"",
+        "{:.2}s  {}\"{}\"",
         t.elapsed().as_secs_f32(),
+        no_speech(transcript.no_speech_prob, cfg.no_speech_threshold),
         prefix(&transcript.text)
     ))
+}
+
+/// What the STT row says about whisper's no-speech score, ready to print before the
+/// transcript. `check` records a second of room tone, so the score is usually high and the
+/// text beside it usually invented — the row has to show both, or a clean check looks like a
+/// hallucinating server. Empty when the server did not score the reply: nothing was measured,
+/// and `p_nospeech=0.00` would be a claim.
+fn no_speech(prob: Option<f32>, threshold: f64) -> String {
+    let Some(p) = prob else {
+        return String::new();
+    };
+    let gated = if threshold > 0.0 && f64::from(p) > threshold {
+        " (would be dropped as silence)"
+    } else {
+        ""
+    };
+    format!("p_nospeech={p:.2}{gated}  ")
 }
 
 /// One polish of a fixed sample dictation, as the row detail to print. Both the token and
@@ -359,8 +377,24 @@ fn record() -> Result<Audio, String> {
 mod tests {
     use super::{
         Audio, BUILT_IN_PROMPT, HotkeyConfig, PREFIX_CHARS, QUIET_DBFS, SAMPLE_RATE, hotkey_error,
-        prefix, prompt_text, stage_token, steady_state, strip_body,
+        no_speech, prefix, prompt_text, stage_token, steady_state, strip_body,
     };
+
+    /// `check` transcribes a second of room tone, so a high score beside invented text is the
+    /// healthy result — the row has to show the score and say whether the gate would act on
+    /// it, or a working setup reads as a hallucinating server. A server that scored nothing
+    /// claims nothing.
+    #[test]
+    fn the_stt_row_says_what_the_no_speech_gate_would_do() {
+        assert_eq!(no_speech(None, 0.6), "");
+        assert_eq!(no_speech(Some(0.04), 0.6), "p_nospeech=0.04  ");
+        assert_eq!(
+            no_speech(Some(0.76), 0.6),
+            "p_nospeech=0.76 (would be dropped as silence)  "
+        );
+        // With the gate off nothing is dropped, however sure whisper is.
+        assert_eq!(no_speech(Some(0.99), 0.0), "p_nospeech=0.99  ");
+    }
 
     /// A dictation is private: the report shows a prefix, cut on a character boundary so a
     /// non-ASCII transcript neither panics nor prints more than it promised.
