@@ -38,6 +38,11 @@ bad trade to take lightly: it puts a global keyboard hook and a live microphone 
 administrator process. Whether byovox should offer it at all, and behind what, is open —
 <https://github.com/BoJl4apa/byovox/issues>.
 
+A dictation can still end up facing an elevated window without the hook: `byovox toggle`
+starts one with no key press involved, and focus can move while you speak. Then the same rule
+applies to insertion instead — `type` and `paste` log `inject rung failed`, `clipboard-only`
+succeeds, and the done cue means *the text is on the clipboard, press Ctrl+V*.
+
 One thing to know about `type`: a newline in the text is typed as Enter, because that is what
 typing a newline means. The built-in cleanup prompt formats a spoken enumeration as a list,
 one item per line — so dictating a list into a chat box that sends on Enter sends the first
