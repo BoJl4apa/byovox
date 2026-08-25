@@ -1,7 +1,8 @@
 # cargo-deny: dependency advisories and licence policy.
 #
-# Run locally with `cargo deny check`; CI runs the same command. The advisory database
-# is fetched from RustSec, so a run needs network access.
+# Run locally with `cargo deny check --warn unmaintained`; CI runs the same command (without
+# the flag the unmaintained advisories below fail the run). The advisory database is fetched
+# from RustSec, so a run needs network access.
 
 [advisories]
 # Vulnerabilities are always an error in cargo-deny's v2 advisory schema, which is the
