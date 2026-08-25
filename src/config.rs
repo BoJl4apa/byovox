@@ -42,7 +42,9 @@ pub struct SttConfig {
 impl Default for SttConfig {
     fn default() -> Self {
         Self {
-            base_url: "http://your-whisper-host:8770/v1".into(),
+            // Empty on purpose: there is no server byovox can guess, and a placeholder host
+            // would fail as a DNS error instead of naming the key. `validate` refuses it.
+            base_url: String::new(),
             model: "whisper-1".into(),
             api_key_env: String::new(),
             api_key_file: String::new(),
@@ -88,8 +90,10 @@ impl Default for PolishConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            base_url: "http://your-llm-gateway:4000/v1".into(),
-            model: "your-cleanup-alias".into(),
+            // Empty like `stt.base_url`, for the same reason; `validate` names whichever of
+            // the two polish keys is missing while polish is enabled.
+            base_url: String::new(),
+            model: String::new(),
             api_key_env: String::new(),
             api_key_file: String::new(),
             min_words: 0,
@@ -310,12 +314,22 @@ pub fn expand_home(p: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
-/// Missing file = all defaults (a fresh install works before `config --init`). Any other
-/// read failure is reported, never silently treated as "absent".
+/// Missing file = all defaults, which then fail `validate` on the empty endpoints: the
+/// message tells a fresh install to run `config --init` and set them. Any other read failure
+/// is reported, never silently treated as "absent".
 pub fn load(path: &Path) -> Result<Config> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let cfg = Config::default();
+            validate(&cfg).with_context(|| {
+                format!(
+                    "no config at {} — run `byovox config --init` and set the endpoints",
+                    path.display()
+                )
+            })?;
+            return Ok(cfg);
+        }
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
     let cfg: Config =
@@ -328,6 +342,23 @@ pub fn load(path: &Path) -> Result<Config> {
 /// path every command loads through, so a bad value stops the daemon at startup and fails
 /// `byovox check` rather than surfacing at the first dictation.
 fn validate(cfg: &Config) -> Result<()> {
+    if cfg.stt.base_url.trim().is_empty() {
+        bail!(
+            "stt.base_url is empty: set it to your speech-to-text server, e.g. http://127.0.0.1:8770/v1"
+        );
+    }
+    if cfg.polish.enabled {
+        if cfg.polish.base_url.trim().is_empty() {
+            bail!(
+                "polish.base_url is empty: set it to your chat-completions gateway, or set polish.enabled = false"
+            );
+        }
+        if cfg.polish.model.trim().is_empty() {
+            bail!(
+                "polish.model is empty: name the model your gateway serves, or set polish.enabled = false"
+            );
+        }
+    }
     let t = cfg.stt.no_speech_threshold;
     // `contains` is false for NaN too, which is the right answer for a threshold nothing
     // could ever compare against.
@@ -448,11 +479,51 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A fresh install has no server byovox could guess, so the defaults are refused by name
+    /// — with the path and the command that writes the file — rather than loaded and then
+    /// failed at the first dictation as a DNS error on a placeholder host.
     #[test]
-    fn missing_file_loads_the_defaults() {
+    fn missing_file_names_the_empty_endpoint_and_the_init_command() {
         let dir = tempfile_dir("missing_file");
         let path = dir.join("config.toml");
-        assert_eq!(load(&path).unwrap(), Config::default());
+        let msg = format!("{:#}", load(&path).unwrap_err());
+        assert!(msg.contains("stt.base_url is empty"), "{msg}");
+        assert!(msg.contains("byovox config --init"), "{msg}");
+        assert!(msg.contains(&path.display().to_string()), "{msg}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Each endpoint key the daemon cannot run without is named when it is blank, and only
+    /// while it matters: polish off = no polish keys required.
+    #[test]
+    fn an_empty_endpoint_is_refused_by_name() {
+        let dir = tempfile_dir("empty_endpoint");
+        let path = dir.join("config.toml");
+        let cases = [
+            (
+                "[polish]\nbase_url = \"http://x/v1\"\nmodel = \"m\"\n",
+                "stt.base_url is empty",
+            ),
+            (
+                "[stt]\nbase_url = \"http://x/v1\"\n[polish]\nmodel = \"m\"\n",
+                "polish.base_url is empty",
+            ),
+            (
+                "[stt]\nbase_url = \"http://x/v1\"\n[polish]\nbase_url = \"http://x/v1\"\n",
+                "polish.model is empty",
+            ),
+        ];
+        for (toml, expect) in cases {
+            std::fs::write(&path, toml).unwrap();
+            let msg = format!("{:#}", load(&path).unwrap_err());
+            assert!(msg.contains(expect), "{toml:?}: {msg}");
+        }
+        std::fs::write(
+            &path,
+            "[stt]\nbase_url = \"http://x/v1\"\n[polish]\nenabled = false\n",
+        )
+        .unwrap();
+        assert!(load(&path).is_ok(), "polish off needs no polish keys");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -463,8 +534,14 @@ mod tests {
     fn a_threshold_outside_the_unit_range_names_the_key() {
         let dir = tempfile_dir("threshold_range");
         let path = dir.join("config.toml");
+        // Endpoints present, so the threshold is the only thing wrong with the file.
+        let with = |t: &str| {
+            format!(
+                "[stt]\nbase_url = \"http://x/v1\"\nno_speech_threshold = {t}\n[polish]\nenabled = false\n"
+            )
+        };
         for bad in ["1.5", "-0.1", "nan"] {
-            std::fs::write(&path, format!("[stt]\nno_speech_threshold = {bad}\n")).unwrap();
+            std::fs::write(&path, with(bad)).unwrap();
             // `{:#}` is how `main` prints a fatal, so this is the text the user sees.
             let msg = format!("{:#}", load(&path).unwrap_err());
             assert!(msg.contains("stt.no_speech_threshold"), "{bad}: {msg}");
@@ -472,7 +549,7 @@ mod tests {
         }
         // The ends are usable: 1.0 gates only a certainty, 0.0 turns the gate off.
         for good in ["0.0", "1.0", "0.6"] {
-            std::fs::write(&path, format!("[stt]\nno_speech_threshold = {good}\n")).unwrap();
+            std::fs::write(&path, with(good)).unwrap();
             assert!(load(&path).is_ok(), "{good}");
         }
         std::fs::remove_dir_all(&dir).unwrap();

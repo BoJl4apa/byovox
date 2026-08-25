@@ -17,7 +17,9 @@
 # across a WireGuard or Tailscale link is a reasonable choice. Over anything else, use
 # https:// — note that byovox verifies against the bundled Mozilla roots, not the Windows
 # certificate store, so a privately-signed certificate will not be accepted.
-base_url = "http://your-whisper-host:8770/v1"
+# Required: byovox refuses to start until this names your server, e.g.
+# "http://127.0.0.1:8770/v1" for a whisper.cpp server on this machine.
+base_url = ""
 # Sent as the `model` field. Self-hosted whisper.cpp ignores it; hosted APIs need a real name.
 model = "whisper-1"
 # Name of an environment variable holding a bearer token. Empty = no Authorization header
@@ -65,9 +67,11 @@ candidates = []
 # Send the transcript through a chat model that adds punctuation and removes fillers.
 # If this stage fails for any reason the raw transcript is typed instead.
 enabled = true
-# OpenAI-compatible base URL; byovox posts to {base_url}/chat/completions.
-base_url = "http://your-llm-gateway:4000/v1"
-model = "your-cleanup-alias"
+# OpenAI-compatible base URL; byovox posts to {base_url}/chat/completions. Required while
+# enabled = true, e.g. "http://127.0.0.1:4000/v1" for a LiteLLM or llama.cpp server here.
+base_url = ""
+# The model name (or gateway alias) to send. Required while enabled = true.
+model = ""
 # Environment variable holding the bearer token for the gateway.
 api_key_env = ""
 # Optional KEY=VALUE file consulted for that variable name when it is unset in the
