@@ -21,6 +21,15 @@ on:
         description: "Existing tag to release, e.g. v0.1.0"
         required: true
 
+# One run per tag at a time. A tag push and a dispatch naming that same tag are two separate
+# runs of this workflow, and both end at `gh release create` for one release: whichever gets
+# there second fails, after building and attesting an artefact nobody will ever download.
+# `cancel-in-progress: false` because the loser of that race is not the thing to kill — a
+# run that is already uploading assets should be allowed to finish.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 # Exactly what publishing needs: the release and its assets, and the two the attestation
 # action mints and records its signature with. Nothing wider.
 permissions:
