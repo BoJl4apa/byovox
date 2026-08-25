@@ -5,7 +5,7 @@ use anyhow::Result;
 
 use crate::capture::Capture;
 use crate::config::Config;
-use crate::hotkey::{Hotkey, validate_key_name};
+use crate::hotkey::{Hotkey, parse_chord, validate_key_name};
 use crate::inject::{Inject, InjectMode};
 use crate::layout::Layout;
 
@@ -38,7 +38,8 @@ pub fn detect(cfg: &Config) -> Result<Backends> {
 /// `inject.mode`, and the platform's own view of those keys — so calling it does not put the
 /// spawner between the daemon and any device.
 pub fn validate(cfg: &Config) -> Result<InjectMode> {
-    validate_key_name(&cfg.hotkey.key).map_err(|e| anyhow::anyhow!("hotkey.key: {e}"))?;
+    // A chord or a single name; the cancel key is one name, pressed on its own.
+    parse_chord(&cfg.hotkey.key).map_err(|e| anyhow::anyhow!("hotkey.key: {e}"))?;
     validate_key_name(&cfg.hotkey.cancel_key)
         .map_err(|e| anyhow::anyhow!("hotkey.cancel_key: {e}"))?;
     let mode = InjectMode::parse(&cfg.inject.mode).ok_or_else(|| {
@@ -215,5 +216,27 @@ mod tests {
         c.hotkey.cancel_key = "Escape".into();
         let e = rejection(&c);
         assert!(e.contains("Escape") && e.contains("differ"), "{e}");
+    }
+
+    /// A chord is `hotkey.key`'s other form, and `validate` is what the CLI calls before it
+    /// spawns a daemon whose stderr goes nowhere — so it has to accept one, and make the
+    /// chord's own refusals, without opening a device.
+    #[test]
+    fn a_chord_is_validated_before_any_device_is_opened() {
+        let mut c = Config::default();
+        c.hotkey.key = "ControlLeft+ShiftLeft+Z".into();
+        assert_eq!(validate(&c).unwrap(), InjectMode::Auto);
+
+        // A cancel key that is part of the chord could never fire.
+        c.hotkey.cancel_key = "ShiftLeft".into();
+        let e = rejection(&c);
+        assert!(e.contains("ShiftLeft") && e.contains("differ"), "{e}");
+
+        // A bare letter as the hotkey would swallow every one the user types.
+        let mut c = Config::default();
+        c.hotkey.key = "Z".into();
+        let e = rejection(&c);
+        assert!(e.starts_with("hotkey.key: "), "{e}");
+        assert!(e.contains("needs a modifier"), "{e}");
     }
 }

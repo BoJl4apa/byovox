@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use crate::audio::{Audio, SAMPLE_RATE};
 use crate::capture::{Capture, CpalCapture, describe_default_device};
 use crate::config::{Config, HotkeyConfig, PolishConfig, SttConfig, expand_home, resolve_token};
-use crate::hotkey::{HotkeyMode, validate_key_name};
+use crate::hotkey::{HotkeyMode, parse_chord, validate_key_name};
 use crate::lang::{LanguagePolicy, SttLanguage};
 use crate::pipeline::no_speech;
 use crate::polish::{BUILT_IN_PROMPT, PolishClient, Polisher};
@@ -73,7 +73,7 @@ fn strip_body(e: &str) -> &str {
 /// ones `platform::detect` rejects a row later; validating them here keeps an `ok` mark off a
 /// row whose own payload is the invalid value.
 fn hotkey_error(h: &HotkeyConfig) -> Option<String> {
-    if let Err(e) = validate_key_name(&h.key) {
+    if let Err(e) = parse_chord(&h.key) {
         return Some(format!("hotkey.key: {e}"));
     }
     if let Err(e) = validate_key_name(&h.cancel_key) {
@@ -83,6 +83,12 @@ fn hotkey_error(h: &HotkeyConfig) -> Option<String> {
         return Some(format!("hotkey.mode `{}`: expected hold | toggle", h.mode));
     }
     None
+}
+
+/// The hotkey row's detail: the key exactly as the file spells it, chord and all, so the row
+/// is something the user can compare against the line they edited.
+fn hotkey_row(h: &HotkeyConfig) -> String {
+    format!("{} {}, cancel {}", h.key, h.mode, h.cancel_key)
 }
 
 /// The captured clip minus its start transient: what the peak is measured over and what STT
@@ -156,14 +162,7 @@ pub fn run(cfg: &Config, config_path: &Path) -> bool {
     // section fails the check yet stops nothing else: no later stage needs it, and a
     // self-test is worth more when one run reports every problem.
     match hotkey_error(&cfg.hotkey) {
-        None => line(
-            "hotkey",
-            Some(true),
-            &format!(
-                "{} {}, cancel {}",
-                cfg.hotkey.key, cfg.hotkey.mode, cfg.hotkey.cancel_key
-            ),
-        ),
+        None => line("hotkey", Some(true), &hotkey_row(&cfg.hotkey)),
         Some(e) => {
             line("hotkey", Some(false), &e);
             all_ok = false;
@@ -382,7 +381,7 @@ fn record() -> Result<Audio, String> {
 mod tests {
     use super::{
         Audio, BUILT_IN_PROMPT, HotkeyConfig, PREFIX_CHARS, QUIET_DBFS, SAMPLE_RATE, hotkey_error,
-        no_speech_row, prefix, prompt_text, stage_token, steady_state, strip_body,
+        hotkey_row, no_speech_row, prefix, prompt_text, stage_token, steady_state, strip_body,
     };
 
     /// `check` transcribes a second of room tone, so a high score beside invented text is the
@@ -578,6 +577,35 @@ mod tests {
         assert_eq!(
             hotkey_error(&bad_mode).expect("bad mode"),
             "hotkey.mode `sometimes`: expected hold | toggle"
+        );
+    }
+
+    /// A chord is a `hotkey.key` the daemon accepts, so the row prints it — as configured,
+    /// which is what the user has to compare against the file. A bare letter is not.
+    #[test]
+    fn the_hotkey_row_takes_a_chord_and_still_refuses_a_bare_letter() {
+        let chord = HotkeyConfig {
+            key: "ControlLeft+ShiftLeft+Z".into(),
+            ..Default::default()
+        };
+        assert_eq!(hotkey_error(&chord), None);
+        assert_eq!(
+            hotkey_row(&chord),
+            "ControlLeft+ShiftLeft+Z hold, cancel Escape"
+        );
+        assert_eq!(
+            hotkey_row(&HotkeyConfig::default()),
+            "ControlRight hold, cancel Escape"
+        );
+
+        let bare = HotkeyConfig {
+            key: "Z".into(),
+            ..Default::default()
+        };
+        assert!(
+            hotkey_error(&bare)
+                .expect("a bare letter")
+                .starts_with("hotkey.key: `Z` needs a modifier")
         );
     }
 }
