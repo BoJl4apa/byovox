@@ -81,6 +81,10 @@ pub struct DictationRecord<'a> {
     /// The polish model, `None` when the stage did not run (disabled, or under min_words).
     pub polish_model: Option<&'a str>,
     pub rung: Option<&'static str>,
+    /// How many characters `sanitize` removed from what the endpoint served. Normally `0`;
+    /// non-zero says the reply carried control or bidi-override characters, and a row with
+    /// `rung: None` and a non-zero count is one that sanitised away to nothing.
+    pub dropped_chars: usize,
     pub stt_ms: u128,
     pub polish_ms: u128,
     pub inject_ms: u128,
@@ -368,6 +372,8 @@ impl Pipeline {
                     polished: None,
                     polish_model: None,
                     rung: None,
+                    // The gate fires before sanitising ever runs.
+                    dropped_chars: 0,
                     stt_ms,
                     polish_ms: 0,
                     inject_ms: 0,
@@ -425,9 +431,39 @@ impl Pipeline {
         // A reply that was nothing but those characters leaves nothing to type. Treated as
         // the empty transcript it now is, and deliberately not held for `byovox last`: that
         // command must never hand back something the user did not dictate.
+        //
+        // Recorded first, though. A reply made entirely of control and bidi-override
+        // characters is the hostile-endpoint event a corpus most wants to have kept, and the
+        // row carries the raw text alongside `dropped_chars`, which is what says it was
+        // emptied by sanitising rather than never spoken. Same reasoning as the no-speech
+        // gate below: the capture log is evidence, and evidence of the abnormal case is worth
+        // more than evidence of the normal one.
         if text.trim().is_empty() {
-            self.set_state(State::Idle, IndicatorState::Idle);
-            tracing::info!(lang = %language.label(), stt_ms, "empty transcript after sanitising");
+            if let Some(rec) = &mut self.recorder {
+                rec.record(&DictationRecord {
+                    audio: &audio,
+                    layout,
+                    language: &language,
+                    raw: &raw,
+                    no_speech_prob,
+                    polished: polished.as_deref(),
+                    polish_model,
+                    rung: None,
+                    dropped_chars: dropped,
+                    stt_ms,
+                    polish_ms,
+                    inject_ms: 0,
+                });
+            }
+            // A polish failure earlier in this dictation already set `last_error`; going to
+            // Idle here would leave the tray calm while an error was pending.
+            let final_state = if errored {
+                IndicatorState::Error
+            } else {
+                IndicatorState::Idle
+            };
+            self.set_state(State::Idle, final_state);
+            tracing::info!(lang = %language.label(), stt_ms, dropped, "empty transcript after sanitising");
             return Outcome::Empty;
         }
         if self.cfg.trailing_space {
@@ -481,6 +517,7 @@ impl Pipeline {
                 polished: polished.as_deref(),
                 polish_model,
                 rung: rung_used,
+                dropped_chars: dropped,
                 stt_ms,
                 polish_ms,
                 inject_ms,
@@ -1291,6 +1328,51 @@ mod tests {
         assert!(r.rung2.texts.lock().unwrap().is_empty());
         assert!(r.p.shared().lock().unwrap().last_transcript.is_none());
         assert_eq!(r.ind.0.lock().unwrap().last(), Some(&S::Idle));
+
+        // The corpus keeps the evidence, exactly as the no-speech gate does. `raw` is what
+        // the endpoint served, and `dropped_chars` beside `rung: None` is what says the reply
+        // sanitised away to nothing rather than never arriving at all.
+        let recs = r.rec.0.lock().unwrap();
+        assert_eq!(recs.len(), 1, "the hostile reply left no row");
+        assert_eq!(recs[0].raw, "\x1b\x07\t\r\u{202E}\u{2066}");
+        assert_eq!(recs[0].dropped_chars, 6);
+        assert_eq!(recs[0].rung, None);
+    }
+
+    /// An ordinary dictation records a zero, so a non-zero count in the corpus always means
+    /// the endpoint really did send something that had to be removed.
+    #[test]
+    fn an_untouched_dictation_records_no_dropped_characters() {
+        let mut clean = rig(FakeTranscriber::ok("hello there"), None, false, false);
+        dictate(&mut clean, Duration::from_secs(1));
+        assert_eq!(clean.rec.0.lock().unwrap()[0].dropped_chars, 0);
+
+        let mut dirty = rig(FakeTranscriber::ok("a\tb\rc"), None, false, false);
+        dictate(&mut dirty, Duration::from_secs(1));
+        let recs = dirty.rec.0.lock().unwrap();
+        assert_eq!(recs[0].dropped_chars, 2);
+        assert_eq!(recs[0].rung, Some("type"), "this one still got typed");
+    }
+
+    /// A polish failure sets `last_error`; if the raw fallback then sanitises to nothing, the
+    /// tray must not fall quiet with an error still pending.
+    #[test]
+    fn a_polish_failure_still_shows_an_error_when_the_reply_sanitises_away() {
+        let mut r = rig(
+            FakeTranscriber::ok("\x1b\x07"),
+            Some(FakePolisher::err("polish HTTP 500: x")),
+            false,
+            false,
+        );
+        assert_eq!(
+            dictate(&mut r, Duration::from_secs(1)),
+            Some(Outcome::Empty)
+        );
+        assert_eq!(r.ind.0.lock().unwrap().last(), Some(&S::Error));
+        assert_eq!(
+            r.p.shared().lock().unwrap().last_error.as_deref(),
+            Some("polish HTTP 500")
+        );
     }
 
     /// Sanitising happens once, on the text about to be injected, so whichever rung wins sees

@@ -136,8 +136,10 @@ cue = true
 
 [capture_log]
 # Keep every dictation as a WAV plus a JSONL row (raw text, polished text, keyboard layout,
-# language sent, polish model, per-stage latency) — training data for your own correction
-# rules. Off by default.
+# language sent, polish model, per-stage latency, and how many characters the sanitiser
+# removed from the endpoint's reply) — training data for your own correction rules. A reply
+# that sanitised away to nothing is recorded too, since that is the one worth looking at.
+# Off by default.
 enabled = false
 # Directory; empty = byovox's data directory + `capture`: %APPDATA%\byovox\data\capture
 # (Windows), ~/.local/share/byovox/capture (Linux),

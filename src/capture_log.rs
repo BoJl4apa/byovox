@@ -250,6 +250,10 @@ impl Recorder for CaptureLog {
             "polished": r.polished,
             "polish_model": r.polish_model,
             "rung": r.rung,
+            // How many characters the sanitiser removed from what the endpoint served.
+            // Normally 0; with `rung: null` and a non-zero count, the reply sanitised away
+            // to nothing and this row is the only record that it ever arrived.
+            "dropped_chars": r.dropped_chars,
             "stt_ms": capped(r.stt_ms),
             "polish_ms": capped(r.polish_ms),
             "inject_ms": capped(r.inject_ms),
@@ -305,6 +309,7 @@ mod tests {
             polished: Some("Polished."),
             polish_model: Some("cleanup-1"),
             rung: Some("type"),
+            dropped_chars: 0,
             stt_ms: 600,
             polish_ms: 400,
             inject_ms: 10,
@@ -347,6 +352,7 @@ mod tests {
                 polished: None,
                 polish_model: None,
                 rung: None,
+                dropped_chars: 0,
                 stt_ms: 1,
                 polish_ms: 0,
                 inject_ms: 0,
@@ -666,6 +672,7 @@ mod tests {
             polished: None,
             polish_model: None,
             rung: None,
+            dropped_chars: 0,
             stt_ms: 1,
             polish_ms: 0,
             inject_ms: 0,
