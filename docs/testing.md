@@ -22,7 +22,7 @@ and an unmapped layout routes to `language.default`, so every row below would lo
 
 ## Insertion
 - [ ] Notepad, a browser text field, Windows Terminal, VS Code: text lands with all scripts intact
-- [ ] an elevated window (Task Manager's search, or an admin PowerShell): `type` and `paste` fail in the log, `clipboard-only` succeeds, done cue plays, Ctrl+V pastes
+- [ ] an elevated window (Task Manager's search, or an admin PowerShell): the hotkey is ignored while it has focus — no recording starts, the tray icon stays grey, no line in the log
 - [ ] `inject.mode = "paste"`: clipboard content from before the dictation is restored afterwards
 - [ ] polish endpoint down (wrong port): raw transcript inserted, error cue, WARN in log
 
@@ -34,6 +34,7 @@ and an unmapped layout routes to `language.default`, so every row below would lo
 
 ## Operations
 - [ ] second `byovox` → "already running"
+- [ ] close the terminal that ran `byovox`: the tray survives; `byovox run` and close its terminal: the tray exits
 - [ ] `byovox status` / `byovox last` reflect the last dictation
 - [ ] `capture_log.enabled = true`: WAV + JSONL row appear per dictation; transcript text absent from the INFO log
 - [ ] `byovox autostart --enable`, sign out/in: daemon running; `--disable` removes it

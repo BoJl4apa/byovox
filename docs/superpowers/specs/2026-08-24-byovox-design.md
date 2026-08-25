@@ -5,8 +5,8 @@
 byovox ("bring your own vox") is a push-to-talk dictation client for the desktop. Hold a
 key, speak, release: the audio goes to a speech-to-text endpoint you run, the transcript
 optionally goes through a cleanup model you run, and the result is typed into whatever
-has focus. It is a single Rust binary with no UI beyond a tray icon and a recording
-indicator, configured by one TOML file.
+has focus. It is one Rust crate over two binaries — a console CLI and a windowless daemon —
+with no UI beyond a tray icon and a recording indicator, configured by one TOML file.
 
 It exists because every off-the-shelf client treats STT as a fixed vendor and makes only
 the cleanup model pluggable. When you own the STT server, the client needs to speak to it

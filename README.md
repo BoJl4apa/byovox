@@ -9,8 +9,8 @@ you press the key and routes the language from it — an explicit language for l
 map, constrained auto-detection for the rest. Multilingual dictation without touching a
 setting.
 
-- One binary, one TOML file (secrets via environment variables), a tray icon and a
-  recording indicator. Nothing else.
+- One TOML file (secrets via environment variables), a tray icon and a recording indicator.
+  Nothing else.
 - Any OpenAI-compatible `/v1/audio/transcriptions` and `/v1/chat/completions`.
   Constrained auto-detection (`language_candidates`) needs a whisper.cpp server that
   understands the field; everything else is standard.
@@ -25,7 +25,8 @@ setting.
 Rust 1.88 or newer.
 
 ```sh
-cargo install --path .   # or: cargo build --release, then use target/release/byovox
+cargo install --path .   # installs both binaries, byovox and byovox-daemon, side by side
+                         # (or: cargo build --release, then use target/release)
 byovox config --init     # writes the documented default file and prints its path
 ```
 
@@ -37,8 +38,12 @@ and an endpoint that authenticates by network identity needs neither. Set
 
 ```sh
 byovox check   # exercises every stage — mic, layout, STT, polish — and reports the rungs
-byovox         # the daemon: tray icon, hotkey live
+byovox         # starts the daemon in the background and prints its pid: tray icon, hotkey live
 ```
+
+The daemon is `byovox-daemon`, a windowless binary beside the CLI: the tray outlives the
+terminal you started it from. `byovox run` keeps it in this terminal instead, logging to
+stderr as well as to the file — that is how you watch one that will not come up.
 
 Hold **Right Ctrl**, speak, release; the text lands in the focused window. Escape while
 holding discards the recording. Quit from the tray, or `byovox quit`.
@@ -47,7 +52,8 @@ holding discards the recording. Quit from the tray, or `byovox quit`.
 
 | | |
 |---|---|
-| `byovox` | run the daemon: hotkey, tray icon, indicator |
+| `byovox` | start the daemon in the background: hotkey, tray icon, indicator |
+| `byovox run` | run it in this terminal instead, logging to stderr too |
 | `byovox check` | self-test — every stage, and which backend each one chose |
 | `byovox config` | print the effective configuration and where every key came from |
 | `byovox config --init` | write the documented default file (never overwrites one) |

@@ -27,14 +27,16 @@ Three rungs, tried in the order below while `inject.mode = "auto"`:
 | `paste` | clipboard, Ctrl+V, previous clipboard **text** restored | a clipboard holding an image is replaced and not restored |
 | `clipboard-only` | clipboard, nothing else | you press Ctrl+V |
 
-UIPI — the Windows rule that a process cannot send input to a window running at a higher
-integrity level — blocks `type` and `paste` into anything elevated: Task Manager's search box,
-an admin PowerShell, most installers. That is expected, not a fault. Both rungs log
-`inject rung failed`, `clipboard-only` succeeds, and the done cue then means *the text is on
-the clipboard — press Ctrl+V*.
+UIPI — the Windows rule that a process cannot reach across integrity levels — meets byovox
+before insertion does. A low-level keyboard hook installed by a non-elevated process is not
+shown the keystrokes going to an elevated window, so while Task Manager's search box, an admin
+PowerShell or an installer has focus the hotkey does nothing at all: no recording starts, the
+tray icon stays grey, and the log gets no line. That is UIPI working, not a fault.
 
-Running byovox itself elevated would lift the restriction and is a bad trade: it puts a global
-keyboard hook and a live microphone inside an administrator process.
+Dictating into elevated windows therefore means running byovox itself elevated, and that is a
+bad trade to take lightly: it puts a global keyboard hook and a live microphone inside an
+administrator process. Whether byovox should offer it at all, and behind what, is open —
+<https://github.com/BoJl4apa/byovox/issues>.
 
 One thing to know about `type`: a newline in the text is typed as Enter, because that is what
 typing a newline means. The built-in cleanup prompt formats a spoken enumeration as a list,
@@ -55,6 +57,12 @@ like an English one, and the log line says `lang=auto` either way. Map the layou
 in — see [`config.example.toml`](config.example.toml) — and a Hebrew editor and an English
 terminal then route to different languages with nothing configured per app.
 
+Route a language you are not speaking and whisper does not transcribe it, it **translates**:
+Hebrew speech under `language_candidates = ["en", "ru"]` comes back as English, and English or
+Russian speech in a window on the Hebrew layout comes back as Hebrew. That is the model doing
+what it was asked, deterministically, and it is the reason to keep the layout matched to the
+language you are speaking rather than to the language you are writing about.
+
 ## Microphone level
 
 Windows "audio enhancements" (Settings → System → Sound → the input device → Audio
@@ -68,10 +76,15 @@ enhancements off for that device and run `check` again.
 
 ## Autostart
 
-`byovox autostart --enable` writes the quoted path of the current executable to
+`byovox autostart --enable` writes the quoted path of `byovox-daemon.exe` — the binary beside
+the CLI that the tray actually runs in — to
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` under the value name `byovox`;
-`--disable` deletes it. Per-user, no elevation, no installer. Move or rename the binary and the
-value has to be written again.
+`--disable` deletes it. Per-user, no elevation, no installer. Move or rename the binaries and
+the value has to be written again.
+
+`byovox-daemon.exe` is a windows-subsystem binary: it has no console, so nothing flashes at
+logon and closing the terminal that ran `byovox` cannot take the tray with it. `byovox run` is
+the same daemon inside the console CLI, for watching one start.
 
 ## Where things live
 
