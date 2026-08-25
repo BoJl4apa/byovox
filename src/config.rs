@@ -314,9 +314,10 @@ pub fn expand_home(p: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
-/// Missing file = all defaults, which then fail `validate` on the empty endpoints: the
-/// message tells a fresh install to run `config --init` and set them. Any other read failure
-/// is reported, never silently treated as "absent".
+/// Missing file = all defaults, which then fail `validate` on the empty endpoints: the message
+/// tells a fresh install how to get one. `byovox setup` first — it asks for the endpoints and
+/// probes them — then `config --init` for anyone who would rather edit the file. Any other read
+/// failure is reported, never silently treated as "absent".
 pub fn load(path: &Path) -> Result<Config> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -324,7 +325,8 @@ pub fn load(path: &Path) -> Result<Config> {
             let cfg = Config::default();
             validate(&cfg).with_context(|| {
                 format!(
-                    "no config at {} — run `byovox config --init` and set the endpoints",
+                    "no config at {} — run `byovox setup`, or `byovox config --init` and set \
+                     the endpoints",
                     path.display()
                 )
             })?;
@@ -480,15 +482,23 @@ mod tests {
     }
 
     /// A fresh install has no server byovox could guess, so the defaults are refused by name
-    /// — with the path and the command that writes the file — rather than loaded and then
+    /// — with the path and both commands that write the file — rather than loaded and then
     /// failed at the first dictation as a DNS error on a placeholder host.
+    ///
+    /// This message is the one a newcomer meets, so it names the shorter road first: `setup`
+    /// asks for the endpoints and probes them, `config --init` writes the file to edit.
     #[test]
-    fn missing_file_names_the_empty_endpoint_and_the_init_command() {
+    fn missing_file_names_the_empty_endpoint_and_both_commands_that_write_one() {
         let dir = tempfile_dir("missing_file");
         let path = dir.join("config.toml");
         let msg = format!("{:#}", load(&path).unwrap_err());
         assert!(msg.contains("stt.base_url is empty"), "{msg}");
+        assert!(msg.contains("byovox setup"), "{msg}");
         assert!(msg.contains("byovox config --init"), "{msg}");
+        assert!(
+            msg.find("byovox setup") < msg.find("byovox config --init"),
+            "the wizard is offered first: {msg}"
+        );
         assert!(msg.contains(&path.display().to_string()), "{msg}");
         std::fs::remove_dir_all(&dir).unwrap();
     }

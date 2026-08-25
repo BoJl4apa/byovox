@@ -163,6 +163,68 @@ fn prompt_text(prompt_file: &str) -> Result<String, String> {
         .map_err(|e| format!("polish.prompt_file {}: {e}", path.display()))
 }
 
+/// The `warn network` row for every endpoint that would put its traffic on the wire in clear.
+///
+/// The one place these rows are produced. `byovox setup` deliberately does not call it: the
+/// wizard ends by running `check` on the file it just wrote, so printing them itself would say
+/// the same thing twice about the same endpoint, seconds apart.
+pub fn warn_cleartext(cfg: &Config) {
+    for (key, url) in cleartext_endpoints(cfg) {
+        // Redacted rather than printed raw: these rows get pasted into bug reports, and a
+        // `base_url` can carry `user:pass@`.
+        let url = redact_userinfo(url);
+        warn_line("network", &format!("{key} {url} is {CLEARTEXT_WARNING}"));
+    }
+}
+
+/// A second of digital silence: what `byovox setup` probes an STT endpoint with. The wizard
+/// asks its questions one at a time and has not reached the microphone, so it cannot offer a
+/// real capture — and whether the endpoint answers at all is the whole question at that point.
+fn silence() -> Audio {
+    Audio {
+        samples: vec![0; SAMPLE_RATE as usize],
+    }
+}
+
+/// The `stt` row, for a `Config` the user is part-way through answering in `byovox setup`:
+/// the same token pre-check and the same round trip `run` performs, printed as the same row.
+///
+/// Takes the whole config, not just `[stt]`, so the language field comes off `[language]`
+/// through `LanguagePolicy` — the one encoding `run` uses — rather than being assumed here.
+/// The one thing it cannot match is the live keyboard layout: reading that means standing up a
+/// platform backend, which the wizard has not done, so this resolves as an unmapped layout
+/// does. Identical whenever `language.by_layout` does not name the layout in use, which is the
+/// shipped default and always true at the moment the wizard probes.
+pub fn probe_stt(cfg: &Config) -> bool {
+    let language = match LanguagePolicy::from_config(&cfg.language) {
+        Ok(policy) => policy.resolve(None),
+        Err(e) => return report("stt", Err(e.to_string())),
+    };
+    let row = stage_token(&cfg.stt.api_key_env, &cfg.stt.api_key_file)
+        .and_then(|key| stt_round_trip(&cfg.stt, key, &silence(), &language));
+    report("stt", row)
+}
+
+/// The `polish` row, for a gateway the user has just typed into `byovox setup`. As
+/// `probe_stt`: `run`'s own stage, printed as `run`'s own row.
+pub fn probe_polish(cfg: &Config) -> bool {
+    report("polish", polish_round_trip(&cfg.polish))
+}
+
+/// A stage result as its row, and whether it passed.
+fn report(stage: &str, row: Result<String, String>) -> bool {
+    match row {
+        Ok(detail) => {
+            line(stage, Some(true), &detail);
+            true
+        }
+        Err(e) => {
+            line(stage, Some(false), &e);
+            false
+        }
+    }
+}
+
 pub fn run(cfg: &Config, config_path: &Path) -> bool {
     let mut all_ok = true;
 
@@ -175,12 +237,7 @@ pub fn run(cfg: &Config, config_path: &Path) -> bool {
 
     // Near the top, where the endpoints are still the subject: by the time the stt row has
     // printed a happy round trip, "and by the way it was unencrypted" reads as an aside.
-    for (key, url) in cleartext_endpoints(cfg) {
-        // Redacted rather than printed raw: these rows get pasted into bug reports, and a
-        // `base_url` can carry `user:pass@`.
-        let url = redact_userinfo(url);
-        warn_line("network", &format!("{key} {url} is {CLEARTEXT_WARNING}"));
-    }
+    warn_cleartext(cfg);
 
     let policy = match LanguagePolicy::from_config(&cfg.language) {
         Ok(p) => p,

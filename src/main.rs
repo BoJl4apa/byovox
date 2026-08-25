@@ -1,11 +1,12 @@
 //! byovox — push-to-talk dictation against a speech-to-text server you run.
 //! CLI entry: subcommand dispatch. The daemon itself lives in `byovox::daemon`.
 
-use byovox::{check, config, daemon, ipc};
+use byovox::{check, config, daemon, ipc, setup};
 // Only the Windows autostart path names it; on other targets the import would be unused.
 #[cfg(windows)]
 use byovox::platform;
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -38,6 +39,8 @@ enum Cmd {
     Status,
     /// Print the most recent transcript held by the daemon
     Last,
+    /// Ask for the endpoints, probe each answer, and write the config file
+    Setup,
     /// Exercise every stage and report the backend rungs
     Check {
         /// Wait for Enter before exiting (used when launched from the tray)
@@ -75,6 +78,7 @@ fn main() {
         Some(Cmd::Quit) => relay(ipc::Request::Quit),
         Some(Cmd::Status) => status(),
         Some(Cmd::Last) => last(),
+        Some(Cmd::Setup) => setup_cmd(path),
         Some(Cmd::Check { pause }) => check_cmd(path, pause),
         Some(Cmd::Config { init }) => config_cmd(path, init),
         Some(Cmd::Autostart { enable, disable }) => autostart(enable, disable, given),
@@ -201,18 +205,37 @@ fn check_cmd(path: PathBuf, pause: bool) -> Result<()> {
     Ok(())
 }
 
+/// The wizard's exit code, chosen here rather than in the library: 1 when the `check` it ends
+/// on failed, the same as `byovox check` itself, so a script gating on either keeps meaning
+/// "byovox can dictate".
+fn setup_cmd(path: PathBuf) -> Result<()> {
+    if !setup::run(&path)? {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 fn config_cmd(path: PathBuf, init: bool) -> Result<()> {
     if init {
-        if path.exists() {
-            bail!(
-                "{} already exists — edit it, or delete it and re-run",
-                path.display()
-            );
-        }
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(&path, config::EXAMPLE)?;
+        // The refusal and the write in one operation. `exists()` then `write` is a window,
+        // and not clobbering a config is the whole of what this branch promises.
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut f) => f
+                .write_all(config::EXAMPLE.as_bytes())
+                .with_context(|| format!("writing {}", path.display()))?,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => bail!(
+                "{} already exists — edit it, or delete it and re-run",
+                path.display()
+            ),
+            Err(e) => return Err(e).with_context(|| format!("writing {}", path.display())),
+        }
         println!("wrote {}", path.display());
         return Ok(());
     }
@@ -293,6 +316,16 @@ mod tests {
                 .cmd,
             Some(Cmd::Check { pause: true })
         ));
+    }
+
+    /// The wizard writes the file `--config` names, so the flag has to reach it — and it is
+    /// a console command: `byovox-daemon` has no stdin to ask questions on and never gets it.
+    #[test]
+    fn setup_takes_the_config_path_it_will_write() {
+        let c = Cli::try_parse_from(["byovox", "setup", "--config", "x.toml"]).expect("setup");
+        assert!(matches!(c.cmd, Some(Cmd::Setup)));
+        assert_eq!(c.config.as_deref(), Some(std::path::Path::new("x.toml")));
+        assert!(Cli::try_parse_from(["byovox", "setup", "--yes"]).is_err());
     }
 
     /// The foreground daemon, for watching one start. Same global `--config` as the rest.

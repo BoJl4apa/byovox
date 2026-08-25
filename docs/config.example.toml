@@ -4,6 +4,11 @@
 # change. Unknown keys are an error, so a typo fails loudly instead of silently doing
 # nothing. Secrets never go in this file: name an environment variable instead.
 #
+# Three keys have no default byovox could guess and are required before anything runs:
+# stt.base_url, and — while polish is enabled — polish.base_url and polish.model. Fill them
+# in here, or run `byovox setup` to be asked for these, have each answer probed against the
+# server as you give it, and get this file back with your answers in it.
+#
 # Location: %APPDATA%\byovox\config\config.toml (Windows), ~/.config/byovox/config.toml
 # (Linux), ~/Library/Application Support/byovox/config.toml (macOS).
 # `byovox config` prints the effective value of every key and where it came from.

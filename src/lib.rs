@@ -19,6 +19,7 @@ pub mod multipart;
 pub mod pipeline;
 pub mod platform;
 pub mod polish;
+pub mod setup;
 pub mod stt;
 #[cfg(test)]
 pub mod testutil;

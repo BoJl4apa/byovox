@@ -52,6 +52,7 @@ and an unmapped layout routes to `language.default`, so every row below would lo
 - [ ] `capture_log.enabled = true`: WAV + JSONL row appear per dictation; transcript text absent from the INFO log
 - [ ] `byovox autostart --enable`, sign out/in: daemon running; `--disable` removes it
 - [ ] unknown key in config: exit 2 naming the key, from the bare `byovox` as well as from `byovox run` — and no daemon left behind
+- [ ] `byovox setup` on a fresh config: probes pass, file written with comments intact, `check` passes
 
 ## Last run
 
