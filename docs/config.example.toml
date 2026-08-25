@@ -69,7 +69,9 @@ timeout_s = 20
 [hotkey]
 # One W3C UI Events `code` name — bare modifiers work on Windows and on Linux via evdev —
 # or a chord: Modifier+...+Key, e.g. "ControlLeft+ShiftLeft+Z". Every element but the last
-# must be held down; the last one triggers on top of them.
+# must be held down; the last one triggers on top of them. A held element still does whatever
+# it normally does — any accepted name may be a modifier, so a chord on CapsLock toggles caps
+# every time you use it.
 # Accepted, in full: ControlLeft, ControlRight, AltLeft, AltRight, ShiftLeft, ShiftRight,
 # MetaLeft, MetaRight, CapsLock, ScrollLock, Pause, Insert, Escape, F13, F14, F15, F16, F17,
 # F18, F19, F20, F21, F22, F23, F24 — plus the letters A-Z and the digits 0-9, accepted only
