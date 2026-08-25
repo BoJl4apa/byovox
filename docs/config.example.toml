@@ -67,12 +67,23 @@ prompt_file = ""
 timeout_s = 20
 
 [hotkey]
-# W3C UI Events `code` name. Bare modifiers work on Windows and on Linux via evdev.
+# One W3C UI Events `code` name — bare modifiers work on Windows and on Linux via evdev —
+# or a chord: Modifier+...+Key, e.g. "ControlLeft+ShiftLeft+Z". Every element but the last
+# must be held down; the last one triggers on top of them.
 # Accepted, in full: ControlLeft, ControlRight, AltLeft, AltRight, ShiftLeft, ShiftRight,
 # MetaLeft, MetaRight, CapsLock, ScrollLock, Pause, Insert, Escape, F13, F14, F15, F16, F17,
-# F18, F19, F20, F21, F22, F23, F24. Anything else is refused at startup and by `byovox check`.
+# F18, F19, F20, F21, F22, F23, F24 — plus the letters A-Z and the digits 0-9, accepted only
+# as a chord's last element (a bare letter as the hotkey would swallow every one you type).
+# Anything else is refused at startup and by `byovox check`.
+# A chord's trigger is swallowed: the focused window never sees the combination, so
+# ControlLeft+ShiftLeft+Z does not also reach the editor underneath. The modifiers themselves
+# pass through untouched.
+# Names are *physical* keys, not the characters printed on them: Z is the key a US layout
+# labels Z and stays that key on a Cyrillic or Hebrew layout, where it types я or ז.
 key = "ControlRight"
 # "hold": press = record, release = send. "toggle": press to start, press again to send.
+# A chord in "hold" means holding all of it — the modifiers and the trigger — while you
+# speak; letting go of any one of them ends the recording.
 mode = "hold"
 # A hold shorter than this is an accidental tap: discarded, no request made.
 min_hold_ms = 250
