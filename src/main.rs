@@ -4,6 +4,7 @@
 use byovox::{check, config, daemon, ipc, platform};
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -84,15 +85,17 @@ fn main() {
 /// The bare invocation: start the windowless daemon binary and give the shell its prompt back.
 ///
 /// Detached, with no console inherited from this one and none created, so closing the terminal
-/// that typed `byovox` cannot take the tray icon with it. Nothing is waited for: `byovox
-/// status` is how you ask whether it came up, and `byovox run` is how you watch one start when
-/// it did not.
+/// that typed `byovox` cannot take the tray icon with it. That detachment is also why this
+/// function does the two things it does before printing anything: the daemon's stderr goes to
+/// `NUL`, so it can neither refuse a config nor die where the user would see it.
 fn spawn_daemon(config: Option<PathBuf>) -> Result<()> {
     // Answered here rather than by letting the second daemon lose its own single-instance
     // check, because that one loses inside a process with no stderr for anyone to read.
     if ipc::daemon_running(&ipc::socket_name()) {
         bail!("already running");
     }
+    // Every refusal the daemon would make from the config alone, made on this console first.
+    daemon::preflight(config.as_deref())?;
     let exe = std::env::current_exe().context("current exe")?;
     let daemon_exe = daemon::daemon_exe(&exe);
     if !daemon_exe.exists() {
@@ -115,9 +118,31 @@ fn spawn_daemon(config: Option<PathBuf>) -> Result<()> {
         // receives its close event. CREATE_NO_WINDOW (0x08000000): nor open one of its own.
         cmd.creation_flags(0x0000_0008 | 0x0800_0000);
     }
-    let child = cmd
+    let mut child = cmd
         .spawn()
         .with_context(|| format!("starting {}", daemon_exe.display()))?;
+    // The pid is printed only once the daemon answers its socket, because a pid is what the
+    // user will `quit` and `status` against. `try_wait` is what makes the deadline a backstop
+    // rather than the usual latency: a daemon that dies is reported the moment it dies, and
+    // the deadline is left for one that is alive but has not bound yet — a different failure,
+    // which must not claim the process exited.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        if ipc::daemon_running(&ipc::socket_name()) {
+            break;
+        }
+        if child
+            .try_wait()
+            .context("waiting for the daemon")?
+            .is_some()
+        {
+            bail!("daemon exited early — run `byovox run` to see why");
+        }
+        if std::time::Instant::now() >= deadline {
+            bail!("daemon did not answer within 2s — run `byovox run` to see why");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
     println!("byovox daemon started (pid {})", child.id());
     Ok(())
 }

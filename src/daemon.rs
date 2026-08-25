@@ -44,6 +44,36 @@ pub fn cli_exe(exe: &Path) -> PathBuf {
     exe.with_file_name(format!("byovox{}", std::env::consts::EXE_SUFFIX))
 }
 
+/// Everything the daemon will refuse, decided from the config alone and holding no device.
+///
+/// The CLI runs this on the console before it spawns anything. The daemon it starts has a null
+/// stderr and no log file open until it has read the config, so a config the daemon cannot
+/// accept has to be reported by the process the user typed into, or it is reported nowhere.
+/// `start` runs the same list again once its log file *is* open — that is the path a Run-key
+/// daemon takes, where there is no console at either end.
+pub fn preflight(config_path: Option<&Path>) -> Result<Config> {
+    let path = config_path.map_or_else(config::default_path, Path::to_path_buf);
+    let cfg = config::load(&path)?;
+    validate(&cfg)?;
+    Ok(cfg)
+}
+
+/// The refusals `preflight` and `start` share, so the console and the daemon cannot drift.
+fn validate(cfg: &Config) -> Result<()> {
+    // Only when `RUST_LOG` is unset: `init_logging` reads the variable first and never looks
+    // at the key when it is set, so rejecting the key here would fail a daemon over a line it
+    // was not going to read.
+    if std::env::var("RUST_LOG").is_err() {
+        parse_level(&cfg.logging.level)?;
+    }
+    HotkeyMode::parse(&cfg.hotkey.mode).ok_or_else(|| {
+        anyhow::anyhow!("hotkey.mode `{}`: expected hold | toggle", cfg.hotkey.mode)
+    })?;
+    lang::LanguagePolicy::from_config(&cfg.language)?;
+    platform::validate(cfg)?;
+    Ok(())
+}
+
 /// Owns the appender guard so that every fatal raised once logging is up reaches the log
 /// file, not just the caller's `eprintln!` — an autostarted daemon's stderr goes nowhere.
 /// `process::exit` runs no destructors, so the guard has to be dropped here by hand.
@@ -83,6 +113,11 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
     // single-instance check writes its failure into the same daily log file.
     tracing::info!(pid = std::process::id(), version = env!("CARGO_PKG_VERSION"), config = %path.display(), "byovox starting");
 
+    // The list the spawning CLI already refused on its console, refused again here with the
+    // log file open — a daemon the Run key started has no console at either end, and this is
+    // the only place its config errors can be recorded. The parses below repeat a few of them
+    // because they need the values; they are string comparisons, not devices.
+    validate(&cfg)?;
     let mode = HotkeyMode::parse(&cfg.hotkey.mode).ok_or_else(|| {
         anyhow::anyhow!("hotkey.mode `{}`: expected hold | toggle", cfg.hotkey.mode)
     })?;

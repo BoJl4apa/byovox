@@ -27,6 +27,17 @@ pub struct Backends {
 }
 
 pub fn detect(cfg: &Config) -> Result<Backends> {
+    let mode = validate(cfg)?;
+    platform_detect(cfg, mode)
+}
+
+/// Every refusal `detect` makes before it opens a device, and the inject mode it settled on.
+///
+/// Split out so the CLI can make the same refusals on the console it was typed into, before it
+/// spawns a daemon whose stderr goes nowhere. It opens nothing and holds nothing — key names,
+/// `inject.mode`, and the platform's own view of those keys — so calling it does not put the
+/// spawner between the daemon and any device.
+pub fn validate(cfg: &Config) -> Result<InjectMode> {
     validate_key_name(&cfg.hotkey.key).map_err(|e| anyhow::anyhow!("hotkey.key: {e}"))?;
     validate_key_name(&cfg.hotkey.cancel_key)
         .map_err(|e| anyhow::anyhow!("hotkey.cancel_key: {e}"))?;
@@ -36,7 +47,23 @@ pub fn detect(cfg: &Config) -> Result<Backends> {
             cfg.inject.mode
         )
     })?;
-    platform_detect(cfg, mode)
+    platform_validate(cfg)?;
+    Ok(mode)
+}
+
+/// The hotkey names as the platform itself resolves them: on Windows, virtual-key codes and
+/// the rule that the cancel key must differ from the hotkey. `HookHotkey::new` installs
+/// nothing — the hook goes in when its thread runs — so this is as free as the name checks.
+#[cfg(windows)]
+fn platform_validate(cfg: &Config) -> Result<()> {
+    windows::hotkey::HookHotkey::new(&cfg.hotkey.key, &cfg.hotkey.cancel_key)
+        .map(|_| ())
+        .map_err(anyhow::Error::msg)
+}
+
+#[cfg(not(windows))]
+fn platform_validate(_cfg: &Config) -> Result<()> {
+    Ok(())
 }
 
 /// The rungs a mode selects, in the order the pipeline tries them. Owns no resource: all
@@ -165,6 +192,18 @@ mod tests {
         let e = rejection(&c);
         assert!(e.starts_with("hotkey.cancel_key: "), "{e}");
         assert!(e.contains("Nope"), "{e}");
+    }
+
+    /// The claim `validate` is split out for: the whole default config passes it on a box with
+    /// no input device at all, so a spawner may call it without standing between the daemon
+    /// and the microphone. Runs on CI, unlike the `detect` tests above.
+    #[test]
+    fn validate_accepts_the_default_config_without_opening_a_device() {
+        assert_eq!(
+            validate(&Config::default()).unwrap(),
+            InjectMode::Auto,
+            "the default inject.mode"
+        );
     }
 
     /// The target branch of the hook wins, so a cancel key equal to the hotkey could never
