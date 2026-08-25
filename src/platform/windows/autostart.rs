@@ -8,7 +8,7 @@ use winreg::enums::{HKEY_CURRENT_USER, KEY_WRITE};
 
 const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
-/// The command line to register.
+/// The command line to register, for the executable `exe` names.
 ///
 /// `config` is carried through because `--config` is a global flag: a user who registers
 /// autostart while pointing at a non-default file expects the autostarted daemon to read that
@@ -28,9 +28,11 @@ fn command_line(exe: &Path, config: Option<&Path>) -> Result<String> {
     ))
 }
 
+/// What gets registered is `byovox-daemon`, never the CLI doing the registering: the CLI is
+/// console-subsystem, so the Run key would flash a console window at every logon.
 pub fn enable(config: Option<&Path>) -> Result<()> {
     let exe = std::env::current_exe().context("current exe")?;
-    let command = command_line(&exe, config)?;
+    let command = command_line(&crate::daemon::daemon_exe(&exe), config)?;
     // Registry errors say only "The system cannot find the file specified", so every call
     // carries the key it was talking about.
     let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
@@ -62,12 +64,19 @@ mod tests {
     /// A `Run` value runs with an unrelated working directory, so a relative `--config` would
     /// resolve to a different file at login — or to none, and the daemon would come up on the
     /// defaults without a word. Pure: it never touches the registry.
+    ///
+    /// It also pins what gets registered. The CLI is console-subsystem: registering it would
+    /// flash a console window at every logon, which is the whole reason the daemon is its own
+    /// binary.
     #[test]
     fn a_relative_config_is_absolutised_before_it_is_registered() {
-        let exe = Path::new(r"C:\bin\byovox.exe");
-        assert_eq!(command_line(exe, None).unwrap(), r#""C:\bin\byovox.exe""#);
+        let exe = crate::daemon::daemon_exe(Path::new(r"C:\bin\byovox.exe"));
+        assert_eq!(
+            command_line(&exe, None).unwrap(),
+            r#""C:\bin\byovox-daemon.exe""#
+        );
 
-        let relative = command_line(exe, Some(Path::new("byovox.toml"))).unwrap();
+        let relative = command_line(&exe, Some(Path::new("byovox.toml"))).unwrap();
         assert!(
             !relative.contains(r#"--config "byovox.toml""#),
             "still relative: {relative}"
@@ -79,10 +88,10 @@ mod tests {
         );
 
         // An absolute path is already what it will mean at login, so it is passed through.
-        let absolute = command_line(exe, Some(Path::new(r"C:\somewhere\byovox.toml"))).unwrap();
+        let absolute = command_line(&exe, Some(Path::new(r"C:\somewhere\byovox.toml"))).unwrap();
         assert_eq!(
             absolute,
-            r#""C:\bin\byovox.exe" --config "C:\somewhere\byovox.toml""#
+            r#""C:\bin\byovox-daemon.exe" --config "C:\somewhere\byovox.toml""#
         );
     }
 
@@ -101,7 +110,7 @@ mod tests {
         enable(None).expect("enable");
         let value: String = key.get_value("byovox").expect("byovox value");
         println!("after enable: {value}");
-        let exe = std::env::current_exe().expect("current exe");
+        let exe = crate::daemon::daemon_exe(&std::env::current_exe().expect("current exe"));
         assert_eq!(value, format!("\"{}\"", exe.display()));
 
         let cfg = Path::new(r"C:\somewhere\byovox.toml");
