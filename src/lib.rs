@@ -8,6 +8,7 @@ pub mod config;
 pub mod hotkey;
 pub mod indicator;
 pub mod inject;
+pub mod ipc;
 pub mod lang;
 pub mod layout;
 pub mod multipart;
