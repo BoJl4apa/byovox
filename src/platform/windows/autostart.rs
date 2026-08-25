@@ -4,37 +4,87 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use winreg::RegKey;
-use winreg::enums::HKEY_CURRENT_USER;
+use winreg::enums::{HKEY_CURRENT_USER, KEY_WRITE};
 
 const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
-/// `config` is carried into the registered command line. `--config` is a global flag, so a
-/// user who registers autostart while pointing at a non-default file expects the autostarted
-/// daemon to read that file rather than silently falling back to the platform default.
+/// The command line to register.
+///
+/// `config` is carried through because `--config` is a global flag: a user who registers
+/// autostart while pointing at a non-default file expects the autostarted daemon to read that
+/// file, not to fall back to the platform default. It is absolutised first — a `Run` value is
+/// executed with an unrelated working directory, so a relative path registered from a shell
+/// would resolve somewhere else at login and start the daemon on a different config, or none.
+fn command_line(exe: &Path, config: Option<&Path>) -> Result<String> {
+    let Some(c) = config else {
+        return Ok(format!("\"{}\"", exe.display()));
+    };
+    let absolute =
+        std::path::absolute(c).with_context(|| format!("resolving --config {}", c.display()))?;
+    Ok(format!(
+        "\"{}\" --config \"{}\"",
+        exe.display(),
+        absolute.display()
+    ))
+}
+
 pub fn enable(config: Option<&Path>) -> Result<()> {
     let exe = std::env::current_exe().context("current exe")?;
-    let command = match config {
-        Some(c) => format!("\"{}\" --config \"{}\"", exe.display(), c.display()),
-        None => format!("\"{}\"", exe.display()),
-    };
-    let (key, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(RUN)?;
-    key.set_value("byovox", &command)?;
+    let command = command_line(&exe, config)?;
+    // Registry errors say only "The system cannot find the file specified", so every call
+    // carries the key it was talking about.
+    let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
+        .create_subkey(RUN)
+        .with_context(|| format!(r"HKCU\{RUN}"))?;
+    key.set_value("byovox", &command)
+        .with_context(|| format!(r"HKCU\{RUN}\byovox"))?;
     Ok(())
 }
 
 pub fn disable() -> Result<()> {
-    let key =
-        RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(RUN, winreg::enums::KEY_WRITE)?;
+    let key = match RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(RUN, KEY_WRITE) {
+        Ok(key) => key,
+        // No Run key at all is nothing to unregister — the same answer as no value under it.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!(r"HKCU\{RUN}")),
+    };
     match key.delete_value("byovox") {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.into()),
+        Err(e) => Err(e).with_context(|| format!(r"HKCU\{RUN}\byovox")),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `Run` value runs with an unrelated working directory, so a relative `--config` would
+    /// resolve to a different file at login — or to none, and the daemon would come up on the
+    /// defaults without a word. Pure: it never touches the registry.
+    #[test]
+    fn a_relative_config_is_absolutised_before_it_is_registered() {
+        let exe = Path::new(r"C:\bin\byovox.exe");
+        assert_eq!(command_line(exe, None).unwrap(), r#""C:\bin\byovox.exe""#);
+
+        let relative = command_line(exe, Some(Path::new("byovox.toml"))).unwrap();
+        assert!(
+            !relative.contains(r#"--config "byovox.toml""#),
+            "still relative: {relative}"
+        );
+        let resolved = std::path::absolute("byovox.toml").unwrap();
+        assert!(
+            relative.ends_with(&format!("--config \"{}\"", resolved.display())),
+            "{relative}"
+        );
+
+        // An absolute path is already what it will mean at login, so it is passed through.
+        let absolute = command_line(exe, Some(Path::new(r"C:\somewhere\byovox.toml"))).unwrap();
+        assert_eq!(
+            absolute,
+            r#""C:\bin\byovox.exe" --config "C:\somewhere\byovox.toml""#
+        );
+    }
 
     /// `#[ignore]`d: it writes the **real** `HKCU\...\Run` key of the user running it. Any
     /// `byovox` value already there is read first and put back at the end, so a box with
