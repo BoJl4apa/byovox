@@ -89,13 +89,17 @@ fn main() {
 /// function does the two things it does before printing anything: the daemon's stderr goes to
 /// `NUL`, so it can neither refuse a config nor die where the user would see it.
 fn spawn_daemon(config: Option<PathBuf>) -> Result<()> {
+    // Every refusal the daemon would make from the config alone, made on this console first.
+    //
+    // Before the single-instance check, not after: a broken config is broken whether or not a
+    // daemon happens to be up, and "already running" would send the user looking at the wrong
+    // thing. This is also the order the daemon itself reads them in.
+    daemon::preflight(config.as_deref())?;
     // Answered here rather than by letting the second daemon lose its own single-instance
     // check, because that one loses inside a process with no stderr for anyone to read.
     if ipc::daemon_running(&ipc::socket_name()) {
         bail!("already running");
     }
-    // Every refusal the daemon would make from the config alone, made on this console first.
-    daemon::preflight(config.as_deref())?;
     let exe = std::env::current_exe().context("current exe")?;
     let daemon_exe = daemon::daemon_exe(&exe);
     if !daemon_exe.exists() {
