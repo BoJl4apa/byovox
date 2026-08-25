@@ -1,15 +1,24 @@
 //! Per-user autostart via HKCU\...\Run — no elevation, no installer.
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use winreg::RegKey;
 use winreg::enums::HKEY_CURRENT_USER;
 
 const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
-pub fn enable() -> Result<()> {
+/// `config` is carried into the registered command line. `--config` is a global flag, so a
+/// user who registers autostart while pointing at a non-default file expects the autostarted
+/// daemon to read that file rather than silently falling back to the platform default.
+pub fn enable(config: Option<&Path>) -> Result<()> {
     let exe = std::env::current_exe().context("current exe")?;
+    let command = match config {
+        Some(c) => format!("\"{}\" --config \"{}\"", exe.display(), c.display()),
+        None => format!("\"{}\"", exe.display()),
+    };
     let (key, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(RUN)?;
-    key.set_value("byovox", &format!("\"{}\"", exe.display()))?;
+    key.set_value("byovox", &command)?;
     Ok(())
 }
 
@@ -39,11 +48,20 @@ mod tests {
         let original: Option<String> = key.get_value("byovox").ok();
         println!("original Run\\byovox: {original:?}");
 
-        enable().expect("enable");
+        enable(None).expect("enable");
         let value: String = key.get_value("byovox").expect("byovox value");
         println!("after enable: {value}");
         let exe = std::env::current_exe().expect("current exe");
         assert_eq!(value, format!("\"{}\"", exe.display()));
+
+        let cfg = Path::new(r"C:\somewhere\byovox.toml");
+        enable(Some(cfg)).expect("enable with a config");
+        let value: String = key.get_value("byovox").expect("byovox value");
+        println!("after enable --config: {value}");
+        assert_eq!(
+            value,
+            format!("\"{}\" --config \"{}\"", exe.display(), cfg.display())
+        );
 
         disable().expect("disable");
         let after = key.get_value::<String, _>("byovox");

@@ -37,6 +37,10 @@ pub struct Reply {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
+    /// Whether the daemon will act on a hotkey at all. A disabled pipeline is idle *and*
+    /// deaf, and `state` alone cannot tell the two apart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
 }
@@ -49,6 +53,7 @@ impl std::fmt::Debug for Reply {
             .field("error", &self.error)
             .field("text", &self.text.as_ref().map(|_| "<redacted>"))
             .field("state", &self.state)
+            .field("enabled", &self.enabled)
             .field("last_error", &self.last_error)
             .finish()
     }
