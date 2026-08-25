@@ -25,13 +25,14 @@ setting.
 Rust 1.88 or newer.
 
 ```sh
-cargo install --path .   # installs both binaries, byovox and byovox-daemon, side by side
-                         # (or: cargo build --release, then use target/release)
-byovox config --init     # writes the documented default file and prints its path
+cargo install --git https://github.com/BoJl4apa/byovox --locked   # ~2 min; installs byovox and byovox-daemon
+                          # (from a checkout: cargo install --path . --locked)
+byovox config --init      # writes the documented default file and prints its path
 ```
 
-Open that file and set the four endpoint keys — `stt.base_url`, `stt.model`,
-`polish.base_url`, `polish.model` — to your own servers. Tokens are never written here:
+Open that file and set the endpoint keys — `stt.base_url`, and `polish.base_url` plus
+`polish.model` — to your own servers; every command refuses to run while they are empty and
+says which one. Set `stt.model` only if your server needs a real model name. Tokens are never written here:
 `stt.api_key_env` and `polish.api_key_env` name an *environment variable* to read one from,
 and an endpoint that authenticates by network identity needs neither. Set
 `polish.enabled = false` to insert the raw transcript and skip the cleanup stage entirely.
