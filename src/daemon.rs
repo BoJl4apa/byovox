@@ -151,7 +151,7 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
     let stt = stt::SttClient::new(
         &cfg.stt.base_url,
         &cfg.stt.model,
-        config::resolve_token(&cfg.stt.api_key_env, ""),
+        config::resolve_token(&cfg.stt.api_key_env, &cfg.stt.api_key_file),
         Duration::from_secs(cfg.stt.timeout_s),
         cfg.stt.no_speech_threshold > 0.0,
     );

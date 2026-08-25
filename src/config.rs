@@ -30,6 +30,7 @@ pub struct SttConfig {
     pub base_url: String,
     pub model: String,
     pub api_key_env: String,
+    pub api_key_file: String,
     pub prompt: String,
     pub timeout_s: u64,
     /// Discard a transcript whose `no_speech_prob` exceeds this; `0.0` keeps every one.
@@ -44,6 +45,7 @@ impl Default for SttConfig {
             base_url: "http://your-whisper-host:8770/v1".into(),
             model: "whisper-1".into(),
             api_key_env: String::new(),
+            api_key_file: String::new(),
             prompt: String::new(),
             timeout_s: 30,
             no_speech_threshold: 0.3,
@@ -492,6 +494,36 @@ mod tests {
         assert_eq!(resolve_token("NOPE_UNSET", ""), None);
         // SAFETY: as above.
         unsafe { std::env::remove_var("MY_TOKEN") };
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Both stages read their token the same way. STT was env-var-only, which left its token
+    /// nowhere but the environment — readable by anything running as the user and inherited
+    /// by every process byovox spawns — while polish could keep one in a file.
+    #[test]
+    fn both_stages_resolve_a_token_from_a_key_file() {
+        let dir = tempfile_dir("stt_key_file");
+        let f = dir.join("env");
+        std::fs::write(&f, "STT_TOKEN=\"from-file\"\nPOLISH_TOKEN=other\n").unwrap();
+        // SAFETY: no other test reads or writes these names, and the environment API these
+        // calls wrap is internally synchronised on Windows.
+        unsafe { std::env::remove_var("STT_TOKEN") };
+
+        let cfg = SttConfig {
+            api_key_env: "STT_TOKEN".into(),
+            api_key_file: f.to_str().unwrap().into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_token(&cfg.api_key_env, &cfg.api_key_file),
+            Some("from-file".into())
+        );
+        // The default is still no token at all: naming no variable means an endpoint that
+        // authenticates some other way, and the file is never even opened.
+        let bare = SttConfig::default();
+        assert_eq!(bare.api_key_file, "");
+        assert_eq!(resolve_token(&bare.api_key_env, &bare.api_key_file), None);
+
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

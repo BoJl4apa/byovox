@@ -23,6 +23,9 @@ model = "whisper-1"
 # Name of an environment variable holding a bearer token. Empty = no Authorization header
 # (right for a server that authenticates by network identity).
 api_key_env = ""
+# Optional KEY=VALUE file consulted for that variable name when it is unset in the
+# environment (a place to keep one token shared with other tools).
+api_key_file = ""
 # Vocabulary priming sent as the whisper `prompt` on every request. Names and jargon
 # whisper would otherwise mangle, e.g. "Glossary: Acme, Kubernetes, Postgres, LiteLLM".
 prompt = ""

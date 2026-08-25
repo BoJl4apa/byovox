@@ -267,7 +267,7 @@ pub fn run(cfg: &Config, config_path: &Path) -> bool {
 
     // The token is checked even when there is no clip: it is a fault in the file, and one
     // run should name every fault it can see.
-    let stt_row = match stage_token(&cfg.stt.api_key_env, "") {
+    let stt_row = match stage_token(&cfg.stt.api_key_env, &cfg.stt.api_key_file) {
         Err(e) => Some(Err(e)),
         Ok(key) => audio
             .as_ref()
@@ -542,7 +542,8 @@ mod tests {
     /// endpoint the unauthenticated request would answer and the stage would print `ok`.
     #[test]
     fn a_named_but_unresolvable_token_fails_instead_of_going_out_anonymous() {
-        // `[stt]` has no `api_key_file`, so its message may name only the variable.
+        // With no `api_key_file` configured the message names only the variable — there is
+        // no second place the token could have come from to mention.
         assert_eq!(
             stage_token("BYOVOX_CHECK_NO_SUCH_TOKEN", "").unwrap_err(),
             "token: env var BYOVOX_CHECK_NO_SUCH_TOKEN unset"
