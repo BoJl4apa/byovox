@@ -46,7 +46,7 @@ impl Default for SttConfig {
             api_key_env: String::new(),
             prompt: String::new(),
             timeout_s: 30,
-            no_speech_threshold: 0.6,
+            no_speech_threshold: 0.3,
         }
     }
 }

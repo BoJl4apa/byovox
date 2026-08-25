@@ -25,10 +25,11 @@ timeout_s = 30
 # invents a stock phrase — "Thank you for watching!", "תודה." — but reports its own doubt
 # as `no_speech_prob` on every segment, and byovox discards anything above this. The
 # probability decides, never the text, so a real one-word utterance is never dropped for
-# what it happens to say. Measured over 26 held captures here: real speech scored 0.00 to
-# 0.08, the silent holds 0.74 to 0.75. 0.0 turns the gate off; a server that sends no
-# segments scores nothing and is never gated.
-no_speech_threshold = 0.6
+# what it happens to say. Measured here: real speech scores at most 0.08, silent holds 0.54
+# to 0.77 — the longer the silence the lower the score, so 0.3 sits in open space with room
+# either way. 0.0 turns the gate off; a server that sends no segments scores nothing and is
+# never gated.
+no_speech_threshold = 0.3
 
 [language]
 # Language for layouts not listed in by_layout, or when the layout cannot be read.
