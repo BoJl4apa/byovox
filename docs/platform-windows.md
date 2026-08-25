@@ -10,9 +10,25 @@ with the shell, which is why a **bare modifier** works as a push-to-talk key: `C
 accepted `hotkey.key` name is listed in [`config.example.toml`](config.example.toml); anything
 else is refused at startup and by `byovox check`, which prints the full list.
 
+The same hook is what makes a chord — `hotkey.key = "ControlLeft+ShiftLeft+Z"` — work, and it
+**swallows the trigger**: pressed on top of its modifiers the `Z` reaches byovox and stops
+there, so the editor underneath neither types a `z` nor sees a Ctrl+Shift+Z of its own.
+Pressed without them it types as usual. The names are **physical keys**, because the hook
+works in virtual-key codes rather than characters: `Z` is the key a US layout labels Z, and it
+stays that key on a Cyrillic or Hebrew layout, where it types я or ז.
+
+The modifiers themselves pass through untouched — an app left holding a Shift that never comes
+up is worse than any hotkey — so with the trigger swallowed the app sees them go down and come
+back up with no key pressed in between, and Windows acts on exactly that: Ctrl+Left Shift sets
+left-to-right and Ctrl+Right Shift right-to-left in RTL-aware editors, and Ctrl+Shift or
+Alt+Shift switches the keyboard layout where that hotkey is enabled. byovox therefore taps one
+unassigned virtual key (`0xFF`) the instant a chord fires: applications ignore a key nothing is
+bound to, while the shell sees a key pressed with those modifiers and leaves the text direction
+and the layout alone.
+
 The hook sees every key on the desktop, including synthesised ones, so byovox stamps the
 keystrokes it sends itself with a marker and ignores those: the Ctrl+V the `paste` rung sends
-cannot read as a hotkey press.
+cannot read as a hotkey press, and neither can that tap.
 
 No elevation, no driver, no service — the hook lives in the daemon's message loop and dies
 with it.

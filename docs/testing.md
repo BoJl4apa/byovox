@@ -10,6 +10,14 @@ Run `byovox check` first; every line below assumes it passed.
 - [ ] `mode = "toggle"`: press starts, press again sends
 - [ ] `byovox toggle` twice from a terminal: one dictation
 
+With `key = "ControlLeft+ShiftLeft+Z"`, into Notepad:
+
+- [ ] hold the chord and speak: one dictation, and **nothing** typed into the window — no `z`,
+      and a Hebrew paragraph keeps its direction (a bare Ctrl+Left Shift flips it)
+- [ ] plain `Z`, no modifiers: types a `z`, no recording starts
+- [ ] hold the chord, then let a modifier go first: recording ends and the text is inserted,
+      and no `z` leaks when the trigger finally comes up
+
 ## Language routing
 
 With `[language.by_layout] he = "he"` configured (see
