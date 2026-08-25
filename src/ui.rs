@@ -259,6 +259,8 @@ impl App {
                 shared_of(&self.shared).enabled = self.enabled;
                 // The pipeline dropping an event is not enough for a hotkey that swallows:
                 // a disabled daemon must let the chord's trigger through to the window.
+                // Every backend that swallows a trigger needs its own arming call here;
+                // only the Windows hook has one today.
                 #[cfg(windows)]
                 crate::platform::windows::hotkey::set_armed(self.enabled);
                 tracing::info!(enabled = self.enabled, "dictation toggled from the tray");
