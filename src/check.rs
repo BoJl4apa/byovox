@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::audio::{Audio, SAMPLE_RATE};
-use crate::capture::{Capture, CpalCapture, DeviceInfo, describe_device};
+use crate::capture::{Capture, CpalCapture, DeviceInfo, describe_device, input_names};
 use crate::config::{
     CLEARTEXT_WARNING, Config, HotkeyConfig, PolishConfig, SttConfig, expand_home,
     is_cleartext_remote, redact_userinfo, resolve_token,
@@ -279,8 +279,9 @@ pub fn run(cfg: &Config, config_path: &Path) -> bool {
 
     // Which microphone before anything is recorded from it, so a `capture.device` that names
     // no device fails as the key it is rather than as a missing microphone.
-    let audio = match describe_device(&cfg.capture.device) {
-        Ok(info) => match sample_microphone(&cfg.capture.device, &info) {
+    let device = describe_device(&cfg.capture.device);
+    let audio = match &device {
+        Ok(info) => match sample_microphone(&cfg.capture.device, info) {
             Ok(a) => {
                 let peak = a.peak_dbfs();
                 let warn = if peak < QUIET_DBFS {
@@ -305,11 +306,23 @@ pub fn run(cfg: &Config, config_path: &Path) -> bool {
             }
         },
         Err(e) => {
-            line("mic", Some(false), &e);
+            line("mic", Some(false), e);
             all_ok = false;
             None
         }
     };
+    let hands_free = device
+        .as_ref()
+        .is_ok_and(|info| is_hands_free(&info.name, info.rate));
+    if hands_free {
+        warn_line("mic", HANDS_FREE_WARNING);
+    }
+    // The names to choose between, whenever the choice is in question: the row failed, the
+    // warning above just asked for a different microphone, or the key is set and this row is
+    // what proves which device that spelling actually picked.
+    if audio.is_none() || hands_free || !cfg.capture.device.trim().is_empty() {
+        line("inputs", None, &input_row());
+    }
 
     let layout = backends.layout.current();
     let language = policy.resolve(layout);
@@ -392,6 +405,29 @@ fn sample_microphone(selector: &str, info: &DeviceInfo) -> Result<Audio, String>
     record(selector)
         .and_then(|a| steady_state(&a))
         .map_err(|e| format!("{info}: {e}"))
+}
+
+/// The `inputs` row's detail: every input device name in the order they are enumerated — the
+/// order a `capture.device` substring resolves in — or why they could not be listed.
+fn input_row() -> String {
+    match input_names() {
+        Ok(names) if names.is_empty() => "none".to_string(),
+        Ok(names) => names.join(" | "),
+        Err(e) => e,
+    }
+}
+
+/// What the `warn mic` row says about a Bluetooth headset's hands-free endpoint.
+const HANDS_FREE_WARNING: &str = "this is a Bluetooth hands-free profile: dictating through it switches the headset out \
+     of stereo for the duration — pin `capture.device` to another microphone";
+
+/// Whether the microphone about to be used is a Bluetooth headset's hands-free endpoint.
+/// Windows names it `Headset (… Hands-Free)` and either word is enough on its own; the rate
+/// catches a driver that names it something else, because the profile carries 8 or 16 kHz
+/// where a microphone worth dictating through reports 44.1 or 48.
+fn is_hands_free(name: &str, rate: u32) -> bool {
+    let name = name.to_lowercase();
+    name.contains("hands-free") || name.contains("headset") || rate <= 16_000
 }
 
 /// One transcription of the sampled clip, as the row detail to print. The client error is
@@ -478,9 +514,29 @@ fn record(selector: &str) -> Result<Audio, String> {
 mod tests {
     use super::{
         Audio, BUILT_IN_PROMPT, HotkeyConfig, PREFIX_CHARS, QUIET_DBFS, SAMPLE_RATE,
-        cleartext_endpoints, hotkey_error, hotkey_row, no_speech_row, prefix, prompt_text,
-        stage_token, steady_state, strip_body,
+        cleartext_endpoints, hotkey_error, hotkey_row, is_hands_free, no_speech_row, prefix,
+        prompt_text, stage_token, steady_state, strip_body,
     };
+
+    /// Recording through a headset's hands-free endpoint drags it out of stereo for the whole
+    /// dictation, which is audible in whatever is playing. Either word in the name says so,
+    /// whatever its case, and so does a rate no real microphone reports.
+    #[test]
+    fn a_bluetooth_hands_free_endpoint_is_warned_about_by_name_or_by_rate() {
+        assert!(is_hands_free("Headset (PaMu Slide Hands-Free)", 16_000));
+        assert!(is_hands_free("headset (pamu slide hands-free)", 16_000));
+        // Named as a headset but running at a real rate: still the endpoint to avoid.
+        assert!(is_hands_free("Headset Microphone (Some Dongle)", 48_000));
+        // A driver that says neither word, at a rate that gives it away anyway.
+        assert!(is_hands_free("PaMu Slide (Bluetooth SCO)", 8_000));
+        assert!(is_hands_free("Some Microphone", 16_000));
+
+        assert!(!is_hands_free("Microphone Array (Synaptics Audio)", 48_000));
+        assert!(!is_hands_free("Microphone (USB Audio Device)", 44_100));
+        // The A2DP endpoint of the very same headset is an output, never recorded from; if it
+        // ever appears as an input it is not the hands-free profile.
+        assert!(!is_hands_free("Headphones (PaMu Slide Stereo)", 48_000));
+    }
 
     /// `check` transcribes a second of room tone, so a high score beside invented text is the
     /// healthy result — the row has to show the score and say whether the gate would act on

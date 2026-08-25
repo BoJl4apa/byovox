@@ -103,6 +103,31 @@ stock phrase.
 -40 dBFS the row says so outright. If a normal speaking voice reads that low, turn the
 enhancements off for that device and run `check` again.
 
+### Bluetooth headsets
+
+Connect a Bluetooth headset and Windows makes it the default *recording* device. A headset
+carries a microphone only in its hands-free profile, so opening a capture stream on it drags
+the whole device out of A2DP (stereo, full bandwidth) into that profile — mono at 8–16 kHz —
+for as long as the stream is open. With byovox that is every dictation: music in the
+headphones jumps in pitch and volume on the press and jumps back on the release, and the
+transcript is worse than the built-in array would have given.
+
+The playback byovox does — the start, done and error cues — is not the cause. An output stream
+leaves A2DP alone; only a *capture* stream forces the switch.
+
+Pin the microphone instead of unpairing the headset:
+
+```toml
+[capture]
+device = "Microphone Array"
+```
+
+Any case-insensitive substring of the device's name will do, and `byovox check` prints the
+names to choose from on its `inputs` row — they come from the audio host, so they are shorter
+than the Sound control panel's (`Microphone Array`, `Headset`). A name that matches no device
+is refused at startup with that same list, and `check` warns when the microphone it used is a
+hands-free endpoint.
+
 ## Autostart
 
 `byovox autostart --enable` writes the quoted path of `byovox-daemon.exe` — the binary beside
