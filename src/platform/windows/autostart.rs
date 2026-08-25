@@ -27,18 +27,21 @@ pub fn disable() -> Result<()> {
 mod tests {
     use super::*;
 
-    /// `#[ignore]`d: it writes the **real** `HKCU\...\Run` key of the user running it, and
-    /// leaves the `byovox` value deleted (the disabled state) — including one that was
-    /// already there. Run with `cargo test -- --ignored`.
+    /// `#[ignore]`d: it writes the **real** `HKCU\...\Run` key of the user running it. Any
+    /// `byovox` value already there is read first and put back at the end, so a box with
+    /// autostart configured is left as it was found. Run with `cargo test -- --ignored`.
     #[test]
     #[ignore]
     fn autostart_round_trips_the_run_key() {
-        enable().expect("enable");
-        let key = RegKey::predef(HKEY_CURRENT_USER)
-            .open_subkey(RUN)
+        let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey(RUN)
             .expect("open Run");
+        let original: Option<String> = key.get_value("byovox").ok();
+        println!("original Run\\byovox: {original:?}");
+
+        enable().expect("enable");
         let value: String = key.get_value("byovox").expect("byovox value");
-        println!("Run\\byovox = {value}");
+        println!("after enable: {value}");
         let exe = std::env::current_exe().expect("current exe");
         assert_eq!(value, format!("\"{}\"", exe.display()));
 
@@ -49,5 +52,12 @@ mod tests {
 
         disable().expect("disable on a missing value is a no-op");
         println!("second disable: ok");
+
+        if let Some(original) = original {
+            key.set_value("byovox", &original).expect("restore");
+            let back: String = key.get_value("byovox").expect("restored value");
+            assert_eq!(back, original);
+            println!("restored: {back}");
+        }
     }
 }
