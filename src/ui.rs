@@ -98,6 +98,23 @@ pub fn icon_rgba(state: IndicatorState) -> Vec<u8> {
     px
 }
 
+/// The idle disc with a red cross over it: dictation is switched off from the tray.
+pub fn disabled_icon_rgba() -> Vec<u8> {
+    let mut px = icon_rgba(IndicatorState::Idle);
+    for y in 0..32 {
+        for x in 0..32 {
+            let dx = x as f32 - 15.5;
+            let dy = y as f32 - 15.5;
+            let on_diagonal = (dx - dy).abs() < 2.2 || (dx + dy).abs() < 2.2;
+            if on_diagonal && dx.abs() <= 8.0 && dy.abs() <= 8.0 {
+                let i = (y * 32 + x) * 4;
+                px[i..i + 4].copy_from_slice(&[220, 40, 40, 255]);
+            }
+        }
+    }
+    px
+}
+
 /// The mode the tray's Mode item selects next. Two modes, so the item is a check mark on
 /// "Toggle mode" rather than a submenu.
 fn other_mode(current: HotkeyMode) -> HotkeyMode {
@@ -217,16 +234,24 @@ impl App {
     fn apply(&mut self, state: IndicatorState, sound: bool) {
         tracing::debug!(?state, sound, "indicator");
         if let (Some(tray), Some(items)) = (&self.tray, &self.items) {
-            if let Ok(icon) = Icon::from_rgba(icon_rgba(state), 32, 32) {
+            // While disabled the cross stays up whatever the pipeline paints: the Cancel
+            // that Disable sends comes back as an Idle repaint a moment later.
+            let rgba = if self.enabled {
+                icon_rgba(state)
+            } else {
+                disabled_icon_rgba()
+            };
+            if let Ok(icon) = Icon::from_rgba(rgba, 32, 32) {
                 let _ = tray.set_icon(Some(icon));
             }
             // `last_error` is already a content-free summary; see `pipeline::summary`.
             let last_error = shared_of(&self.shared).last_error.clone();
-            let label = match (state, last_error) {
-                (IndicatorState::Error, Some(e)) => {
+            let label = match (self.enabled, state, last_error) {
+                (false, _, _) => "byovox: disabled".to_string(),
+                (true, IndicatorState::Error, Some(e)) => {
                     format!("byovox: error — {}", e.chars().take(60).collect::<String>())
                 }
-                (s, _) => format!("byovox: {}", state_word(s)),
+                (true, s, _) => format!("byovox: {}", state_word(s)),
             };
             items.status.set_text(label);
         }
@@ -269,6 +294,8 @@ impl App {
                         .enabled
                         .set_text(if self.enabled { "Disable" } else { "Enable" });
                 }
+                // Show the cross (or take it down) now, not at the next state change.
+                self.apply(IndicatorState::Idle, false);
             }
             MenuAction::ToggleMode => {
                 self.mode = other_mode(self.mode);
@@ -709,6 +736,18 @@ mod tests {
         let c = (16 * 32 + 16) * 4;
         assert!(rec[c] > rec[c + 1] && rec[c] > rec[c + 2]);
         assert!(idle[c] == idle[c + 1] && idle[c] == idle[c + 2]);
+    }
+
+    #[test]
+    fn the_disabled_icon_is_a_red_cross_on_the_idle_disc() {
+        let off = disabled_icon_rgba();
+        assert_eq!(off.len(), 32 * 32 * 4);
+        // centre sits on both diagonals: red
+        let c = (16 * 32 + 16) * 4;
+        assert!(off[c] > off[c + 1] && off[c] > off[c + 2]);
+        // a disc pixel off the diagonals keeps the idle grey
+        let side = (16 * 32 + 24) * 4;
+        assert!(off[side] == off[side + 1] && off[side] == off[side + 2] && off[side + 3] == 255);
     }
 
     /// The tray's Mode item is a check mark, so the click has to land on the other mode
