@@ -375,10 +375,12 @@ impl Pipeline {
         match rung_used {
             Some(rung) => {
                 tracing::info!(lang = %language.label(), stt_ms, polish_ms, inject_ms, total_ms, rung, "dictation inserted");
+                // The one path that earns the done cue. Every other route back to Idle — a
+                // tap, a cancel, a disable, an empty transcript — is silent by spec.
                 let final_state = if errored {
                     IndicatorState::Error
                 } else {
-                    IndicatorState::Idle
+                    IndicatorState::Done
                 };
                 self.set_state(State::Idle, final_state);
                 Outcome::Inserted { rung }
@@ -515,7 +517,7 @@ mod tests {
         assert!(r.rung2.texts.lock().unwrap().is_empty());
         assert_eq!(
             r.ind.0.lock().unwrap().as_slice(),
-            [S::Recording, S::Working, S::Idle]
+            [S::Recording, S::Working, S::Done]
         );
         assert_eq!((r.cap.starts(), r.cap.stops()), (1, 1));
     }
@@ -593,6 +595,34 @@ mod tests {
             Some(Outcome::Empty)
         );
         assert_eq!(r.ind.0.lock().unwrap().last(), Some(&S::Idle));
+    }
+
+    /// Spec §Pipeline detail 2 and 5: a sub-`min_hold` tap is discarded *silently* and an
+    /// empty transcript gets *no cue* — and a cancelled recording must not sound like a
+    /// successful one. `Done` is the only state the UI plays the done tone for, so the claim
+    /// is that none of these three ever reaches it.
+    #[test]
+    fn a_tap_a_cancel_and_an_empty_transcript_are_silent() {
+        let mut tap = rig(FakeTranscriber::ok("x"), None, false, false);
+        dictate(&mut tap, Duration::from_millis(100));
+
+        let mut cancelled = rig(FakeTranscriber::ok("hi"), None, false, false);
+        let t0 = Instant::now();
+        cancelled.p.handle(HotkeyEvent::Pressed, t0);
+        cancelled
+            .p
+            .handle(HotkeyEvent::Cancel, t0 + Duration::from_secs(1));
+
+        let mut empty = rig(FakeTranscriber::ok("   "), None, false, false);
+        dictate(&mut empty, Duration::from_secs(1));
+
+        for (what, r) in [("tap", &tap), ("cancel", &cancelled), ("empty", &empty)] {
+            let states = r.ind.0.lock().unwrap().clone();
+            assert!(
+                !states.contains(&S::Done),
+                "{what} would play the done cue: {states:?}"
+            );
+        }
     }
 
     #[test]
@@ -685,7 +715,7 @@ mod tests {
     }
 
     #[test]
-    fn disabled_pipeline_ignores_every_event() {
+    fn a_disabled_pipeline_starts_nothing() {
         let mut r = rig(FakeTranscriber::ok("hi"), None, false, false);
         r.p.shared().lock().unwrap().enabled = false;
         let t0 = Instant::now();
@@ -882,7 +912,7 @@ mod tests {
                 "{mode:?}: the microphone reopened for a {start:?} delivered while Working"
             );
             assert_eq!(p.shared().lock().unwrap().state, "idle", "{mode:?}");
-            assert_eq!(ind.0.lock().unwrap().last(), Some(&S::Idle), "{mode:?}");
+            assert_eq!(ind.0.lock().unwrap().last(), Some(&S::Done), "{mode:?}");
         }
     }
 

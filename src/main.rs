@@ -214,6 +214,16 @@ fn toggle_decision(enabled: bool) -> (bool, ipc::Reply) {
     }
 }
 
+/// `Shared` behind a lock a pipeline panic may have poisoned. The IPC handler answers a user
+/// who is asking what state the daemon is in; unwinding its connection thread instead of
+/// reading the state the pipeline left behind serves nobody. `ipc.rs` already recovers its
+/// own handler mutex the same way, and the pipeline posts `Quit` when it dies.
+fn shared_of(
+    lock: &std::sync::Mutex<pipeline::Shared>,
+) -> std::sync::MutexGuard<'_, pipeline::Shared> {
+    lock.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// `enabled` rides along because an idle daemon and a deaf one are otherwise indistinguishable.
 fn status_reply(s: &pipeline::Shared) -> ipc::Reply {
     ipc::Reply {
@@ -398,7 +408,7 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
             Request::Toggle => {
                 // The guard is released at the end of this statement, so nothing is sent
                 // while `Shared` is locked.
-                let (forward, reply) = toggle_decision(ipc_shared.lock().unwrap().enabled);
+                let (forward, reply) = toggle_decision(shared_of(&ipc_shared).enabled);
                 if forward {
                     let _ = tx.send(hotkey::HotkeyEvent::Toggle);
                 }
@@ -411,8 +421,8 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
                     ..Default::default()
                 }
             }
-            Request::Status => status_reply(&ipc_shared.lock().unwrap()),
-            Request::Last => match ipc_shared.lock().unwrap().last_transcript.clone() {
+            Request::Status => status_reply(&shared_of(&ipc_shared)),
+            Request::Last => match shared_of(&ipc_shared).last_transcript.clone() {
                 Some(t) => Reply {
                     ok: true,
                     text: Some(t),

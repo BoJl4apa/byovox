@@ -19,6 +19,17 @@ use crate::hotkey::{HotkeyEvent, HotkeyMode};
 use crate::indicator::{Indicator, IndicatorState};
 use crate::pipeline::Shared;
 
+/// `Shared` behind a lock a pipeline panic may have poisoned.
+///
+/// Every reader here is the main thread inside winit's Win32 frames, or the IPC handler:
+/// unwinding either through foreign frames over a flag the panicking thread had already
+/// finished writing is worse than reading the state it left. The pipeline posts `Quit` when
+/// it dies, so the poisoned state is short-lived by construction. Same call `ipc.rs` already
+/// makes for its handler mutex.
+fn shared_of(lock: &Mutex<Shared>) -> std::sync::MutexGuard<'_, Shared> {
+    lock.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// How long the Error indication is held before the UI falls back to Idle.
 const ERROR_HOLD: Duration = Duration::from_secs(3);
 
@@ -68,7 +79,7 @@ pub fn build_event_loop() -> Result<(EventLoop<UserEvent>, EventLoopProxy<UserEv
 
 pub fn icon_rgba(state: IndicatorState) -> Vec<u8> {
     let (r, g, b) = match state {
-        IndicatorState::Idle => (140, 140, 140),
+        IndicatorState::Idle | IndicatorState::Done => (140, 140, 140),
         IndicatorState::Recording => (220, 40, 40),
         IndicatorState::Working => (230, 160, 30),
         IndicatorState::Error => (200, 30, 90),
@@ -101,7 +112,18 @@ pub fn pill_text(state: IndicatorState) -> Option<&'static str> {
         IndicatorState::Recording => Some("●  recording"),
         IndicatorState::Working => Some("…  working"),
         IndicatorState::Error => Some("✕  failed"),
-        IndicatorState::Idle => None,
+        IndicatorState::Idle | IndicatorState::Done => None,
+    }
+}
+
+/// The word the tray's status line uses. Done is idle to a reader: the state exists only to
+/// separate the completion cue from the silent returns to Idle.
+fn state_word(state: IndicatorState) -> &'static str {
+    match state {
+        IndicatorState::Idle | IndicatorState::Done => "idle",
+        IndicatorState::Recording => "recording",
+        IndicatorState::Working => "working",
+        IndicatorState::Error => "error",
     }
 }
 
@@ -199,12 +221,12 @@ impl App {
                 let _ = tray.set_icon(Some(icon));
             }
             // `last_error` is already a content-free summary; see `pipeline::summary`.
-            let last_error = self.shared.lock().unwrap().last_error.clone();
+            let last_error = shared_of(&self.shared).last_error.clone();
             let label = match (state, last_error) {
                 (IndicatorState::Error, Some(e)) => {
                     format!("byovox: error — {}", e.chars().take(60).collect::<String>())
                 }
-                (s, _) => format!("byovox: {}", format!("{s:?}").to_lowercase()),
+                (s, _) => format!("byovox: {}", state_word(s)),
             };
             items.status.set_text(label);
         }
@@ -214,9 +236,11 @@ impl App {
         if sound && let Some(cue) = &mut self.cue {
             match state {
                 IndicatorState::Recording => cue.play(880.0, 70),
-                IndicatorState::Idle => cue.play(660.0, 60),
+                // Only a dictation that landed: a tap, a cancel and an empty transcript are
+                // silent returns to Idle, and must not sound like a success.
+                IndicatorState::Done => cue.play(660.0, 60),
                 IndicatorState::Error => cue.play(220.0, 220),
-                IndicatorState::Working => {}
+                IndicatorState::Idle | IndicatorState::Working => {}
             }
         }
         self.error_until = (state == IndicatorState::Error).then(|| Instant::now() + ERROR_HOLD);
@@ -232,7 +256,7 @@ impl App {
                 if !self.enabled {
                     let _ = self.hotkey_tx.send(HotkeyEvent::Cancel);
                 }
-                self.shared.lock().unwrap().enabled = self.enabled;
+                shared_of(&self.shared).enabled = self.enabled;
                 tracing::info!(enabled = self.enabled, "dictation toggled from the tray");
                 if let Some(items) = &self.items {
                     items
@@ -247,7 +271,7 @@ impl App {
                 // Cancel is a no-op unless the pipeline is recording, and it is obeyed in
                 // either mode.
                 let _ = self.hotkey_tx.send(HotkeyEvent::Cancel);
-                self.shared.lock().unwrap().mode = self.mode;
+                shared_of(&self.shared).mode = self.mode;
                 tracing::info!(mode = ?self.mode, "hotkey mode changed from the tray");
                 // muda flips the check itself on click; it is set from our own state so the
                 // mark and the pipeline cannot disagree.
@@ -256,14 +280,15 @@ impl App {
                 }
             }
             MenuAction::ShowLast => {
-                let text = self
-                    .shared
-                    .lock()
-                    .unwrap()
+                let text = shared_of(&self.shared)
                     .last_transcript
                     .clone()
                     .unwrap_or_else(|| "(nothing yet)".into());
-                show_message("byovox — last transcript", &text);
+                // The dialog pumps its own modal loop. Called from here it would freeze the
+                // event loop until dismissed: the tray icon would stop following the
+                // pipeline, and a `byovox quit` would be acknowledged over IPC and then not
+                // acted on. The box owns no window, so it runs on a thread of its own.
+                std::thread::spawn(move || show_message("byovox — last transcript", &text));
             }
             MenuAction::OpenConfig => open_path(&self.config_path),
             MenuAction::OpenLogs => open_path(&self.log_dir),
@@ -348,7 +373,7 @@ pub fn run(
     // The menu's Enable/Disable label and Mode check have to start where the pipeline
     // actually is, not at an assumed `true` and an assumed hold.
     let (enabled, mode) = {
-        let s = shared.lock().unwrap();
+        let s = shared_of(&shared);
         (s.enabled, s.mode)
     };
     let mut app = App {

@@ -20,6 +20,10 @@ static CANCEL_VK: AtomicU32 = AtomicU32::new(0);
 static DOWN: AtomicBool = AtomicBool::new(false);
 /// True once a hook is live. Guards against a second `run`, whose chained hook would
 /// double every event, and lets a caller wait for the hook to be installed.
+///
+/// Assumes one `run` per process — `main` calls it once, from the single thread it spawns,
+/// with the backend moved into that closure — which is why the load-then-store is not a race.
+/// It is never cleared, because the hook lives until process exit: nothing unhooks it.
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// Stamped into `dwExtraInfo` of every event `platform::windows::inject` sends, so the hook
