@@ -20,6 +20,22 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
 
+  # The MSRV in Cargo.toml is a promise to anyone installing byovox, and the matrix above
+  # runs on `stable`, so nothing ever built against it: a change using a feature newer than
+  # 1.88 would pass CI and break exactly the users the declaration was made for. Windows is
+  # the platform byovox is exercised on, so that is where the promise is checked.
+  #
+  # `cargo check` rather than the full suite: this asks whether the code compiles under the
+  # declared minimum, which is what the version claims. Keep the toolchain in step with
+  # `rust-version` in Cargo.toml — raising one without the other is what this job exists to
+  # make visible.
+  msrv:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - run: cargo check --all-targets --locked
+
   # Dependency advisories and licence policy. One job rather than one per matrix OS: both
   # tools read `Cargo.lock` and the whole crate graph, which does not vary by runner — the
   # gtk3 advisories below are Linux-only code either way, and both tools see them anywhere.
