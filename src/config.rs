@@ -100,7 +100,8 @@ impl Default for PolishConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HotkeyConfig {
-    /// W3C UI Events `code` name: ControlRight, AltRight, F13 ...
+    /// W3C UI Events `code` name: ControlRight, AltRight, F13 ... or a chord:
+    /// ControlLeft+ShiftLeft+Z.
     pub key: String,
     /// "hold" or "toggle"
     pub mode: String,
