@@ -280,6 +280,26 @@ pub fn is_cleartext_remote(base_url: &str) -> bool {
     }
 }
 
+/// `base_url` with any `user:pass@` in its authority replaced by `***@`.
+///
+/// `byovox check`'s rows are what a user pastes into a bug report, and a `base_url` can carry
+/// credentials. Everything else on that surface is already guarded — `check::strip_body`
+/// exists only to keep an echoed key out of a row — so an endpoint row must not walk around
+/// it. The daemon's own log names keys rather than URLs and needs no equivalent.
+///
+/// Only the authority is examined: an `@` in a path or query is ordinary and is left alone.
+pub fn redact_userinfo(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    match authority.rsplit_once('@') {
+        Some((_, host)) => format!("{scheme}://***@{host}{tail}"),
+        None => url.to_string(),
+    }
+}
+
 /// `~/x` → home-relative; anything else unchanged.
 pub fn expand_home(p: &str) -> PathBuf {
     if let Some(rest) = p.strip_prefix("~/").or_else(|| p.strip_prefix("~\\"))
@@ -586,6 +606,39 @@ mod tests {
         ] {
             assert!(is_cleartext_remote(warns), "{warns} must warn");
         }
+    }
+
+    /// `check`'s rows get pasted into bug reports, so a `base_url` carrying credentials must
+    /// not print them. Only the authority is touched — an `@` in a path is ordinary.
+    #[test]
+    fn credentials_never_survive_into_a_printed_url() {
+        assert_eq!(
+            redact_userinfo("http://user:pass@example.com/v1"),
+            "http://***@example.com/v1"
+        );
+        assert_eq!(
+            redact_userinfo("https://token@10.0.0.5:8770/v1?x=1"),
+            "https://***@10.0.0.5:8770/v1?x=1"
+        );
+        // An `@` inside the userinfo itself: the last one separates, so the whole of it goes.
+        assert_eq!(
+            redact_userinfo("http://us@er:p@ss@example.com/v1"),
+            "http://***@example.com/v1"
+        );
+        for untouched in [
+            "http://example.com/v1",
+            "http://10.0.0.5:8770/v1",
+            "http://[::1]:8770/v1",
+            // `@` in the path and the query is not userinfo.
+            "http://example.com/a@b",
+            "http://example.com/v1?to=a@b",
+            "",
+            "not-a-url",
+        ] {
+            assert_eq!(redact_userinfo(untouched), untouched, "{untouched}");
+        }
+        // The redaction leaves nothing of the secret behind.
+        assert!(!redact_userinfo("http://u:hunter2@example.com/v1").contains("hunter2"));
     }
 
     /// A directory unique to this process *and* this test, so tests running in parallel

@@ -9,7 +9,7 @@ use crate::audio::{Audio, SAMPLE_RATE};
 use crate::capture::{Capture, CpalCapture, describe_default_device};
 use crate::config::{
     CLEARTEXT_WARNING, Config, HotkeyConfig, PolishConfig, SttConfig, expand_home,
-    is_cleartext_remote, resolve_token,
+    is_cleartext_remote, redact_userinfo, resolve_token,
 };
 use crate::hotkey::{HotkeyMode, parse_chord, validate_key_name};
 use crate::lang::{LanguagePolicy, SttLanguage};
@@ -176,6 +176,9 @@ pub fn run(cfg: &Config, config_path: &Path) -> bool {
     // Near the top, where the endpoints are still the subject: by the time the stt row has
     // printed a happy round trip, "and by the way it was unencrypted" reads as an aside.
     for (key, url) in cleartext_endpoints(cfg) {
+        // Redacted rather than printed raw: these rows get pasted into bug reports, and a
+        // `base_url` can carry `user:pass@`.
+        let url = redact_userinfo(url);
         warn_line("network", &format!("{key} {url} is {CLEARTEXT_WARNING}"));
     }
 
