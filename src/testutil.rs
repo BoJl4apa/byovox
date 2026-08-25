@@ -283,9 +283,11 @@ pub mod fakes {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct RecordedDictation {
         pub samples: usize,
+        pub layout: Option<Lang>,
         pub language: String,
         pub raw: String,
         pub polished: Option<String>,
+        pub polish_model: Option<String>,
         pub rung: Option<&'static str>,
         pub stt_ms: u128,
         pub polish_ms: u128,
@@ -298,9 +300,11 @@ pub mod fakes {
         fn record(&mut self, r: &DictationRecord<'_>) {
             self.0.lock().unwrap().push(RecordedDictation {
                 samples: r.audio.samples.len(),
+                layout: r.layout,
                 language: r.language.label(),
                 raw: r.raw.to_string(),
                 polished: r.polished.map(str::to_string),
+                polish_model: r.polish_model.map(str::to_string),
                 rung: r.rung,
                 stt_ms: r.stt_ms,
                 polish_ms: r.polish_ms,

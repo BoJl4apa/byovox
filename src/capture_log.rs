@@ -47,9 +47,14 @@ impl Recorder for CaptureLog {
         let row = serde_json::json!({
             "ts": ts,
             "wav": wav_name,
+            // The layout that routed the dictation and the language it resolved to: only
+            // the pair answers "which keyboard layout produced this", and only the model
+            // makes rows comparable across a `polish.model` change.
+            "layout": r.layout.map(|l| l.to_string()),
             "language": r.language.label(),
             "raw": r.raw,
             "polished": r.polished,
+            "polish_model": r.polish_model,
             "rung": r.rung,
             "stt_ms": capped(r.stt_ms),
             "polish_ms": capped(r.polish_ms),
@@ -96,9 +101,11 @@ mod tests {
         let lang = SttLanguage::Explicit(Lang::parse("he").unwrap());
         log.record(&DictationRecord {
             audio: &audio,
+            layout: Lang::parse("ru"),
             language: &lang,
             raw: "raw\nline",
             polished: Some("Polished."),
+            polish_model: Some("cleanup-1"),
             rung: Some("type"),
             stt_ms: 600,
             polish_ms: 400,
@@ -108,7 +115,11 @@ mod tests {
         let row: serde_json::Value = serde_json::from_str(jsonl.lines().next().unwrap()).unwrap();
         assert_eq!(row["raw"], "raw\nline");
         assert_eq!(row["polished"], "Polished.");
+        // The layout is the question, the language the policy's answer: a row carrying only
+        // the answer cannot say which layout routed the dictation.
+        assert_eq!(row["layout"], "ru");
         assert_eq!(row["language"], "he");
+        assert_eq!(row["polish_model"], "cleanup-1");
         assert_eq!(row["rung"], "type");
         assert_eq!(row["stt_ms"], 600);
         assert_eq!(row["polish_ms"], 400);
@@ -130,9 +141,11 @@ mod tests {
         for raw in ["one", "two"] {
             log.record(&DictationRecord {
                 audio: &audio,
+                layout: None,
                 language: &lang,
                 raw,
                 polished: None,
+                polish_model: None,
                 rung: None,
                 stt_ms: 1,
                 polish_ms: 0,

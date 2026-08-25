@@ -86,8 +86,9 @@ pill = true
 cue = true
 
 [capture_log]
-# Keep every dictation as a WAV plus a JSONL row (raw text, polished text, language sent,
-# per-stage latency) — training data for your own correction rules. Off by default.
+# Keep every dictation as a WAV plus a JSONL row (raw text, polished text, keyboard layout,
+# language sent, polish model, per-stage latency) — training data for your own correction
+# rules. Off by default.
 enabled = false
 # Directory; empty = byovox's data directory + `capture`: %APPDATA%\byovox\data\capture
 # (Windows), ~/.local/share/byovox/capture (Linux),

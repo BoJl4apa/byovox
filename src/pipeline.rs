@@ -11,7 +11,7 @@ use crate::capture::Capture;
 use crate::hotkey::{HotkeyEvent, HotkeyMode};
 use crate::indicator::{Indicator, IndicatorState};
 use crate::inject::Inject;
-use crate::lang::{LanguagePolicy, SttLanguage};
+use crate::lang::{Lang, LanguagePolicy, SttLanguage};
 use crate::layout::Layout;
 use crate::polish::{Polisher, word_count};
 use crate::stt::Transcriber;
@@ -22,6 +22,9 @@ pub struct PipelineConfig {
     pub polish_min_words: usize,
     pub prompt: Option<String>,
     pub trailing_space: bool,
+    /// `polish.model`, recorded on every capture-log row that the polish stage ran for, so
+    /// rows from before and after a model change stay distinguishable.
+    pub polish_model: String,
 }
 
 /// What `byovox status` / `byovox last` read; written by the pipeline thread.
@@ -50,9 +53,15 @@ impl Default for Shared {
 /// One finished dictation, for the opt-in capture log.
 pub struct DictationRecord<'a> {
     pub audio: &'a Audio,
+    /// The keyboard layout that routed this dictation, `None` when it could not be read.
+    /// `language` is the policy's answer; only this says what the question was, which is
+    /// what a correction rule derived from the corpus has to key on.
+    pub layout: Option<Lang>,
     pub language: &'a SttLanguage,
     pub raw: &'a str,
     pub polished: Option<&'a str>,
+    /// The polish model, `None` when the stage did not run (disabled, or under min_words).
+    pub polish_model: Option<&'a str>,
     pub rung: Option<&'static str>,
     pub stt_ms: u128,
     pub polish_ms: u128,
@@ -119,6 +128,9 @@ enum State {
     Idle,
     Recording {
         since: Instant,
+        /// Read at press time, kept beside the language it resolved to: the capture log
+        /// records both, and the layout is unreadable again by the time the row is written.
+        layout: Option<Lang>,
         language: SttLanguage,
     },
 }
@@ -207,7 +219,8 @@ impl Pipeline {
     }
 
     fn begin(&mut self, now: Instant) {
-        let language = self.policy.resolve(self.layout.current());
+        let layout = self.layout.current();
+        let language = self.policy.resolve(layout);
         if let Err(e) = self.capture.start() {
             tracing::debug!(error = %e, "microphone open error");
             tracing::error!(error = summary(&e), "microphone open failed");
@@ -217,6 +230,7 @@ impl Pipeline {
         self.set_state(
             State::Recording {
                 since: now,
+                layout,
                 language,
             },
             IndicatorState::Recording,
@@ -224,7 +238,11 @@ impl Pipeline {
     }
 
     fn finish(&mut self, now: Instant) -> Outcome {
-        let State::Recording { since, language } = std::mem::replace(&mut self.state, State::Idle)
+        let State::Recording {
+            since,
+            layout,
+            language,
+        } = std::mem::replace(&mut self.state, State::Idle)
         else {
             return Outcome::Discarded;
         };
@@ -269,9 +287,16 @@ impl Pipeline {
         }
 
         let mut errored = false;
+        let polisher = self
+            .polish
+            .as_ref()
+            .filter(|_| word_count(&raw) >= self.cfg.polish_min_words);
+        // Named on the row only when the stage actually ran — a failed polish still used the
+        // model, a skipped one did not.
+        let polish_model = polisher.is_some().then(|| self.cfg.polish_model.as_str());
         let t = Instant::now();
-        let polished = match &self.polish {
-            Some(p) if word_count(&raw) >= self.cfg.polish_min_words => match p.polish(&raw) {
+        let polished = match polisher {
+            Some(p) => match p.polish(&raw) {
                 Ok(text) => Some(text),
                 Err(e) => {
                     tracing::debug!(error = %e, "polish error");
@@ -284,7 +309,7 @@ impl Pipeline {
                     None
                 }
             },
-            _ => None,
+            None => None,
         };
         let polish_ms = t.elapsed().as_millis();
         tracing::debug!(polished = ?polished, "polished");
@@ -318,9 +343,11 @@ impl Pipeline {
         if let Some(rec) = &mut self.recorder {
             rec.record(&DictationRecord {
                 audio: &audio,
+                layout,
                 language: &language,
                 raw: &raw,
                 polished: polished.as_deref(),
+                polish_model,
                 rung: rung_used,
                 stt_ms,
                 polish_ms,
@@ -423,6 +450,7 @@ mod tests {
             polish_min_words: 0,
             prompt: Some("Glossary: Acme".into()),
             trailing_space: false,
+            polish_model: "cleanup-1".into(),
         };
         let p = Pipeline::new(
             cfg,
@@ -584,6 +612,8 @@ mod tests {
         dictate(&mut r, Duration::from_secs(1));
         assert!(r.polish.calls.lock().unwrap().is_empty());
         assert_eq!(r.rung1.texts.lock().unwrap().as_slice(), ["two words"]);
+        // A model that never saw the transcript must not be recorded as having produced it.
+        assert_eq!(r.rec.0.lock().unwrap()[0].polish_model, None);
     }
 
     #[test]
@@ -733,9 +763,13 @@ mod tests {
         let recs = r.rec.0.lock().unwrap();
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0].samples, 16_000);
+        // Spec §Pipeline detail 8: the row carries the layout *and* the language it
+        // resolved to, plus the model that polished it.
+        assert_eq!(recs[0].layout, Lang::parse("he"));
         assert_eq!(recs[0].language, "he");
         assert_eq!(recs[0].raw, "um hello");
         assert_eq!(recs[0].polished.as_deref(), Some("Hello."));
+        assert_eq!(recs[0].polish_model.as_deref(), Some("cleanup-1"));
         assert_eq!(recs[0].rung, Some("type"));
         // Wall-clock timings: only a sanity bound is non-flaky, but it pins them as wired.
         for ms in [recs[0].stt_ms, recs[0].polish_ms, recs[0].inject_ms] {
@@ -785,6 +819,7 @@ mod tests {
                 polish_min_words: 0,
                 prompt: None,
                 trailing_space: false,
+                polish_model: String::new(),
             },
             Box::new(cap),
             Box::new(FakeLayout(None)),

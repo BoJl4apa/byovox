@@ -370,6 +370,7 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
             polish_min_words: cfg.polish.min_words,
             prompt: Some(cfg.stt.prompt.clone()).filter(|p| !p.is_empty()),
             trailing_space: cfg.inject.trailing_space,
+            polish_model: cfg.polish.model.clone(),
         },
         backends.capture,
         backends.layout,
