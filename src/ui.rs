@@ -394,11 +394,16 @@ impl App {
         let Some(cue) = &mut self.cue else {
             return;
         };
-        cue.reopen();
-        // No device name. byovox keeps names out of the running log, and a Bluetooth endpoint
-        // is usually named after its owner; `byovox check` prints device names to a console
-        // the user asked for.
-        tracing::info!("cue output changed");
+        // Only a re-open that produced a working sink is reported. A failed one has already
+        // written its own WARN through `Cue::settle`, and following that with an INFO saying
+        // the output changed would be two lines describing opposite outcomes. With cues off
+        // there is no sink at all and the `let … else` above has already returned.
+        if cue.reopen() {
+            // No device name. byovox keeps names out of the running log, and a Bluetooth
+            // endpoint is usually named after its owner; `byovox check` prints device names to
+            // a console the user asked for.
+            tracing::info!("cue output changed");
+        }
     }
 
     fn menu(&mut self, action: MenuAction, event_loop: &ActiveEventLoop) {
@@ -864,24 +869,31 @@ impl Cue {
     /// Nothing else recovers from a moved endpoint: a stream whose device went away keeps
     /// accepting tones — `Mixer::add` returns nothing — so the failure is invisible from here
     /// and only a fresh sink reaches the device that replaced it (#7).
-    fn reopen(&mut self) {
+    ///
+    /// Returns whether a working sink came back, so the caller can report a re-open that
+    /// happened without also reporting one that failed — the failure has already WARNed.
+    fn reopen(&mut self) -> bool {
         self.sink = None;
         let outcome = self.open().map(|_| ());
-        self.settle(outcome);
+        self.settle(outcome)
     }
 
-    /// One open's outcome. A failure drops the handle so the next cue opens a fresh one — a
-    /// device that came back is only reachable through a new sink — and reports once per
-    /// streak, since a dead endpoint must not write a WARN per dictation.
-    fn settle(&mut self, outcome: Result<()>) {
+    /// One open's outcome, and whether it succeeded. A failure drops the handle so the next
+    /// cue opens a fresh one — a device that came back is only reachable through a new sink —
+    /// and reports once per streak, since a dead endpoint must not write a WARN per dictation.
+    fn settle(&mut self, outcome: Result<()>) -> bool {
         match outcome {
-            Ok(()) => self.warned = false,
+            Ok(()) => {
+                self.warned = false;
+                true
+            }
             Err(e) => {
                 self.sink = None;
                 if !self.warned {
                     self.warned = true;
                     tracing::warn!(error = %e, "audio cue unavailable; continuing without it");
                 }
+                false
             }
         }
     }

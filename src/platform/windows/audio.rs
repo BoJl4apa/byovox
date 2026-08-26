@@ -130,18 +130,20 @@ impl IMMNotificationClient_Impl for Notify_Impl {
         Ok(())
     }
 
-    /// Fires for capture endpoints too — the flow is not in the notification, and asking the
-    /// enumerator from inside a callback is the one thing Windows says not to do. Firing on
-    /// both is deliberate: a redundant re-open costs a sink, a missed one is #7 again.
-    fn OnDeviceRemoved(&self, _id: &PCWSTR) -> ComResult<()> {
-        (self.on_change)();
+    /// Fires for capture endpoints too, so the id is screened first — see `is_capture`.
+    fn OnDeviceRemoved(&self, id: &PCWSTR) -> ComResult<()> {
+        if !is_capture(id) {
+            (self.on_change)();
+        }
         Ok(())
     }
 
     /// The disconnect path proper: a headset going away is a state change to `NOTPRESENT` or
     /// `UNPLUGGED` before it is anything else.
-    fn OnDeviceStateChanged(&self, _id: &PCWSTR, _state: DEVICE_STATE) -> ComResult<()> {
-        (self.on_change)();
+    fn OnDeviceStateChanged(&self, id: &PCWSTR, _state: DEVICE_STATE) -> ComResult<()> {
+        if !is_capture(id) {
+            (self.on_change)();
+        }
         Ok(())
     }
 
@@ -157,17 +159,84 @@ impl IMMNotificationClient_Impl for Notify_Impl {
     /// `AUDCLNT_E_DEVICE_INVALIDATED` — without moving the default and without touching
     /// `DEVICE_STATE`, so this is the *only* notification it fires. Left out, it is issue #7
     /// again by a second route: the sink dies where `Mixer::add` cannot see it.
-    fn OnPropertyValueChanged(&self, _id: &PCWSTR, key: &PROPERTYKEY) -> ComResult<()> {
-        if *key == PKEY_AudioEngine_DeviceFormat {
+    fn OnPropertyValueChanged(&self, id: &PCWSTR, key: &PROPERTYKEY) -> ComResult<()> {
+        if *key == PKEY_AudioEngine_DeviceFormat && !is_capture(id) {
             (self.on_change)();
         }
         Ok(())
     }
 }
 
+/// The prefix every WASAPI *capture* endpoint id carries. Render endpoints use `{0.0.0.`.
+const CAPTURE_ID_PREFIX: &str = "{0.0.1.";
+
+/// Whether an endpoint id names a capture device, so the caller can skip it.
+///
+/// Three of the five notifications carry no data flow, and the documented way to ask for one —
+/// `IMMDeviceEnumerator::GetDevice` then `IMMEndpoint::GetDataFlow` — is a call back into the
+/// audio APIs from inside a callback, which is the one thing Windows says not to do. The id
+/// string carries it instead: WASAPI endpoint ids are `{0.0.0.00000000}.{guid}` for render and
+/// `{0.0.1.00000000}.{guid}` for capture.
+///
+/// That format is a convention rather than a contract, so only the exact capture prefix counts
+/// as known. Anything else — a null id, a scheme Windows changes one day — reads as "not
+/// capture" and fires a re-open, which is what this code did before the screen existed. The
+/// cost of being wrong is therefore a redundant re-open, never a missed one.
+///
+/// No allocation and no failure path: this runs on a WASAPI thread, where a panic would unwind
+/// out of an `extern "system"` frame and abort the process.
+fn is_capture(id: &PCWSTR) -> bool {
+    if id.is_null() {
+        return false;
+    }
+    // SAFETY: Windows passes a NUL-terminated id that outlives the callback.
+    let wide = unsafe { id.as_wide() };
+    wide.len() >= CAPTURE_ID_PREFIX.len()
+        && wide
+            .iter()
+            .zip(CAPTURE_ID_PREFIX.bytes())
+            .all(|(&w, b)| w == u16::from(b))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A NUL-terminated UTF-16 buffer to point a `PCWSTR` at. Returned rather than borrowed so
+    /// the caller keeps it alive for the length of the call.
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// The screen that keeps a microphone being plugged in from re-binding the cue sink. It
+    /// has to err towards firing: everything it does not positively recognise as capture must
+    /// read as "might be the render default", or a missed change is #7 again.
+    #[test]
+    fn only_a_recognised_capture_id_is_screened_out() {
+        let capture = wide("{0.0.1.00000000}.{04385bed-c11a-4133-ae99-9468e4b0a8de}");
+        assert!(is_capture(&PCWSTR(capture.as_ptr())));
+
+        for not_capture in [
+            // A render endpoint, the case that must always fire.
+            "{0.0.0.00000000}.{94d19b7c-5433-4505-bb22-50b69bb593ba}",
+            // Loopback capture on a *render* endpoint keeps the render prefix.
+            "{0.0.0.00000000}.{f92bcf48-abec-4907-aea1-1082698e885c}",
+            // Anything unrecognised, including a scheme Windows might change.
+            "",
+            "{",
+            "{0.0.1",
+            "\\\\?\\SWD#MMDEVAPI#somethingelse",
+        ] {
+            let buf = wide(not_capture);
+            assert!(
+                !is_capture(&PCWSTR(buf.as_ptr())),
+                "`{not_capture}` was screened out; only a known capture id may be"
+            );
+        }
+
+        // A null id is what a notification carries when Windows has no id to give.
+        assert!(!is_capture(&PCWSTR::null()));
+    }
 
     /// `#[ignore]`d because it reaches the real audio service: on a box without one — a CI
     /// runner — `CoCreateInstance` fails at the class, not at anything this is about. Run it
