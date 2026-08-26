@@ -340,6 +340,13 @@ impl App {
     /// with it (see `Cue`), so a sink without the watch goes deaf the first time the default
     /// moves. Idempotent: called from `resumed` at start and again whenever the tray switches
     /// cues back on.
+    ///
+    /// **The sink is opened before the watch, and the order is load-bearing.** On Windows the
+    /// watch's `Apartment` guard balances its own `CoInitializeEx` when it drops, and opening
+    /// the sink first is what leaves cpal's thread-local COM reference underneath it — see
+    /// `platform::windows::audio::Apartment::enter`. Registering first would make this guard
+    /// the last one out of the apartment, and `close_cues` would take the event-loop thread out
+    /// of COM under winit and the tray.
     fn open_cues(&mut self) {
         if self.cue.is_none() {
             self.cue = Some(Cue::new());

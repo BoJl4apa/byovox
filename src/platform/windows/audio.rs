@@ -88,9 +88,17 @@ impl Apartment {
         if hr == RPC_E_CHANGED_MODE {
             return Ok(Apartment { leave: false });
         }
-        // S_OK *and* S_FALSE (already initialised, same mode — winit does this on the event
-        // loop thread when it creates a window) each take a reference that must be given back,
-        // so both arrive here as `leave: true`.
+        // S_OK *and* S_FALSE (already initialised, same mode) each take a reference that must
+        // be given back, so both arrive here as `leave: true`.
+        //
+        // In the daemon this is always the S_FALSE branch, and what holds the apartment is
+        // **cpal**, not winit: `cpal::host::wasapi::com` takes a `CoInitializeEx` in a
+        // `thread_local!` released only at thread exit, and `default_output_device` — reached
+        // through `Cue::new` — is what takes it. winit's `OleInitialize` is inside window
+        // creation, so it never runs at all when `indicator.pill = false`, and `tray-icon`
+        // initialises no COM of its own. That is why `App::open_cues` opens the sink before it
+        // registers the watch: cpal's reference is taken first, so this guard is never the last
+        // one out and `Drop` cannot take the event-loop thread out of its apartment.
         hr.ok().map_err(|e| format!("COM apartment: {e}"))?;
         Ok(Apartment { leave: true })
     }
