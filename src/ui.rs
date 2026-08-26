@@ -95,6 +95,10 @@ pub enum UserEvent {
 
 pub struct UiOptions {
     pub pill: bool,
+    /// `indicator.cue`: the value the daemon *starts* at, read once by `run`. It is not the
+    /// live state and goes stale the moment the tray's Audio cues item is clicked —
+    /// `App.cues_on` is authoritative from then on, and nothing writes back to here or to the
+    /// config file.
     pub cue: bool,
     pub version: &'static str,
 }
