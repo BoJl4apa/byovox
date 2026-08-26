@@ -33,24 +33,31 @@ fn shared_of(lock: &Mutex<Shared>) -> std::sync::MutexGuard<'_, Shared> {
 /// How long the Error indication is held before the UI falls back to Idle.
 const ERROR_HOLD: Duration = Duration::from_secs(3);
 
-/// How quiet the endpoint notifications must go before the cue sink is re-opened.
+/// How long the first endpoint notification of a run holds the cue-sink re-open back.
 ///
 /// Windows fires a burst — several notifications within tens of milliseconds — when a
 /// Bluetooth headset disconnects, and only after the burst does the default settle on the
-/// device that took over. Re-opening on the first of them would bind the sink to whatever was
-/// mid-flight; waiting for the quiet costs nothing, because the next cue is a dictation away.
-const CUE_REOPEN_QUIET: Duration = Duration::from_millis(500);
+/// device that took over. Re-opening on the first notification would bind the sink to whatever
+/// was mid-flight, so the re-open waits; a real burst is long over well inside this window, and
+/// the delay costs nothing because the next cue is a dictation away.
+const CUE_REOPEN_SETTLE: Duration = Duration::from_millis(500);
 
-/// The pending cue-sink re-open: trailing-edge coalescing of `AudioDeviceChanged`.
+/// The pending cue-sink re-open: coalescing of `AudioDeviceChanged`.
 ///
-/// Notification timestamps in, at most one re-open per burst out.
+/// Notification timestamps in, at most one re-open per `CUE_REOPEN_SETTLE` out.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct ReopenTimer(Option<Instant>);
 
 impl ReopenTimer {
-    /// A notification arrived: push the re-open out past this one.
+    /// A notification arrived. The first of a run sets the deadline and the rest ride on it.
+    ///
+    /// Deliberately *not* "settle after the last notification": a deadline pushed out by every
+    /// arrival is never reached at all by an endpoint that flaps faster than the window, which
+    /// trades a re-open storm for a re-open that never comes. Bounding it here caps the wait at
+    /// one window no matter how long the run is. A burst that genuinely outlasts the window
+    /// re-opens once mid-run and again afterwards, which is two re-opens rather than none.
     fn notified(&mut self, now: Instant) {
-        self.0 = Some(now + CUE_REOPEN_QUIET);
+        self.0.get_or_insert(now + CUE_REOPEN_SETTLE);
     }
 
     /// Whether a re-open is due, clearing the deadline when it says yes — so one burst yields
@@ -979,8 +986,8 @@ mod tests {
     }
 
     /// A disconnect fires a burst of endpoint notifications, and only after it does the
-    /// default settle. The burst must therefore cost one re-open, taken once the
-    /// notifications stop — not one per notification, and not one on the first.
+    /// default settle. The burst must therefore cost one re-open, taken after the settle
+    /// window — not one per notification, and not one on the first.
     #[test]
     fn a_burst_of_device_changes_coalesces_into_one_reopen() {
         let t0 = Instant::now();
@@ -996,17 +1003,58 @@ mod tests {
             timer.notified(at(ms));
             assert!(!timer.due(at(ms)), "re-opened mid-burst at {ms} ms");
         }
-        // Quiet measured from the *last* notification, not the first: at 500 ms — a full
-        // CUE_REOPEN_QUIET after the burst started — it is still not due.
-        assert!(!timer.due(at(500)));
-        assert_eq!(timer.deadline(), Some(at(600)));
+        // The deadline belongs to the *first* notification of the run; the later two rode on
+        // it rather than pushing it out.
+        assert_eq!(timer.deadline(), Some(at(500)));
+        assert!(!timer.due(at(499)));
 
-        // One re-open, once the burst has been quiet for CUE_REOPEN_QUIET.
-        assert!(timer.due(at(600)));
+        // One re-open, a settle window after the run began — by which point a real burst
+        // (tens of milliseconds) is long over.
+        assert!(timer.due(at(500)));
         // And exactly one: firing clears the deadline, so later turns of the loop find
         // nothing left to do.
         assert!(!timer.due(at(5_000)));
         assert_eq!(timer.deadline(), None);
+    }
+
+    /// The bound that keeps coalescing from turning into starvation: an endpoint that flaps
+    /// faster than the settle window for ever must still be re-opened, once per window. A
+    /// deadline pushed out by every arrival would never be reached at all.
+    #[test]
+    fn a_flap_faster_than_the_window_still_reopens_once_per_window() {
+        let t0 = Instant::now();
+        let at = |ms| t0 + Duration::from_millis(ms);
+        let mut timer = ReopenTimer::default();
+
+        // A notification every 100 ms for ten seconds, never pausing.
+        let flap: u64 = 100;
+        let mut reopens = Vec::new();
+        for ms in (0..10_000).step_by(flap as usize) {
+            timer.notified(at(ms));
+            if timer.due(at(ms)) {
+                reopens.push(ms);
+            }
+        }
+
+        // Liveness first: the property a "settle after the last notification" timer would have
+        // lost outright, since its deadline would never have been reached.
+        let settle = CUE_REOPEN_SETTLE.as_millis() as u64;
+        assert!(
+            !reopens.is_empty(),
+            "a continuous flap never re-opened at all"
+        );
+        assert_eq!(
+            reopens[0], settle,
+            "the first re-open waited more than one window"
+        );
+        for pair in reopens.windows(2) {
+            let gap = pair[1] - pair[0];
+            // Bounded below: never a re-open storm.
+            assert!(gap >= settle, "two re-opens inside one window: {reopens:?}");
+            // Bounded above: one window plus the wait for the notification that starts the
+            // next run — never unbounded. This is what `get_or_insert` is for.
+            assert!(gap <= settle + flap, "the re-open drifted: {reopens:?}");
+        }
     }
 
     /// `#[ignore]`d because it opens the default output device and makes a noise: on a box

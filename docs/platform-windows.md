@@ -135,8 +135,9 @@ they follow it: byovox registers for endpoint notifications (`IMMNotificationCli
 switching the default in the Sound panel — or switching a Bluetooth headset off, which
 switches it for you — re-binds the cues to the device that took over, one INFO
 `cue output changed` line per switch. A disconnect fires a burst of notifications and the
-default only settles after the burst, so the re-bind is taken once it has been quiet for half
-a second.
+default only settles after the burst, so the re-bind is taken half a second after the first of
+them — late enough that the burst is over, and capped so that an endpoint flapping without
+pause is still re-bound once per half-second rather than postponed for ever.
 
 Four things re-bind the cues: the default moving, an endpoint being removed, an endpoint
 changing state, and a change to the default output's **shared-mode format** (device Properties
