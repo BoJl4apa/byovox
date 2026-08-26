@@ -37,6 +37,7 @@ const ERROR_HOLD: Duration = Duration::from_secs(3);
 pub enum MenuAction {
     ToggleEnabled,
     ToggleMode,
+    ToggleCues,
     ShowLast,
     OpenConfig,
     OpenLogs,
@@ -158,6 +159,9 @@ struct App {
     error_until: Option<Instant>,
     enabled: bool,
     mode: HotkeyMode,
+    /// What the tray's Audio cues item promises. Starts at `indicator.cue` and is never
+    /// written back to the config: the file is the value the *next* daemon starts at.
+    cues_on: bool,
 }
 
 struct MenuItems {
@@ -165,6 +169,8 @@ struct MenuItems {
     enabled: MenuItem,
     /// Checked = toggle, cleared = hold.
     mode: CheckMenuItem,
+    /// Checked = the tones play.
+    cues: CheckMenuItem,
     show_last: MenuItem,
     open_config: MenuItem,
     open_logs: MenuItem,
@@ -179,6 +185,7 @@ impl App {
             status: MenuItem::new("byovox: idle", false, None),
             enabled: MenuItem::new(if self.enabled { "Disable" } else { "Enable" }, true, None),
             mode: CheckMenuItem::new("Toggle mode", true, self.mode == HotkeyMode::Toggle, None),
+            cues: CheckMenuItem::new("Audio cues", true, self.cues_on, None),
             show_last: MenuItem::new("Show last transcript", true, None),
             open_config: MenuItem::new("Open config", true, None),
             open_logs: MenuItem::new("Open logs", true, None),
@@ -190,6 +197,7 @@ impl App {
             &PredefinedMenuItem::separator(),
             &items.enabled,
             &items.mode,
+            &items.cues,
             &items.show_last,
             &items.open_config,
             &items.open_logs,
@@ -209,6 +217,7 @@ impl App {
         let ids = [
             (items.enabled.id().clone(), MenuAction::ToggleEnabled),
             (items.mode.id().clone(), MenuAction::ToggleMode),
+            (items.cues.id().clone(), MenuAction::ToggleCues),
             (items.show_last.id().clone(), MenuAction::ShowLast),
             (items.open_config.id().clone(), MenuAction::OpenConfig),
             (items.open_logs.id().clone(), MenuAction::OpenLogs),
@@ -258,7 +267,13 @@ impl App {
         if let Some(pill) = &mut self.pill {
             pill.show(pill_text(state));
         }
-        if sound && let Some(cue) = &mut self.cue {
+        // Both are read: `cues_on` is what the tray promises, `self.cue` the sink that keeps
+        // it. They cannot disagree today — `close_cues` drops the sink — and the flag is
+        // checked anyway so no later path that opens a sink can make the menu lie.
+        if sound
+            && self.cues_on
+            && let Some(cue) = &mut self.cue
+        {
             match state {
                 IndicatorState::Recording => cue.play(880.0, 70),
                 // Only a dictation that landed: a tap, a cancel and an empty transcript are
@@ -269,6 +284,20 @@ impl App {
             }
         }
         self.error_until = (state == IndicatorState::Error).then(|| Instant::now() + ERROR_HOLD);
+    }
+
+    /// Open the cue sink, so the next cue plays from a stream that is already running.
+    /// Idempotent: called from `resumed` at start and again whenever the tray switches cues
+    /// back on.
+    fn open_cues(&mut self) {
+        if self.cue.is_none() {
+            self.cue = Some(Cue::new());
+        }
+    }
+
+    /// Drop the cue sink, so cues switched off from the tray hold no output stream open.
+    fn close_cues(&mut self) {
+        self.cue = None;
     }
 
     fn menu(&mut self, action: MenuAction, event_loop: &ActiveEventLoop) {
@@ -310,6 +339,24 @@ impl App {
                 // mark and the pipeline cannot disagree.
                 if let Some(items) = &self.items {
                     items.mode.set_checked(self.mode == HotkeyMode::Toggle);
+                }
+            }
+            MenuAction::ToggleCues => {
+                self.cues_on = !self.cues_on;
+                // The device is opened here, in this click's own event-loop pass, rather than
+                // at the next cue: a tone queued in the pass that opened the sink never
+                // reaches the device (see `Cue`), so an open deferred to the first cue after
+                // switching on would swallow exactly that cue.
+                if self.cues_on {
+                    self.open_cues();
+                } else {
+                    self.close_cues();
+                }
+                tracing::info!(cues = self.cues_on, "audio cues toggled from the tray");
+                // muda flips the check itself on click; it is set from our own state so the
+                // mark and the sink cannot disagree.
+                if let Some(items) = &self.items {
+                    items.cues.set_checked(self.cues_on);
                 }
             }
             MenuAction::ShowLast => {
@@ -356,8 +403,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
             // Opens the output device now (see `Cue`); a missing one is retried by the first
             // cue, so this cannot fail the daemon.
-            if self.opts.cue && self.cue.is_none() {
-                self.cue = Some(Cue::new());
+            if self.cues_on {
+                self.open_cues();
             }
         }
     }
@@ -413,6 +460,7 @@ pub fn run(
         let s = shared_of(&shared);
         (s.enabled, s.mode)
     };
+    let cues_on = opts.cue;
     let mut app = App {
         opts,
         shared,
@@ -427,6 +475,7 @@ pub fn run(
         error_until: None,
         enabled,
         mode,
+        cues_on,
     };
     event_loop.run_app(&mut app).context("event loop")?;
     Ok(())
