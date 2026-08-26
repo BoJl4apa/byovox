@@ -345,6 +345,9 @@ working, error (3 s).
 short tones (start, done, error), synthesised at run time rather than shipped as
 assets — nothing to load, nothing to fail to load. Only a dictation that reached the
 focused window plays the done tone: a tap, a cancel and an empty transcript are silent.
+The cues follow the default output device rather than staying on the one they opened on,
+and the tray carries an "Audio cues" item that silences them for the running daemon
+without writing `indicator.cue` (see `docs/platform-windows.md`, which is current).
 
 **Autostart.** HKCU `Run` key / XDG autostart `.desktop` / LaunchAgent plist. **Updates:**
 none built in; GitHub release binaries and `cargo install`.
