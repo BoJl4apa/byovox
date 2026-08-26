@@ -180,7 +180,7 @@ level = "info"
 # only and does not do this.
 # Matched as a case-insensitive substring of the device's name as the audio host reports it,
 # which is shorter than the Sound control panel's spelling ("Microphone Array" rather than
-# "Microphone Array (Synaptics Audio)"): run `byovox check`, which prints
+# "Microphone Array (Example Audio)"): run `byovox check`, which prints
 # the device it used and lists every input name on its `inputs` row, and copy a word out of
 # the one you want. If several match, the first the system enumerates wins. A value that
 # matches nothing is a startup error naming this key and listing those names — never a silent

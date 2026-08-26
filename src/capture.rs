@@ -386,8 +386,8 @@ mod tests {
     /// Names in the shape a host reports them — the driver's, not the Sound panel's.
     fn devices() -> Vec<String> {
         [
-            "Microphone Array (Synaptics Audio)",
-            "Headset (PaMu Slide Hands-Free)",
+            "Microphone Array (Example Audio)",
+            "Headset (Example Buds Hands-Free)",
         ]
         .map(String::from)
         .to_vec()
@@ -465,7 +465,7 @@ mod tests {
         let d = devices();
         assert_eq!(select("Microphone Array", &d), Ok(0));
         assert_eq!(select("microphone array", &d), Ok(0));
-        assert_eq!(select("SYNAPTICS", &d), Ok(0));
+        assert_eq!(select("EXAMPLE AUDIO", &d), Ok(0));
         assert_eq!(select("Hands-Free", &d), Ok(1));
         // Padding in the file is not part of the name the user meant.
         assert_eq!(select("  Headset  ", &d), Ok(1));
@@ -477,7 +477,7 @@ mod tests {
     fn the_first_device_in_enumeration_order_wins() {
         let d = vec![
             "Microphone (USB Audio)".to_string(),
-            "Microphone Array (Synaptics Audio)".to_string(),
+            "Microphone Array (Example Audio)".to_string(),
         ];
         assert_eq!(select("Microphone", &d), Ok(0));
         assert_eq!(select("Microphone Array", &d), Ok(1));
@@ -494,7 +494,7 @@ mod tests {
         assert_eq!(
             resolve("nonexistent", &devices()).unwrap_err(),
             "capture.device \"nonexistent\" matched no input device; available: \
-             Microphone Array (Synaptics Audio) | Headset (PaMu Slide Hands-Free)"
+             Microphone Array (Example Audio) | Headset (Example Buds Hands-Free)"
         );
         assert_eq!(resolve("Headset", &devices()), Ok(1));
         // Not a wildcard: an empty selector is the system default, and no caller resolves it
@@ -509,14 +509,14 @@ mod tests {
     #[test]
     fn a_device_describes_itself_with_the_layout_it_reports() {
         let info = DeviceInfo {
-            name: "Headset (PaMu Slide Hands-Free)".into(),
+            name: "Headset (Example Buds Hands-Free)".into(),
             rate: 16_000,
             channels: 1,
             format: SampleFormat::F32,
         };
         assert_eq!(
             info.to_string(),
-            "Headset (PaMu Slide Hands-Free) (16000 Hz, 1 ch, F32)"
+            "Headset (Example Buds Hands-Free) (16000 Hz, 1 ch, F32)"
         );
     }
 }

@@ -523,19 +523,19 @@ mod tests {
     /// whatever its case, and so does a rate no real microphone reports.
     #[test]
     fn a_bluetooth_hands_free_endpoint_is_warned_about_by_name_or_by_rate() {
-        assert!(is_hands_free("Headset (PaMu Slide Hands-Free)", 16_000));
+        assert!(is_hands_free("Headset (Example Buds Hands-Free)", 16_000));
         assert!(is_hands_free("headset (pamu slide hands-free)", 16_000));
         // Named as a headset but running at a real rate: still the endpoint to avoid.
         assert!(is_hands_free("Headset Microphone (Some Dongle)", 48_000));
         // A driver that says neither word, at a rate that gives it away anyway.
-        assert!(is_hands_free("PaMu Slide (Bluetooth SCO)", 8_000));
+        assert!(is_hands_free("Example Buds (Bluetooth SCO)", 8_000));
         assert!(is_hands_free("Some Microphone", 16_000));
 
-        assert!(!is_hands_free("Microphone Array (Synaptics Audio)", 48_000));
+        assert!(!is_hands_free("Microphone Array (Example Audio)", 48_000));
         assert!(!is_hands_free("Microphone (USB Audio Device)", 44_100));
         // The A2DP endpoint of the very same headset is an output, never recorded from; if it
         // ever appears as an input it is not the hands-free profile.
-        assert!(!is_hands_free("Headphones (PaMu Slide Stereo)", 48_000));
+        assert!(!is_hands_free("Headphones (Example Buds Stereo)", 48_000));
     }
 
     /// `check` transcribes a second of room tone, so a high score beside invented text is the
