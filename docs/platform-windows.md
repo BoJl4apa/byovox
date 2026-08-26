@@ -138,6 +138,13 @@ switches it for you — re-binds the cues to the device that took over, one INFO
 default only settles after the burst, so the re-bind is taken once it has been quiet for half
 a second.
 
+Four things re-bind the cues: the default moving, an endpoint being removed, an endpoint
+changing state, and a change to the default output's **shared-mode format** (device Properties
+→ Advanced → Default Format), which invalidates every open stream on that endpoint without
+moving the default or taking it out of service. Anything else that can kill a stream — another
+application seizing the endpoint in exclusive mode, say — reports nothing to a listener, so it
+is not covered.
+
 The re-bind lands between cues, never during one: the tone after the switch is the first to
 play on the new device. Without it the cues would simply stop — a stream whose endpoint has
 gone keeps accepting tones without complaining — for the rest of that daemon's life. If no

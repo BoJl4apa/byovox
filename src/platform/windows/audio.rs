@@ -1,15 +1,17 @@
 //! Watching the default audio *render* endpoint.
 //!
 //! Depends on the WASAPI device enumerator (`IMMDeviceEnumerator`) and on the COM apartment of
-//! the thread that builds it. Produces one callback per Windows notification that the default
-//! render endpoint moved, or that an endpoint went away. It decides nothing and holds no audio
-//! stream: what to do about a change is the caller's — `ui::App` re-opens its cue sink, which
-//! is the whole of issue #7.
+//! the thread that builds it. Produces one callback per Windows notification that could have
+//! invalidated a stream on the default render endpoint: the default moving, an endpoint being
+//! removed or changing state, and a shared-mode format change. It decides nothing and holds no
+//! audio stream: what to do about a change is the caller's — `ui::App` re-opens its cue sink,
+//! which is the whole of issue #7.
 
 use windows::Win32::Foundation::{PROPERTYKEY, RPC_E_CHANGED_MODE};
 use windows::Win32::Media::Audio::{
     DEVICE_STATE, EDataFlow, ERole, IMMDeviceEnumerator, IMMNotificationClient,
-    IMMNotificationClient_Impl, MMDeviceEnumerator, eConsole, eMultimedia, eRender,
+    IMMNotificationClient_Impl, MMDeviceEnumerator, PKEY_AudioEngine_DeviceFormat, eConsole,
+    eMultimedia, eRender,
 };
 use windows::Win32::System::Com::{
     CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
@@ -141,8 +143,16 @@ impl IMMNotificationClient_Impl for Notify_Impl {
         Ok(())
     }
 
-    /// Volume, format and friendly-name edits. None of them invalidate an open stream.
-    fn OnPropertyValueChanged(&self, _id: &PCWSTR, _key: &PROPERTYKEY) -> ComResult<()> {
+    /// Volume and friendly-name edits leave an open stream alone; a shared-mode **format**
+    /// change does not. Sound panel → device Properties → Advanced → Default Format
+    /// reconfigures the audio engine and hands every client bound to that endpoint
+    /// `AUDCLNT_E_DEVICE_INVALIDATED` — without moving the default and without touching
+    /// `DEVICE_STATE`, so this is the *only* notification it fires. Left out, it is issue #7
+    /// again by a second route: the sink dies where `Mixer::add` cannot see it.
+    fn OnPropertyValueChanged(&self, _id: &PCWSTR, key: &PROPERTYKEY) -> ComResult<()> {
+        if *key == PKEY_AudioEngine_DeviceFormat {
+            (self.on_change)();
+        }
         Ok(())
     }
 }
