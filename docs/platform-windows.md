@@ -133,8 +133,10 @@ hands-free endpoint.
 The start, done and error cues play on whatever Windows has as the default output device, and
 they follow it: byovox registers for endpoint notifications (`IMMNotificationClient`), so
 switching the default in the Sound panel — or switching a Bluetooth headset off, which
-switches it for you — re-binds the cues to the device that took over, one INFO
-`cue output changed` line per switch. A disconnect fires a burst of notifications and the
+switches it for you — re-binds the cues to the device that took over, with one INFO
+`cue output re-opened after an audio device change` line per re-bind (a change to another
+endpoint, or a shared-mode format change, re-binds too — to the same device, with the same
+line). A disconnect fires a burst of notifications and the
 default only settles after the burst, so the re-bind is taken half a second after the first of
 them — late enough that the burst is over, and capped so that an endpoint flapping without
 pause is still re-bound once per half-second rather than postponed for ever.

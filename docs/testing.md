@@ -45,7 +45,7 @@ and an unmapped layout routes to `language.default`, so every row below would lo
 - [ ] tray menu, Audio cues: clear it and the next dictation is silent; check it again and the cue after that is audible (not the one straight after the click — the click is what opens the device)
 - [ ] the pill never gets a taskbar button, on the first show and after a hide/re-show
 - [ ] `indicator.pill = false` and `cue = false` each remove exactly that layer — and with `cue = false`, checking Audio cues from the tray brings them back for this daemon without editing the file
-- [ ] with cues audible on a Bluetooth headset, switch the headset off mid-session: one `cue output changed` line in the log, and the next dictation's cues play on the device that took over; switch it back on and they follow it back
+- [ ] with cues audible on a Bluetooth headset, switch the headset off mid-session: one `cue output re-opened after an audio device change` line in the log, and the next dictation's cues play on the device that took over; switch it back on and they follow it back
 
 ## Operations
 - [ ] second `byovox` → "already running"

@@ -352,12 +352,10 @@ impl App {
     /// moves. Idempotent: called from `resumed` at start and again whenever the tray switches
     /// cues back on.
     ///
-    /// **The sink is opened before the watch, and the order is load-bearing.** On Windows the
-    /// watch's `Apartment` guard balances its own `CoInitializeEx` when it drops, and opening
-    /// the sink first is what leaves cpal's thread-local COM reference underneath it — see
-    /// `platform::windows::audio::Apartment::enter`. Registering first would make this guard
-    /// the last one out of the apartment, and `close_cues` would take the event-loop thread out
-    /// of COM under winit and the tray.
+    /// The sink is opened before the watch so that a notification arriving during startup
+    /// finds a sink to re-open; the order is a convenience, not a COM requirement — the
+    /// watch's `Apartment` guard is reference-counted per thread and only returns what it took
+    /// (see `platform::windows::audio::Apartment::enter`).
     fn open_cues(&mut self) {
         if self.cue.is_none() {
             self.cue = Some(Cue::new());
@@ -412,8 +410,10 @@ impl App {
         if cue.reopen() {
             // No device name. byovox keeps names out of the running log, and a Bluetooth
             // endpoint is usually named after its owner; `byovox check` prints device names to
-            // a console the user asked for.
-            tracing::info!("cue output changed");
+            // a console the user asked for. "re-opened", not "changed": the notification that
+            // got us here may concern another endpoint, in which case the sink rebinds to the
+            // same device it had.
+            tracing::info!("cue output re-opened after an audio device change");
         }
     }
 

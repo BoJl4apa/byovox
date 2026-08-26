@@ -91,14 +91,14 @@ impl Apartment {
         // S_OK *and* S_FALSE (already initialised, same mode) each take a reference that must
         // be given back, so both arrive here as `leave: true`.
         //
-        // In the daemon this is always the S_FALSE branch, and what holds the apartment is
-        // **cpal**, not winit: `cpal::host::wasapi::com` takes a `CoInitializeEx` in a
-        // `thread_local!` released only at thread exit, and `default_output_device` — reached
-        // through `Cue::new` — is what takes it. winit's `OleInitialize` is inside window
-        // creation, so it never runs at all when `indicator.pill = false`, and `tray-icon`
-        // initialises no COM of its own. That is why `App::open_cues` opens the sink before it
-        // registers the watch: cpal's reference is taken first, so this guard is never the last
-        // one out and `Drop` cannot take the event-loop thread out of its apartment.
+        // In the daemon this is always the S_FALSE branch: cpal initialises COM on the
+        // event-loop thread the first time any device call runs there (`cpal::host::wasapi::com`
+        // — `CpalCapture::open` in the daemon's startup is the first such call), and holds that
+        // reference in a `thread_local!` released only at thread exit. winit's `OleInitialize`
+        // is inside window creation and never runs when `indicator.pill = false`; `tray-icon`
+        // initialises no COM of its own. Either way the order here is not load-bearing:
+        // `CoInitializeEx`/`CoUninitialize` are reference-counted per thread, so this guard
+        // only ever gives back the one reference it took.
         hr.ok().map_err(|e| format!("COM apartment: {e}"))?;
         Ok(Apartment { leave: true })
     }
