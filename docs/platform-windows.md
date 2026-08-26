@@ -128,6 +128,26 @@ than the Sound control panel's (`Microphone Array`, `Headset`). A name that matc
 is refused at startup with that same list, and `check` warns when the microphone it used is a
 hands-free endpoint.
 
+## Cue output
+
+The start, done and error cues play on whatever Windows has as the default output device, and
+they follow it: byovox registers for endpoint notifications (`IMMNotificationClient`), so
+switching the default in the Sound panel — or switching a Bluetooth headset off, which
+switches it for you — re-binds the cues to the device that took over, one INFO
+`cue output changed` line per switch. A disconnect fires a burst of notifications and the
+default only settles after the burst, so the re-bind is taken once it has been quiet for half
+a second.
+
+The re-bind lands between cues, never during one: the tone after the switch is the first to
+play on the new device. Without it the cues would simply stop — a stream whose endpoint has
+gone keeps accepting tones without complaining — for the rest of that daemon's life. If no
+output device is reachable at all, cues go quiet with a single WARN and every other layer
+carries on; the next cue retries.
+
+The tray's **Audio cues** item silences them for the running daemon and closes the output
+stream with them. `indicator.cue` in the config is the value the daemon starts at, and the
+item does not write back to it.
+
 ## Autostart
 
 `byovox autostart --enable` writes the quoted path of `byovox-daemon.exe` — the binary beside

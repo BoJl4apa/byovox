@@ -140,7 +140,9 @@ max_chars = 20000
 [indicator]
 # Small always-on-top "recording / working" pill near the cursor (Windows, X11, macOS).
 pill = true
-# Short tones on start, done and error.
+# Short tones on start, done and error. They play on the default output device and follow it
+# when it changes. The tray's "Audio cues" item flips this for the running daemon without
+# touching this file, so a restart comes back to the value here.
 cue = true
 
 [capture_log]

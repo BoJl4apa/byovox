@@ -42,8 +42,10 @@ and an unmapped layout routes to `language.default`, so every row below would lo
 - [ ] tray menu: Disable stops the hotkey; Toggle mode takes its check mark and the hotkey then starts/stops on separate presses; Show last transcript shows a dialog; Open config / Open logs open Explorer; Run check opens a console that shows every row and waits for Enter; Quit exits
 - [ ] with a chord hotkey and Disable active: pressing the chord types its trigger into the window (nothing is swallowed); Enable → the chord dictates again
 - [ ] Run check under `byovox run`: the rows land in *that* terminal, interleaved with the live log, and its "press Enter" competes with the shell for stdin — expected; run the menu item against the background daemon
+- [ ] tray menu, Audio cues: clear it and the next dictation is silent; check it again and the cue after that is audible (not the one straight after the click — the click is what opens the device)
 - [ ] the pill never gets a taskbar button, on the first show and after a hide/re-show
-- [ ] `indicator.pill = false` and `cue = false` each remove exactly that layer
+- [ ] `indicator.pill = false` and `cue = false` each remove exactly that layer — and with `cue = false`, checking Audio cues from the tray brings them back for this daemon without editing the file
+- [ ] with cues audible on a Bluetooth headset, switch the headset off mid-session: one `cue output changed` line in the log, and the next dictation's cues play on the device that took over; switch it back on and they follow it back
 
 ## Operations
 - [ ] second `byovox` → "already running"
