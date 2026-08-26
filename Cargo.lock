@@ -297,6 +297,7 @@ dependencies = [
  "tray-icon",
  "ureq",
  "windows",
+ "windows-core",
  "winit",
  "winreg",
 ]

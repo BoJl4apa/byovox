@@ -66,9 +66,16 @@ winit = "0.30.13"
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
   "Win32_Foundation",
+  "Win32_Media_Audio",
   "Win32_UI_WindowsAndMessaging",
   "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_System_Com",
   "Win32_System_Console",
   "Win32_System_Threading",
 ] }
+# Not a new crate: `windows` already builds on it, and it is in the lock either way. It is
+# named here because `windows::core::implement` — which `platform::windows::audio` uses to
+# implement `IMMNotificationClient` — expands to `::windows_core::…`, an absolute path that
+# only resolves for a crate in *this* crate's extern prelude. The version tracks `windows`.
+windows-core = "0.62"
 winreg = "0.55"

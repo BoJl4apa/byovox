@@ -33,6 +33,44 @@ fn shared_of(lock: &Mutex<Shared>) -> std::sync::MutexGuard<'_, Shared> {
 /// How long the Error indication is held before the UI falls back to Idle.
 const ERROR_HOLD: Duration = Duration::from_secs(3);
 
+/// How quiet the endpoint notifications must go before the cue sink is re-opened.
+///
+/// Windows fires a burst — several notifications within tens of milliseconds — when a
+/// Bluetooth headset disconnects, and only after the burst does the default settle on the
+/// device that took over. Re-opening on the first of them would bind the sink to whatever was
+/// mid-flight; waiting for the quiet costs nothing, because the next cue is a dictation away.
+const CUE_REOPEN_QUIET: Duration = Duration::from_millis(500);
+
+/// The pending cue-sink re-open: trailing-edge coalescing of `AudioDeviceChanged`.
+///
+/// Notification timestamps in, at most one re-open per burst out.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ReopenTimer(Option<Instant>);
+
+impl ReopenTimer {
+    /// A notification arrived: push the re-open out past this one.
+    fn notified(&mut self, now: Instant) {
+        self.0 = Some(now + CUE_REOPEN_QUIET);
+    }
+
+    /// Whether a re-open is due, clearing the deadline when it says yes — so one burst yields
+    /// one re-open however many times the loop wakes afterwards.
+    fn due(&mut self, now: Instant) -> bool {
+        match self.0 {
+            Some(at) if now >= at => {
+                self.0 = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// When the loop must wake next on this timer's account, if at all.
+    fn deadline(self) -> Option<Instant> {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuAction {
     ToggleEnabled,
@@ -49,6 +87,9 @@ pub enum MenuAction {
 pub enum UserEvent {
     Indicator(IndicatorState),
     Menu(MenuAction),
+    /// Windows has moved, removed or disabled an audio endpoint: the cue sink may be bound to
+    /// one that no longer exists. Posted from a WASAPI thread, so it carries nothing.
+    AudioDeviceChanged,
     Quit,
 }
 
@@ -156,6 +197,13 @@ struct App {
     items: Option<MenuItems>,
     pill: Option<Pill>,
     cue: Option<Cue>,
+    /// Live only while the cues are: it exists to re-open `cue`, so the two go together.
+    /// Windows only for now — cpal has no cross-platform device-change hook, so the Linux
+    /// (PipeWire/PulseAudio) and macOS (CoreAudio property listener) backends will each need
+    /// their own, posting the same `UserEvent::AudioDeviceChanged`.
+    #[cfg(windows)]
+    device_watch: Option<crate::platform::windows::audio::DefaultRenderWatch>,
+    reopen: ReopenTimer,
     error_until: Option<Instant>,
     enabled: bool,
     mode: HotkeyMode,
@@ -286,18 +334,64 @@ impl App {
         self.error_until = (state == IndicatorState::Error).then(|| Instant::now() + ERROR_HOLD);
     }
 
-    /// Open the cue sink, so the next cue plays from a stream that is already running.
-    /// Idempotent: called from `resumed` at start and again whenever the tray switches cues
-    /// back on.
+    /// Open the cue sink and start following the default output endpoint.
+    ///
+    /// The two go together: a sink is bound to one endpoint for its life and dies silently
+    /// with it (see `Cue`), so a sink without the watch goes deaf the first time the default
+    /// moves. Idempotent: called from `resumed` at start and again whenever the tray switches
+    /// cues back on.
     fn open_cues(&mut self) {
         if self.cue.is_none() {
             self.cue = Some(Cue::new());
         }
+        #[cfg(windows)]
+        if self.device_watch.is_none() {
+            // The callback runs on a WASAPI thread. An `EventLoopProxy` is `Send` but not
+            // `Sync`, so it rides in a mutex it is the only user of — the same trick the menu
+            // handler makes, for the same reason.
+            let proxy = Mutex::new(self.proxy.clone());
+            let watch = crate::platform::windows::audio::DefaultRenderWatch::new(move || {
+                if let Ok(p) = proxy.lock() {
+                    let _ = p.send_event(UserEvent::AudioDeviceChanged);
+                }
+            });
+            match watch {
+                Ok(w) => self.device_watch = Some(w),
+                // Cues still play; they just stop following the default endpoint, which is the
+                // behaviour before #7 rather than a new failure.
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "no output-device notifications; cues will not follow a device change"
+                ),
+            }
+        }
     }
 
-    /// Drop the cue sink, so cues switched off from the tray hold no output stream open.
+    /// Drop the cue sink and the endpoint watch, so cues switched off from the tray hold
+    /// neither an output stream nor a COM registration.
     fn close_cues(&mut self) {
         self.cue = None;
+        #[cfg(windows)]
+        {
+            self.device_watch = None;
+        }
+        self.reopen = ReopenTimer::default();
+    }
+
+    /// Re-bind the cue sink to the current default output endpoint (#7).
+    ///
+    /// Runs in an event-loop pass of its own, ahead of whatever cue comes next: a tone queued
+    /// in the pass that opened the sink is lost (see `Cue`), so the re-open cannot be folded
+    /// into `apply` just before the tone.
+    fn reopen_cue(&mut self) {
+        let Some(cue) = &mut self.cue else {
+            return;
+        };
+        cue.reopen();
+        // No device name. byovox keeps names out of the running log, and a Bluetooth endpoint
+        // is usually named after its owner; `byovox check` prints device names to a console
+        // the user asked for.
+        tracing::info!("cue output changed");
     }
 
     fn menu(&mut self, action: MenuAction, event_loop: &ActiveEventLoop) {
@@ -413,6 +507,9 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             UserEvent::Indicator(s) => self.apply(s, true),
             UserEvent::Menu(a) => self.menu(a, event_loop),
+            // Scheduled, not acted on: `about_to_wait` takes the re-open once the burst of
+            // notifications a disconnect fires has gone quiet.
+            UserEvent::AudioDeviceChanged => self.reopen.notified(Instant::now()),
             UserEvent::Quit => event_loop.exit(),
         }
     }
@@ -431,15 +528,25 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        match self.error_until {
-            Some(t) if Instant::now() >= t => {
-                self.error_until = None;
-                self.apply(IndicatorState::Idle, false);
-                event_loop.set_control_flow(ControlFlow::Wait);
-            }
-            Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
-            None => event_loop.set_control_flow(ControlFlow::Wait),
+        let now = Instant::now();
+        if let Some(t) = self.error_until
+            && now >= t
+        {
+            self.error_until = None;
+            self.apply(IndicatorState::Idle, false);
         }
+        if self.reopen.due(now) {
+            self.reopen_cue();
+        }
+        // The earlier of the two deadlines; a plain wait when neither is pending.
+        let next = match (self.error_until, self.reopen.deadline()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        event_loop.set_control_flow(match next {
+            Some(t) => ControlFlow::WaitUntil(t),
+            None => ControlFlow::Wait,
+        });
     }
 }
 
@@ -472,6 +579,9 @@ pub fn run(
         items: None,
         pill: None,
         cue: None,
+        #[cfg(windows)]
+        device_watch: None,
+        reopen: ReopenTimer::default(),
         error_until: None,
         enabled,
         mode,
@@ -695,11 +805,17 @@ fn cursor_position() -> Option<(i32, i32)> {
 /// write one WARN per dictation either, so a failure streak reports once and the next success
 /// re-arms it.
 ///
-/// The sink is nevertheless opened once at start, from `resumed`: a tone queued in the same
-/// event-loop pass that opened the sink never reaches the device (measured over WASAPI
-/// loopback — the stream's first buffer is honoured only after the loop has yielded once),
-/// so a lazily opened sink would always lose the first cue after every open. Opened ahead
-/// of time, the first tone plays on time; the lazy path remains for the failure fallback.
+/// The sink is nevertheless opened ahead of any cue — from `resumed`, and again from the
+/// tray's Audio cues item — because a tone queued in the same event-loop pass that opened the
+/// sink never reaches the device (measured over WASAPI loopback: the stream's first buffer is
+/// honoured only after the loop has yielded once), so a lazily opened sink would lose the
+/// first cue after every open. Opened ahead of time, the first tone plays on time; the lazy
+/// path remains for the failure fallback.
+///
+/// A sink is bound to the endpoint it opened on for its life, and when that endpoint goes away
+/// it dies where nothing here can see it — `Mixer::add` returns nothing. So the endpoint is
+/// watched rather than polled: `App::open_cues` registers for the platform's device-change
+/// notifications and `reopen` binds a fresh sink to whatever the default became (#7).
 struct Cue {
     sink: Option<rodio::MixerDeviceSink>,
     /// Set when a failure has already been reported, cleared by the next success.
@@ -731,11 +847,29 @@ impl Cue {
     }
 
     fn play(&mut self, hz: f32, ms: u64) {
-        match self.open_and_play(hz, ms) {
+        let outcome = self.open_and_play(hz, ms);
+        self.settle(outcome);
+    }
+
+    /// Bind to whatever the default output endpoint is now, dropping the sink that was on the
+    /// old one.
+    ///
+    /// Nothing else recovers from a moved endpoint: a stream whose device went away keeps
+    /// accepting tones — `Mixer::add` returns nothing — so the failure is invisible from here
+    /// and only a fresh sink reaches the device that replaced it (#7).
+    fn reopen(&mut self) {
+        self.sink = None;
+        let outcome = self.open().map(|_| ());
+        self.settle(outcome);
+    }
+
+    /// One open's outcome. A failure drops the handle so the next cue opens a fresh one — a
+    /// device that came back is only reachable through a new sink — and reports once per
+    /// streak, since a dead endpoint must not write a WARN per dictation.
+    fn settle(&mut self, outcome: Result<()>) {
+        match outcome {
             Ok(()) => self.warned = false,
             Err(e) => {
-                // Drop the handle so the next cue opens a fresh one: a device that came back
-                // is only reachable through a new sink.
                 self.sink = None;
                 if !self.warned {
                     self.warned = true;
@@ -746,7 +880,8 @@ impl Cue {
     }
 
     /// Only the open is fallible: `Mixer::add` returns nothing, so a stream that dies *after*
-    /// a successful open is invisible here until something else forces a re-open.
+    /// a successful open is invisible here — `reopen`, driven by the endpoint watch, is what
+    /// forces the fresh sink such a stream needs.
     fn open_and_play(&mut self, hz: f32, ms: u64) -> Result<()> {
         use rodio::Source;
         let sink = self.open()?;
@@ -818,6 +953,66 @@ mod tests {
         assert_eq!(other_mode(HotkeyMode::Hold), HotkeyMode::Toggle);
         assert_eq!(other_mode(HotkeyMode::Toggle), HotkeyMode::Hold);
         assert_eq!(other_mode(other_mode(HotkeyMode::Hold)), HotkeyMode::Hold);
+    }
+
+    /// A disconnect fires a burst of endpoint notifications, and only after it does the
+    /// default settle. The burst must therefore cost one re-open, taken once the
+    /// notifications stop — not one per notification, and not one on the first.
+    #[test]
+    fn a_burst_of_device_changes_coalesces_into_one_reopen() {
+        let t0 = Instant::now();
+        let at = |ms| t0 + Duration::from_millis(ms);
+        let mut timer = ReopenTimer::default();
+
+        // Nothing pending is never due, and never wakes the loop.
+        assert!(!timer.due(at(0)));
+        assert_eq!(timer.deadline(), None);
+
+        // Three notifications 50 ms apart, with the loop turning between them.
+        for ms in [0, 50, 100] {
+            timer.notified(at(ms));
+            assert!(!timer.due(at(ms)), "re-opened mid-burst at {ms} ms");
+        }
+        // Quiet measured from the *last* notification, not the first: at 500 ms — a full
+        // CUE_REOPEN_QUIET after the burst started — it is still not due.
+        assert!(!timer.due(at(500)));
+        assert_eq!(timer.deadline(), Some(at(600)));
+
+        // One re-open, once the burst has been quiet for CUE_REOPEN_QUIET.
+        assert!(timer.due(at(600)));
+        // And exactly one: firing clears the deadline, so later turns of the loop find
+        // nothing left to do.
+        assert!(!timer.due(at(5_000)));
+        assert_eq!(timer.deadline(), None);
+    }
+
+    /// `#[ignore]`d because it opens the default output device and makes a noise: on a box
+    /// with no output at all — a CI runner — `Cue::new` logs and carries on, which is not
+    /// what this is about. Run it on a desktop with `cargo test -- --ignored`.
+    ///
+    /// What it pins is the whole of the #7 fix: a re-open produces a *fresh* sink, plays
+    /// through it, and clears a failure streak rather than inheriting one.
+    #[test]
+    #[ignore]
+    fn a_reopened_cue_plays_and_clears_the_failure_streak() {
+        let mut cue = Cue::new();
+        assert!(cue.sink.is_some(), "no default output device on this box");
+        cue.play(880.0, 30);
+        assert!(!cue.warned, "a working device reported a failure streak");
+
+        cue.reopen();
+        assert!(cue.sink.is_some(), "the re-open produced no sink");
+        cue.play(660.0, 30);
+        assert!(!cue.warned, "the re-opened sink reported a failure streak");
+
+        // A streak already reported: a good re-open has to re-arm the WARN, or the next real
+        // failure would be silent.
+        cue.warned = true;
+        cue.reopen();
+        assert!(
+            cue.sink.is_some() && !cue.warned,
+            "the streak was not cleared"
+        );
     }
 
     #[test]
