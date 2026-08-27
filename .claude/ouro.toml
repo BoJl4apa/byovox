@@ -1,0 +1,50 @@
+# .claude/ouro.toml — the ouro binding for this repo. Schema: ouro/docs/binding.md
+# Validate: python <ouro>/bin/ouro-binding.py check
+schema = 1
+
+[repo]
+slug = "BoJl4apa/byovox"
+default_branch = "main"
+protected_branch_prefixes = []
+checkout = "C:/DEV/GIT/byovox"
+
+[labels]
+scope = []
+area = []
+
+# The three checks .github/workflows/ci.yml runs on every push, in its order. `--locked` so a
+# run tests the dependency versions Cargo.lock names. The MSRV and audit jobs stay CI-only.
+[[gate]]
+areas = ["*"]
+run = "cargo fmt --check"
+
+[[gate]]
+areas = ["*"]
+run = "cargo clippy --all-targets --locked -- -D warnings"
+
+[[gate]]
+areas = ["*"]
+run = "cargo test --locked"
+
+[ship]
+policy = "stop-at-pr"
+review = "adversarial-review"
+test_first_for_bugs = true
+
+[rolling_issues]
+drift_audit = "Docs drift audit"
+loop_runs = "Loop runs"
+
+# There is no CLAUDE.md in this repo. SECURITY.md is the policy doc that binds beyond the
+# contract: the threat-model table's in-scope / out-of-scope columns and "Accepted by design".
+[authority]
+local = ["SECURITY.md"]
+
+[overlays]
+implement = ["SECURITY.md"]
+land = []
+drift = []
+
+[owner]
+role = "loop owner"
+ruling_approvers = ["BoJl4apa"]
