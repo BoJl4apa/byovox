@@ -23,8 +23,9 @@ on:
         required: true
 
 # One run per tag at a time. A tag push and a dispatch naming that same tag are two separate
-# runs of this workflow for one release: serialised, whichever runs second finds the release
-# already there at the `released` check and stops, green, without building anything.
+# runs of this workflow for one release: serialised, so if the first got as far as publishing,
+# the second finds the release at the `released` check and stops, green, without building
+# anything — and if the first failed before that, the second builds, which is the point.
 # `cancel-in-progress: false` because the run that got there first is not the thing to kill —
 # one that is already uploading assets should be allowed to finish.
 concurrency:
@@ -72,9 +73,13 @@ jobs:
       # A tag that already has one ends the run here, green: the alternative is the full
       # build, test and attestation of an artefact `gh release create` then refuses at the
       # last step, for a release nobody will download (seen on v0.1.0, run 32879097622).
-      # Only a release found is a reason to stop. A `gh release view` that fails for any
-      # other cause — network, a token that cannot read — proves nothing about absence, so
-      # the run carries on and fails loudly where it always did.
+      # Only a *published* release is a reason to stop. `gh release view` also resolves a
+      # draft — and `gh release create` with assets passes through one (create as draft,
+      # upload, publish), so a run that died mid-upload leaves a draft behind for the tag;
+      # that is exactly the case a dispatch is for, and it must build. Hence `isDraft` must
+      # read `false`: a draft says `true`, and a `gh` that fails for any other cause —
+      # network, a token that cannot read — prints nothing, which proves nothing about
+      # absence, so the run carries on and fails loudly where it always did.
       - id: released
         shell: bash
         env:
@@ -82,7 +87,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          if gh release view "$TAG" --json tagName >/dev/null 2>&1; then
+          if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
             echo "::notice::$TAG is already released; delete it first to replace it"
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
