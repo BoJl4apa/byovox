@@ -39,6 +39,11 @@ pub struct SttConfig {
     /// compared against the example file — the pipeline narrows it to f32 at the boundary,
     /// where whisper's own scores live.
     pub no_speech_threshold: f64,
+    /// Per-language endpoints keyed by ISO 639-1 code: a dictation the layout routing
+    /// resolved to that language goes to the lane's `base_url` instead of `base_url`.
+    /// Token, timeout and `no_speech_threshold` come from here; `model` and `prompt`
+    /// inherit when empty. Last because it is a table — TOML writes scalars before tables.
+    pub by_language: std::collections::BTreeMap<String, SttLane>,
 }
 impl Default for SttConfig {
     fn default() -> Self {
@@ -52,6 +57,40 @@ impl Default for SttConfig {
             prompt: String::new(),
             timeout_s: 30,
             no_speech_threshold: 0.3,
+            by_language: Default::default(),
+        }
+    }
+}
+
+/// One per-language STT endpoint — `[stt.by_language.<code>]`, see `SttConfig::by_language`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct SttLane {
+    pub base_url: String,
+    pub model: String,
+    pub prompt: String,
+}
+
+impl SttConfig {
+    /// The effective `[stt]` for one lane: the lane's `base_url`, its `model` and `prompt`
+    /// where set and this section's where empty, and everything else — token, timeout, the
+    /// no-speech gate — from here. The one derivation the daemon and `byovox check` share,
+    /// so the row `check` prints exercises the request the daemon would send.
+    pub fn lane_config(&self, lane: &SttLane) -> SttConfig {
+        SttConfig {
+            base_url: lane.base_url.clone(),
+            model: if lane.model.is_empty() {
+                self.model.clone()
+            } else {
+                lane.model.clone()
+            },
+            prompt: if lane.prompt.is_empty() {
+                self.prompt.clone()
+            } else {
+                lane.prompt.clone()
+            },
+            by_language: Default::default(),
+            ..self.clone()
         }
     }
 }
@@ -359,6 +398,16 @@ fn validate(cfg: &Config) -> Result<()> {
             "stt.base_url is empty: set it to your speech-to-text server, e.g. http://127.0.0.1:8770/v1"
         );
     }
+    for (code, lane) in &cfg.stt.by_language {
+        if crate::lang::Lang::parse(code).is_none() {
+            bail!("stt.by_language.{code}: expected an ISO 639-1 code such as `he`");
+        }
+        if lane.base_url.trim().is_empty() {
+            bail!(
+                "stt.by_language.{code}.base_url is empty: set it to that language's speech-to-text server"
+            );
+        }
+    }
     if cfg.polish.enabled {
         if cfg.polish.base_url.trim().is_empty() {
             bail!(
@@ -453,6 +502,48 @@ mod tests {
         assert!(err.to_string().contains("base_ur"), "{err}");
     }
 
+    /// A lane inherits everything it does not set — and never its own `by_language`.
+    #[test]
+    fn a_lane_config_inherits_what_it_leaves_empty() {
+        let stt = SttConfig {
+            base_url: "http://x/v1".into(),
+            model: "whisper-1".into(),
+            api_key_env: "STT_TOKEN".into(),
+            prompt: "Glossary: Acme".into(),
+            timeout_s: 45,
+            no_speech_threshold: 0.2,
+            by_language: [(
+                "he".to_string(),
+                SttLane {
+                    base_url: "http://x/he/v1".into(),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let bare = stt.lane_config(&stt.by_language["he"]);
+        assert_eq!(bare.base_url, "http://x/he/v1");
+        assert_eq!(bare.model, "whisper-1");
+        assert_eq!(bare.prompt, "Glossary: Acme");
+        assert_eq!(bare.api_key_env, "STT_TOKEN");
+        assert_eq!(bare.timeout_s, 45);
+        assert_eq!(bare.no_speech_threshold, 0.2);
+        assert!(bare.by_language.is_empty());
+
+        let full = stt.lane_config(&SttLane {
+            base_url: "http://y/he/v1".into(),
+            model: "ivrit-large-v3".into(),
+            prompt: "Glossary: he".into(),
+        });
+        assert_eq!(
+            (full.model.as_str(), full.prompt.as_str()),
+            ("ivrit-large-v3", "Glossary: he")
+        );
+        assert_eq!(full.timeout_s, 45);
+    }
+
     #[test]
     fn example_file_is_exactly_the_defaults() {
         let from_example: Config = toml::from_str(EXAMPLE).expect("example parses");
@@ -539,6 +630,15 @@ mod tests {
             (
                 "[stt]\nbase_url = \"http://x/v1\"\n[polish]\nbase_url = \"http://x/v1\"\n",
                 "polish.model is empty",
+            ),
+            // A lane needs its endpoint too, and its key has to be a language code.
+            (
+                "[stt]\nbase_url = \"http://x/v1\"\n[stt.by_language.he]\n[polish]\nenabled = false\n",
+                "stt.by_language.he.base_url is empty",
+            ),
+            (
+                "[stt]\nbase_url = \"http://x/v1\"\n[stt.by_language.hebrew]\nbase_url = \"http://x/he/v1\"\n[polish]\nenabled = false\n",
+                "stt.by_language.hebrew: expected an ISO 639-1 code",
             ),
         ];
         for (toml, expect) in cases {

@@ -133,19 +133,18 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
     // One line, naming the keys rather than repeating itself per endpoint. `byovox check`
     // says the same thing on the console; this is the copy an autostarted daemon leaves for
     // someone reading the log later, where there was never a console to say it on.
-    let cleartext: Vec<&str> = [
-        (
-            "stt.base_url",
-            config::is_cleartext_remote(&cfg.stt.base_url),
-        ),
-        (
-            "polish.base_url",
-            cfg.polish.enabled && config::is_cleartext_remote(&cfg.polish.base_url),
-        ),
-    ]
-    .into_iter()
-    .filter_map(|(key, cleartext)| cleartext.then_some(key))
-    .collect();
+    let mut cleartext: Vec<String> = Vec::new();
+    if config::is_cleartext_remote(&cfg.stt.base_url) {
+        cleartext.push("stt.base_url".into());
+    }
+    for (code, lane) in &cfg.stt.by_language {
+        if config::is_cleartext_remote(&lane.base_url) {
+            cleartext.push(format!("stt.by_language.{code}.base_url"));
+        }
+    }
+    if cfg.polish.enabled && config::is_cleartext_remote(&cfg.polish.base_url) {
+        cleartext.push("polish.base_url".into());
+    }
     if !cleartext.is_empty() {
         tracing::warn!(keys = %cleartext.join(", "), "{}", config::CLEARTEXT_WARNING);
     }
@@ -153,13 +152,37 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
     let backends = platform::detect(&cfg)?;
     tracing::info!(hotkey = backends.names.hotkey, layout = backends.names.layout, rungs = ?backends.names.rungs, "backends");
 
-    let stt = stt::SttClient::new(
+    let stt_token = config::resolve_token(&cfg.stt.api_key_env, &cfg.stt.api_key_file);
+    let stt_timeout = Duration::from_secs(cfg.stt.timeout_s);
+    let stt_scored = cfg.stt.no_speech_threshold > 0.0;
+    let mut stt = stt::Routed::new(Box::new(stt::SttClient::new(
         &cfg.stt.base_url,
         &cfg.stt.model,
-        config::resolve_token(&cfg.stt.api_key_env, &cfg.stt.api_key_file),
-        Duration::from_secs(cfg.stt.timeout_s),
-        cfg.stt.no_speech_threshold > 0.0,
-    );
+        stt_token.clone(),
+        stt_timeout,
+        stt_scored,
+    )));
+    for (code, lane) in &cfg.stt.by_language {
+        // `validate` has already refused any code `Lang::parse` cannot read.
+        let Some(lang) = lang::Lang::parse(code) else {
+            continue;
+        };
+        let lane_cfg = cfg.stt.lane_config(lane);
+        stt = stt.lane(
+            lang,
+            Box::new(stt::SttClient::new(
+                &lane_cfg.base_url,
+                &lane_cfg.model,
+                stt_token.clone(),
+                stt_timeout,
+                stt_scored,
+            )),
+            Some(lane_cfg.prompt).filter(|p| !p.is_empty()),
+        );
+        // The key, never the URL: a `base_url` can carry `user:pass@`, and this file is
+        // kept for a week. Same choice as the cleartext warning above.
+        tracing::info!(lang = %lang, key = %format!("stt.by_language.{code}"), "stt lane");
+    }
     let polisher: Option<Box<dyn polish::Polisher>> = if cfg.polish.enabled {
         let prompt = if cfg.polish.prompt_file.is_empty() {
             polish::BUILT_IN_PROMPT.to_string()
