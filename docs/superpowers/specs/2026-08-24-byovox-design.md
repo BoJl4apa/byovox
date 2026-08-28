@@ -311,8 +311,9 @@ effective value of every key tagged `default` / `file` / `env`. One place to edi
 `{"cmd": "toggle" | "quit" | "status" | "last"}`; reply `{"ok": true, ...}` or
 `{"ok": false, "error": "<message>"}`. `status` replies with the pipeline state and the
 last error; `last` replies `{"ok": true, "text": "<transcript>"}` — JSON escaping
-carries newlines, so a polished list arrives intact — or `ok: false` when nothing is
-held. Anything unparseable gets `ok: false` and the connection closes.
+carries newlines, so a polished list arrives intact (superseded by #9: a held transcript
+never contains a newline; they are flattened to spaces before anything is typed or held) —
+or `ok: false` when nothing is held. Anything unparseable gets `ok: false` and the connection closes.
 
 **Errors — loud, never silent, never lossy:**
 

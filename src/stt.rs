@@ -10,7 +10,8 @@ use std::time::Duration;
 use crate::lang::SttLanguage;
 use crate::multipart::Multipart;
 
-/// One transcription: the trimmed text, and how sure whisper is that the clip held no speech
+/// One transcription: the text, trimmed and with whisper's segment line breaks joined on a
+/// space (a segment boundary is a pause, not a spoken line break), and how sure whisper is that the clip held no speech
 /// at all. `None` when the reply carried no `segments` — a server flavour that does not score
 /// its output leaves the gate nothing to judge, which is the old behaviour rather than a
 /// silent zero.

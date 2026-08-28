@@ -426,8 +426,12 @@ impl Pipeline {
         // typed. The count is logged and the text is not: a dropped character is exactly the
         // thing a hostile reply would want echoed somewhere.
         let served = polished.clone().unwrap_or_else(|| raw.clone());
-        let mut text = sanitize(&served);
-        let dropped = served.chars().count() - text.chars().count();
+        let sanitized = sanitize(&served);
+        let dropped = served.chars().count() - sanitized.chars().count();
+        // Counted before the trim: a reply that ends in a newline — the usual shape of a
+        // chat-completion answer — now ends in a space, and that is not a stray keystroke to
+        // type, nor a dropped character to warn about.
+        let mut text = sanitized.trim().to_string();
         if dropped > 0 {
             tracing::warn!(
                 dropped,
@@ -688,6 +692,27 @@ mod tests {
             [S::Recording, S::Working, S::Done]
         );
         assert_eq!((r.cap.starts(), r.cap.stops()), (1, 1));
+    }
+
+    /// A polished list reaches the window as one line with no Enter (#9), and a reply that
+    /// ends in a newline — the usual shape of a chat-completion answer — does not type a
+    /// stray trailing space in its place.
+    #[test]
+    fn a_polished_list_is_typed_on_one_line_without_a_stray_space() {
+        let mut r = rig(
+            FakeTranscriber::ok("first milk second eggs"),
+            Some(FakePolisher::ok("1. milk\n2. eggs\n")),
+            false,
+            false,
+        );
+        assert_eq!(
+            dictate(&mut r, Duration::from_millis(600)),
+            Some(Outcome::Inserted { rung: "type" })
+        );
+        assert_eq!(
+            r.rung1.texts.lock().unwrap().as_slice(),
+            ["1. milk 2. eggs"]
+        );
     }
 
     #[test]
@@ -1436,8 +1461,9 @@ mod tests {
         );
     }
 
-    /// The capture log is evidence, so it keeps what the server actually sent — sanitising is
-    /// about what reaches the keyboard, not about rewriting the corpus.
+    /// The capture log is evidence, so it keeps what the server actually sent (whisper's
+    /// segment line breaks already joined on a space by the STT client, nothing else touched)
+    /// — sanitising is about what reaches the keyboard, not about rewriting the corpus.
     #[test]
     fn the_capture_row_keeps_the_unsanitised_reply() {
         let mut r = rig(FakeTranscriber::ok("a\tb"), None, false, false);
