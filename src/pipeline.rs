@@ -1229,14 +1229,16 @@ mod tests {
     }
 
     /// The headline case: a compromised endpoint answers with something that would run if the
-    /// focused window were a terminal. The newline is content and stays — it is what makes a
-    /// dictated list a list — but the escape sequence around it is a keystroke nobody spoke.
+    /// focused window were a terminal. The newline becomes a space — typed as Enter it would
+    /// submit the line, and pasted it can too — and the escape sequence around it is a
+    /// keystroke nobody spoke. (#9: a dictated list into WhatsApp sent itself.)
     #[test]
-    fn a_terminal_payload_keeps_its_newline_and_loses_its_escape() {
-        assert_eq!(sanitize("ls\n rm -rf /\x1b[0m"), "ls\n rm -rf /[0m");
-        // Every other C0, DEL and C1 character goes the same way; `\n` alone survives.
+    fn a_newline_is_never_typed() {
+        assert_eq!(sanitize("ls\n rm -rf /\x1b[0m"), "ls  rm -rf /[0m");
+        // Every other C0, DEL and C1 character is dropped outright.
         assert_eq!(sanitize("a\tb\rc\x08d\x7fe\u{85}f"), "abcdef");
-        assert_eq!(sanitize("one\ntwo"), "one\ntwo");
+        assert_eq!(sanitize("one\ntwo"), "one two");
+        assert!(!sanitize("1. foo\n2. bar\n").contains('\n'));
     }
 
     /// The rule cuts overrides and isolates, which lie about what was typed, and must leave

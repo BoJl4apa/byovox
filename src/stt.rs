@@ -405,6 +405,18 @@ mod tests {
         assert!(err.contains("no speech detected"), "{err}");
     }
 
+    /// whisper breaks its `text` at segment boundaries — pauses, not spoken line breaks.
+    /// They are joined on a space here, before polish, the capture log and `byovox last`
+    /// see the transcript (#9).
+    #[test]
+    fn segment_line_breaks_are_joined_on_a_space() {
+        let srv = MockServer::start(200, r#"{"text":" first thing \n second thing\r\n\nthird "}"#);
+        let out = client(srv.url())
+            .transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
+            .unwrap();
+        assert_eq!(out.text, "first thing second thing third");
+    }
+
     #[test]
     fn an_empty_text_field_is_an_empty_transcript() {
         let srv = MockServer::start(200, r#"{"text":""}"#);
