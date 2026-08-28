@@ -17,7 +17,7 @@ pub const BUILT_IN_PROMPT: &str = r#"You turn a raw speech transcript into clean
 Rules:
 1. Add punctuation and capitalisation where the speech pauses or clauses end.
 2. Remove filler words (um, uh, like, you know, ну, короче, אה), false starts and accidental repetitions.
-3. If the speaker enumerates items (first/second/third, во-первых/во-вторых, ראשית/שנית), format them as a numbered list, one item per line.
+3. If the speaker enumerates items (first/second/third, во-первых/во-вторых, ראשית/שנית), format them as a numbered list (1. …, 2. …) on one line.
 4. Preserve the speaker's language exactly, including mixed languages. Never translate.
 5. Preserve every technical term, product name, proper noun, number and code identifier exactly as transcribed.
 6. Preserve profanity and strong language: it is the speaker's emphasis, not filler.

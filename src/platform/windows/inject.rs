@@ -19,19 +19,13 @@ pub enum KeyEvent {
     Vk { vk: u16, up: bool },
 }
 
-/// Pure planner: every UTF-16 unit as a unicode down/up; '\n' as VK_RETURN down/up.
+/// Pure planner: every UTF-16 unit as a unicode down/up. Never a virtual key: `sanitize`
+/// has already turned `\n` into a space, and a line break that somehow arrives here is
+/// skipped rather than pressed as Enter (#9).
 pub fn key_events(text: &str) -> Vec<KeyEvent> {
     let mut out = Vec::with_capacity(text.len() * 2);
     for ch in text.chars() {
-        if ch == '\n' {
-            out.push(KeyEvent::Vk {
-                vk: 0x0D,
-                up: false,
-            });
-            out.push(KeyEvent::Vk { vk: 0x0D, up: true });
-            continue;
-        }
-        if ch == '\r' {
+        if ch == '\n' || ch == '\r' {
             continue;
         }
         let mut units = [0u16; 2];

@@ -198,7 +198,7 @@ things are worth knowing before you install it. The full threat model — what i
 what is not — is in [SECURITY.md](SECURITY.md), along with how to report a vulnerability.
 
 - **The endpoint you configure can type into your windows.** Whatever the STT and polish
-  servers return is sent as real keystrokes, and a newline is a real Enter. Control
+  servers return is sent as real keystrokes. A newline becomes a space (never an Enter), control
   characters and bidi overrides are stripped before anything is typed, and a transcript over
   `inject.max_chars` is held rather than typed — but the *text* is still the server's to
   choose. Point byovox at servers you run or trust, and prefer `localhost`, a

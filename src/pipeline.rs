@@ -149,11 +149,12 @@ fn summary(e: &str) -> &str {
 /// True for a character the transcription endpoint must not be able to put on the keyboard.
 ///
 /// `char::is_control` is exactly C0 (U+0000–U+001F), DEL (U+007F) and C1 (U+0080–U+009F) —
-/// the Unicode `Cc` category. `\n` is kept out of it deliberately: `inject` sends it as a
-/// real Return, and the built-in polish prompt asks for enumerations one item per line, so
-/// it is content. Everything else in `Cc` is a keystroke the user never spoke — `\t`
+/// the Unicode `Cc` category. Every one of them is a keystroke the user never spoke — `\t`
 /// navigates fields or triggers completion, `\r` rewinds the caret, `\x1b` opens a terminal
-/// escape sequence — and no transcript legitimately contains one.
+/// escape sequence — and no transcript legitimately contains one. `\n` is in the set too,
+/// but `sanitize` turns it into a space first rather than dropping it: typed it is an Enter
+/// that submits a chat message or a shell line (#9), while the words on either side of it
+/// are still content.
 ///
 /// The bidi **overrides** (U+202A–U+202E) and **isolates** (U+2066–U+2069) go because they
 /// reorder what is *displayed* without changing what was typed: the window would show one
@@ -161,17 +162,22 @@ fn summary(e: &str) -> &str {
 /// joiners ZWJ/ZWNJ (U+200D/U+200C) are ordinary content in Hebrew, Arabic and emoji
 /// sequences, and dropping them would corrupt real dictations.
 fn is_forbidden(c: char) -> bool {
-    (c.is_control() && c != '\n') || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+    c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
-/// The transcript with everything `is_forbidden` names removed.
+/// The transcript with every `\n` turned into a space and everything `is_forbidden` names
+/// removed.
 ///
 /// The endpoint is the one part of the pipeline byovox does not control, and its answer is
 /// typed into whatever window has focus. This is the single choke point deciding which of
 /// those keystrokes may be pressed: applied once to the text about to be injected, so
-/// `type`, `paste` and `clipboard-only` are all covered by the one call.
+/// `type`, `paste` and `clipboard-only` are all covered by the one call — a pasted newline
+/// can submit a line too, so the paste rungs get no exemption.
 pub fn sanitize(text: &str) -> String {
-    text.chars().filter(|c| !is_forbidden(*c)).collect()
+    text.chars()
+        .map(|c| if c == '\n' { ' ' } else { c })
+        .filter(|c| !is_forbidden(*c))
+        .collect()
 }
 
 /// The score that condemns a transcript as silence, if any: `Some(p)` exactly when this

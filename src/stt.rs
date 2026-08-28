@@ -196,8 +196,16 @@ impl Transcriber for SttClient {
             .get("text")
             .and_then(|t| t.as_str())
             .ok_or_else(|| format!("stt response has no text field: {}", body_prefix(&text)))?;
+        // whisper breaks `text` at segment boundaries — pauses, not spoken line breaks —
+        // so the lines are joined on a space before polish, the log or `byovox last` see it.
+        let joined = transcript
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
         Ok(Transcript {
-            text: transcript.trim().to_string(),
+            text: joined,
             // An unscored client reads no score at all: a server that answers a `json`
             // request with segments anyway cannot reach the gate, and no shape it puts in
             // them can fail a request whose scores nothing will read.
@@ -410,7 +418,10 @@ mod tests {
     /// see the transcript (#9).
     #[test]
     fn segment_line_breaks_are_joined_on_a_space() {
-        let srv = MockServer::start(200, r#"{"text":" first thing \n second thing\r\n\nthird "}"#);
+        let srv = MockServer::start(
+            200,
+            r#"{"text":" first thing \n second thing\r\n\nthird "}"#,
+        );
         let out = client(srv.url())
             .transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
             .unwrap();
