@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use crate::lang::SttLanguage;
+use crate::lang::{Lang, SttLanguage};
 use crate::multipart::Multipart;
 
 /// One transcription: the text, trimmed and with whisper's segment line breaks joined on a
@@ -219,6 +219,63 @@ impl Transcriber for SttClient {
     }
 }
 
+/// A `Transcriber` that sends a dictation to its language's own endpoint when one is
+/// configured (`[stt.by_language.<code>]`) and to the default otherwise.
+///
+/// Only an *explicit* language — the keyboard layout's answer — may reach a lane. A lane is
+/// typically a fine-tune whose language detection was traded away for accuracy (ivrit.ai's
+/// Hebrew large-v3 says so on its card), and an English utterance under a Hebrew layout sent
+/// there comes back as Hebrew-letter garbage; `Auto` therefore always takes the default.
+/// A lane reply with no text is retried on the default — a one-word clip came back empty
+/// from the Hebrew lane where the default lane transcribed it — while a lane *error* is
+/// returned as one: a dead lane must be loud, not a quiet drop in quality.
+pub struct Routed {
+    default: Box<dyn Transcriber>,
+    lanes: Vec<(Lang, Box<dyn Transcriber>, Option<String>)>,
+}
+
+impl Routed {
+    pub fn new(default: Box<dyn Transcriber>) -> Routed {
+        Routed {
+            default,
+            lanes: Vec::new(),
+        }
+    }
+
+    /// Route `lang` to `client`, with `prompt` replacing the caller's when `Some`.
+    pub fn lane(
+        mut self,
+        lang: Lang,
+        client: Box<dyn Transcriber>,
+        prompt: Option<String>,
+    ) -> Routed {
+        self.lanes.push((lang, client, prompt));
+        self
+    }
+}
+
+impl Transcriber for Routed {
+    fn transcribe(
+        &self,
+        wav: &[u8],
+        language: &SttLanguage,
+        prompt: Option<&str>,
+    ) -> Result<Transcript, String> {
+        let lane = match language {
+            SttLanguage::Explicit(lang) => self.lanes.iter().find(|(l, _, _)| l == lang),
+            SttLanguage::Auto { .. } => None,
+        };
+        if let Some((lang, client, lane_prompt)) = lane {
+            let transcript = client.transcribe(wav, language, lane_prompt.as_deref().or(prompt))?;
+            if !transcript.text.trim().is_empty() {
+                return Ok(transcript);
+            }
+            tracing::info!(lang = %lang, "stt lane returned nothing; retrying the default endpoint");
+        }
+        self.default.transcribe(wav, language, prompt)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,6 +484,134 @@ mod tests {
             .transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
             .unwrap();
         assert_eq!(out.text, "first thing second thing third");
+    }
+
+    /// What a `Fake` was asked: the language label and the prompt, per call.
+    type Calls = std::sync::Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>;
+
+    /// A transcriber that answers a canned reply and records what it was asked.
+    struct Fake {
+        reply: Result<Transcript, String>,
+        calls: Calls,
+    }
+
+    impl Transcriber for Fake {
+        fn transcribe(
+            &self,
+            _wav: &[u8],
+            language: &SttLanguage,
+            prompt: Option<&str>,
+        ) -> Result<Transcript, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((language.label(), prompt.map(str::to_string)));
+            self.reply.clone()
+        }
+    }
+
+    fn fake(reply: Result<&str, &str>) -> (Fake, Calls) {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reply = reply
+            .map(|t| Transcript {
+                text: t.to_string(),
+                no_speech_prob: None,
+            })
+            .map_err(str::to_string);
+        (
+            Fake {
+                reply,
+                calls: calls.clone(),
+            },
+            calls,
+        )
+    }
+
+    fn he() -> SttLanguage {
+        SttLanguage::Explicit(Lang::parse("he").unwrap())
+    }
+
+    /// The layout said Hebrew and a Hebrew lane exists: the lane answers, with its own prompt
+    /// in place of the caller's, and the default endpoint is never contacted.
+    #[test]
+    fn a_lane_takes_its_language_with_its_own_prompt() {
+        let (d, d_calls) = fake(Ok("default"));
+        let (l, l_calls) = fake(Ok("lane"));
+        let r = Routed::new(Box::new(d)).lane(
+            Lang::parse("he").unwrap(),
+            Box::new(l),
+            Some("Glossary: he".into()),
+        );
+        let out = r
+            .transcribe(b"RIFF", &he(), Some("Glossary: global"))
+            .unwrap();
+        assert_eq!(out.text, "lane");
+        assert_eq!(
+            l_calls.lock().unwrap().as_slice(),
+            [("he".to_string(), Some("Glossary: he".to_string()))]
+        );
+        assert!(d_calls.lock().unwrap().is_empty());
+        // Without a lane prompt the caller's is what the lane sees.
+        let (d, _) = fake(Ok("default"));
+        let (l, l_calls) = fake(Ok("lane"));
+        let r = Routed::new(Box::new(d)).lane(Lang::parse("he").unwrap(), Box::new(l), None);
+        r.transcribe(b"RIFF", &he(), Some("Glossary: global"))
+            .unwrap();
+        assert_eq!(
+            l_calls.lock().unwrap()[0].1.as_deref(),
+            Some("Glossary: global")
+        );
+    }
+
+    /// Auto-detect and an explicit language without a lane both go to the default: a lane's
+    /// language detection is degraded by design, so only the layout's answer may pick one.
+    #[test]
+    fn auto_and_unrouted_languages_never_reach_a_lane() {
+        let (d, d_calls) = fake(Ok("default"));
+        let (l, l_calls) = fake(Ok("lane"));
+        let r = Routed::new(Box::new(d)).lane(Lang::parse("he").unwrap(), Box::new(l), None);
+        let auto = SttLanguage::Auto {
+            candidates: vec![Lang::parse("he").unwrap()],
+        };
+        assert_eq!(r.transcribe(b"RIFF", &auto, None).unwrap().text, "default");
+        let ru = SttLanguage::Explicit(Lang::parse("ru").unwrap());
+        assert_eq!(r.transcribe(b"RIFF", &ru, None).unwrap().text, "default");
+        assert_eq!(d_calls.lock().unwrap().len(), 2);
+        assert!(l_calls.lock().unwrap().is_empty());
+    }
+
+    /// A lane that answers with no text is retried on the default, with the caller's prompt —
+    /// the Hebrew lane returned "" for a one-word clip the default lane transcribed.
+    #[test]
+    fn an_empty_lane_reply_falls_back_to_the_default() {
+        let (d, d_calls) = fake(Ok("תודה"));
+        let (l, l_calls) = fake(Ok("  \n"));
+        let r = Routed::new(Box::new(d)).lane(
+            Lang::parse("he").unwrap(),
+            Box::new(l),
+            Some("Glossary: he".into()),
+        );
+        let out = r
+            .transcribe(b"RIFF", &he(), Some("Glossary: global"))
+            .unwrap();
+        assert_eq!(out.text, "תודה");
+        assert_eq!(l_calls.lock().unwrap().len(), 1);
+        assert_eq!(
+            d_calls.lock().unwrap().as_slice(),
+            [("he".to_string(), Some("Glossary: global".to_string()))]
+        );
+    }
+
+    /// A lane error is the dictation's error. Falling back would turn a dead lane into a
+    /// quiet drop in quality that nobody notices.
+    #[test]
+    fn a_lane_error_is_returned_not_retried() {
+        let (d, d_calls) = fake(Ok("default"));
+        let (l, _) = fake(Err("stt HTTP 502: bad gateway"));
+        let r = Routed::new(Box::new(d)).lane(Lang::parse("he").unwrap(), Box::new(l), None);
+        let err = r.transcribe(b"RIFF", &he(), None).unwrap_err();
+        assert!(err.contains("502"), "{err}");
+        assert!(d_calls.lock().unwrap().is_empty());
     }
 
     #[test]

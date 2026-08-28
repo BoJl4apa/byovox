@@ -53,6 +53,19 @@ timeout_s = 30
 # the setting such a server needs.
 no_speech_threshold = 0.3
 
+# Per-language endpoints. A dictation whose language the layout routing resolved to the
+# code (see [language.by_layout]) is sent here instead of [stt]; every other dictation,
+# auto-detected ones included, still goes to [stt]. A lane is the same server family
+# with a different model — the token, timeout and no_speech_threshold above apply, and
+# `model` / `prompt` inherit when empty. A lane reply with no text is retried on [stt]
+# (a one-word clip can come back empty from a fine-tuned model); a lane error is an
+# error. Example — a Hebrew fine-tune behind its own path on the same server:
+#   [stt.by_language.he]
+#   base_url = "http://127.0.0.1:8770/he/v1"
+#   model = ""
+#   prompt = ""
+[stt.by_language]
+
 [language]
 # Language for layouts not listed in by_layout, or when the layout cannot be read.
 # "auto" = let the server detect (no `language` field is sent). A whisper.cpp server must

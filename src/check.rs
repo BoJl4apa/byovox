@@ -52,13 +52,21 @@ fn warn_line(stage: &str, detail: &str) {
 
 /// Every configured endpoint that would put its traffic on the wire in clear. Polish is
 /// skipped when disabled: the daemon never calls it, so warning about its URL is noise.
-fn cleartext_endpoints(cfg: &Config) -> Vec<(&'static str, &str)> {
+fn cleartext_endpoints(cfg: &Config) -> Vec<(String, &str)> {
     let mut out = Vec::new();
     if is_cleartext_remote(&cfg.stt.base_url) {
-        out.push(("stt.base_url", cfg.stt.base_url.as_str()));
+        out.push(("stt.base_url".to_string(), cfg.stt.base_url.as_str()));
+    }
+    for (code, lane) in &cfg.stt.by_language {
+        if is_cleartext_remote(&lane.base_url) {
+            out.push((
+                format!("stt.by_language.{code}.base_url"),
+                lane.base_url.as_str(),
+            ));
+        }
     }
     if cfg.polish.enabled && is_cleartext_remote(&cfg.polish.base_url) {
-        out.push(("polish.base_url", cfg.polish.base_url.as_str()));
+        out.push(("polish.base_url".to_string(), cfg.polish.base_url.as_str()));
     }
     out
 }
@@ -362,6 +370,44 @@ pub fn run(cfg: &Config, config_path: &Path) -> bool {
             all_ok = false;
         }
         None => line("stt", None, "skipped (no usable microphone capture)"),
+    }
+    // One row per language lane, on the lane's endpoint with that language forced — the
+    // request the daemon would send for a dictation under that layout.
+    for (code, lane) in &cfg.stt.by_language {
+        let name = format!("stt[{code}]");
+        let lane_cfg = SttConfig {
+            base_url: lane.base_url.clone(),
+            model: if lane.model.is_empty() {
+                cfg.stt.model.clone()
+            } else {
+                lane.model.clone()
+            },
+            prompt: if lane.prompt.is_empty() {
+                cfg.stt.prompt.clone()
+            } else {
+                lane.prompt.clone()
+            },
+            by_language: Default::default(),
+            ..cfg.stt.clone()
+        };
+        let lang = crate::lang::Lang::parse(code).map(SttLanguage::Explicit);
+        let row = match (
+            stage_token(&cfg.stt.api_key_env, &cfg.stt.api_key_file),
+            audio.as_ref(),
+            lang,
+        ) {
+            (Err(e), _, _) => Some(Err(e)),
+            (Ok(key), Some(a), Some(l)) => Some(stt_round_trip(&lane_cfg, key, a, &l)),
+            _ => None,
+        };
+        match row {
+            Some(Ok(detail)) => line(&name, Some(true), &detail),
+            Some(Err(e)) => {
+                line(&name, Some(false), &e);
+                all_ok = false;
+            }
+            None => line(&name, None, "skipped (no usable microphone capture)"),
+        }
     }
 
     if cfg.polish.enabled {
@@ -724,7 +770,7 @@ mod tests {
         assert_eq!(
             cleartext_endpoints(&both)
                 .iter()
-                .map(|(k, _)| *k)
+                .map(|(k, _)| k.as_str())
                 .collect::<Vec<_>>(),
             ["stt.base_url", "polish.base_url"]
         );
@@ -735,9 +781,26 @@ mod tests {
         assert_eq!(
             cleartext_endpoints(&stt_only)
                 .iter()
-                .map(|(k, _)| *k)
+                .map(|(k, _)| k.as_str())
                 .collect::<Vec<_>>(),
             ["stt.base_url"]
+        );
+
+        // A language lane is one more endpoint, named by its full key.
+        let mut with_lane = stt_only.clone();
+        with_lane.stt.by_language.insert(
+            "he".into(),
+            crate::config::SttLane {
+                base_url: "http://10.0.0.5:8770/he/v1".into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            cleartext_endpoints(&with_lane)
+                .iter()
+                .map(|(k, _)| k.as_str())
+                .collect::<Vec<_>>(),
+            ["stt.base_url", "stt.by_language.he.base_url"]
         );
 
         // The setup byovox recommends produces no rows at all.

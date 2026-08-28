@@ -104,10 +104,14 @@ model    = "the name your gateway answers to"
 candidates = ["en", "ru"]               # sent as `language_candidates` while auto is in force
 [language.by_layout]                    # keyboard layout → an explicit STT language
 he = "he"
+[stt.by_language.he]                    # that language's own endpoint, e.g. a Hebrew fine-tune
+base_url = "http://127.0.0.1:8770/he/v1"
 ```
 
 `stt.model` (default `whisper-1`) is sent and ignored by self-hosted whisper.cpp; a hosted API
-needs a real name. `stt.api_key_env` and `polish.api_key_env` name an *environment variable* to
+needs a real name. `stt.by_language.<code>` gives one language its own endpoint, used only
+when the layout routing resolved that language — never on auto-detect — and retried on
+`[stt]` when it answers with no text. `stt.api_key_env` and `polish.api_key_env` name an *environment variable* to
 read a bearer token from; an endpoint authenticating by network identity needs neither.
 
 ### 5. Check it, then dictate

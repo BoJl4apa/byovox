@@ -39,6 +39,11 @@ pub struct SttConfig {
     /// compared against the example file — the pipeline narrows it to f32 at the boundary,
     /// where whisper's own scores live.
     pub no_speech_threshold: f64,
+    /// Per-language endpoints keyed by ISO 639-1 code: a dictation the layout routing
+    /// resolved to that language goes to the lane's `base_url` instead of `base_url`.
+    /// Token, timeout and `no_speech_threshold` come from here; `model` and `prompt`
+    /// inherit when empty. Last because it is a table — TOML writes scalars before tables.
+    pub by_language: std::collections::BTreeMap<String, SttLane>,
 }
 impl Default for SttConfig {
     fn default() -> Self {
@@ -52,8 +57,18 @@ impl Default for SttConfig {
             prompt: String::new(),
             timeout_s: 30,
             no_speech_threshold: 0.3,
+            by_language: Default::default(),
         }
     }
+}
+
+/// One per-language STT endpoint — `[stt.by_language.<code>]`, see `SttConfig::by_language`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct SttLane {
+    pub base_url: String,
+    pub model: String,
+    pub prompt: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -359,6 +374,16 @@ fn validate(cfg: &Config) -> Result<()> {
             "stt.base_url is empty: set it to your speech-to-text server, e.g. http://127.0.0.1:8770/v1"
         );
     }
+    for (code, lane) in &cfg.stt.by_language {
+        if crate::lang::Lang::parse(code).is_none() {
+            bail!("stt.by_language.{code}: expected an ISO 639-1 code such as `he`");
+        }
+        if lane.base_url.trim().is_empty() {
+            bail!(
+                "stt.by_language.{code}.base_url is empty: set it to that language's speech-to-text server"
+            );
+        }
+    }
     if cfg.polish.enabled {
         if cfg.polish.base_url.trim().is_empty() {
             bail!(
@@ -539,6 +564,15 @@ mod tests {
             (
                 "[stt]\nbase_url = \"http://x/v1\"\n[polish]\nbase_url = \"http://x/v1\"\n",
                 "polish.model is empty",
+            ),
+            // A lane needs its endpoint too, and its key has to be a language code.
+            (
+                "[stt]\nbase_url = \"http://x/v1\"\n[stt.by_language.he]\n[polish]\nenabled = false\n",
+                "stt.by_language.he.base_url is empty",
+            ),
+            (
+                "[stt]\nbase_url = \"http://x/v1\"\n[stt.by_language.hebrew]\nbase_url = \"http://x/he/v1\"\n[polish]\nenabled = false\n",
+                "stt.by_language.hebrew: expected an ISO 639-1 code",
             ),
         ];
         for (toml, expect) in cases {
