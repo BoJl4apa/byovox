@@ -74,7 +74,8 @@ Real, understood, and not being fixed — the cost of closing them exceeds what 
 
 If any of the above matters to you:
 
-- Point `stt.base_url` and `polish.base_url` at `localhost`, or reach a remote host over
+- Point `stt.base_url`, every `stt.by_language.<code>.base_url` and `polish.base_url` at
+  `localhost`, or reach a remote host over
   WireGuard/Tailscale, or use `https://` with a publicly-trusted certificate. `byovox check`
   tells you which of your endpoints are in clear.
 - Leave `capture_log.enabled = false`. If you turn it on, keep `capture_log.keep_days` at a

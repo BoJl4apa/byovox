@@ -1,6 +1,6 @@
 //! `byovox check`: exercise every stage and say which rung each backend is on.
-//! Required stages: config, hotkey mode, backends, microphone, STT. Polish is required only
-//! when enabled. Layout and inject are reported, never failed.
+//! Required stages: config, hotkey mode, backends, microphone, STT and every STT lane. Polish
+//! is required only when enabled. Layout and inject are reported, never failed.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -375,21 +375,7 @@ pub fn run(cfg: &Config, config_path: &Path) -> bool {
     // request the daemon would send for a dictation under that layout.
     for (code, lane) in &cfg.stt.by_language {
         let name = format!("stt[{code}]");
-        let lane_cfg = SttConfig {
-            base_url: lane.base_url.clone(),
-            model: if lane.model.is_empty() {
-                cfg.stt.model.clone()
-            } else {
-                lane.model.clone()
-            },
-            prompt: if lane.prompt.is_empty() {
-                cfg.stt.prompt.clone()
-            } else {
-                lane.prompt.clone()
-            },
-            by_language: Default::default(),
-            ..cfg.stt.clone()
-        };
+        let lane_cfg = cfg.stt.lane_config(lane);
         let lang = crate::lang::Lang::parse(code).map(SttLanguage::Explicit);
         let row = match (
             stage_token(&cfg.stt.api_key_env, &cfg.stt.api_key_file),

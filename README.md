@@ -110,9 +110,11 @@ base_url = "http://127.0.0.1:8770/he/v1"
 
 `stt.model` (default `whisper-1`) is sent and ignored by self-hosted whisper.cpp; a hosted API
 needs a real name. `stt.by_language.<code>` gives one language its own endpoint, used only
-when the layout routing resolved that language — never on auto-detect — and retried on
-`[stt]` when it answers with no text. `stt.api_key_env` and `polish.api_key_env` name an *environment variable* to
-read a bearer token from; an endpoint authenticating by network identity needs neither.
+when the layout routing (or `language.default`) resolved that language — never on
+auto-detect. It is retried on `[stt]` when it answers with no text; an error from it is an
+error, named `stt[he]` so you know which server to look at. `stt.api_key_env` and
+`polish.api_key_env` name an *environment variable* to read a bearer token from; an endpoint
+authenticating by network identity needs neither.
 
 ### 5. Check it, then dictate
 
@@ -124,6 +126,7 @@ ok   backends  hotkey=hook layout=win32 inject=type,paste,clipboard-only
 ok   mic       Microphone Array (48000 Hz, 2 ch, F32)  peak -21.7 dBFS over 0.9s
      layout    en → language_candidates=en,ru
 ok   stt       0.34s  p_nospeech=0.71 (would be dropped as silence)  "Thank you."
+ok   stt[he]   0.50s  p_nospeech=0.00  ""
 ok   polish    0.46s  "So this is a test."
      inject    dry-run: would use `type` first
 

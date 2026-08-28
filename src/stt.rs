@@ -1,4 +1,6 @@
-//! Speech-to-text client: one multipart POST to `{base_url}/audio/transcriptions`.
+//! Speech-to-text client: one multipart POST to `{base_url}/audio/transcriptions` — and
+//! `Routed`, which picks the client for a dictation's language when `[stt.by_language]`
+//! gives that language its own endpoint.
 //!
 //! Depends on `multipart` and `lang::SttLanguage`. Produces the trimmed transcript and
 //! whisper's own no-speech score for it. Errors are strings the pipeline logs and shows;
@@ -266,7 +268,15 @@ impl Transcriber for Routed {
             SttLanguage::Auto { .. } => None,
         };
         if let Some((lang, client, lane_prompt)) = lane {
-            let transcript = client.transcribe(wav, language, lane_prompt.as_deref().or(prompt))?;
+            // `stt[he] HTTP 502`, not `stt HTTP 502`: `pipeline::summary` keeps the head of
+            // this string for the tray and `byovox status`, and a dead lane must point at
+            // the lane while every other language keeps working.
+            let transcript = client
+                .transcribe(wav, language, lane_prompt.as_deref().or(prompt))
+                .map_err(|e| match e.strip_prefix("stt") {
+                    Some(rest) => format!("stt[{lang}]{rest}"),
+                    None => format!("stt[{lang}] {e}"),
+                })?;
             if !transcript.text.trim().is_empty() {
                 return Ok(transcript);
             }
@@ -610,7 +620,8 @@ mod tests {
         let (l, _) = fake(Err("stt HTTP 502: bad gateway"));
         let r = Routed::new(Box::new(d)).lane(Lang::parse("he").unwrap(), Box::new(l), None);
         let err = r.transcribe(b"RIFF", &he(), None).unwrap_err();
-        assert!(err.contains("502"), "{err}");
+        // Named after the lane, so the tray's one-word summary says which server died.
+        assert_eq!(err, "stt[he] HTTP 502: bad gateway");
         assert!(d_calls.lock().unwrap().is_empty());
     }
 

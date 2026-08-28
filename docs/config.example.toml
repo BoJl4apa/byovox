@@ -56,10 +56,12 @@ no_speech_threshold = 0.3
 # Per-language endpoints. A dictation whose language the layout routing resolved to the
 # code (see [language.by_layout]) is sent here instead of [stt]; every other dictation,
 # auto-detected ones included, still goes to [stt]. A lane is the same server family
-# with a different model — the token, timeout and no_speech_threshold above apply, and
-# `model` / `prompt` inherit when empty. A lane reply with no text is retried on [stt]
-# (a one-word clip can come back empty from a fine-tuned model); a lane error is an
-# error. Example — a Hebrew fine-tune behind its own path on the same server:
+# with a different model — the token, timeout and no_speech_threshold above apply (so a
+# lane's server must take the same `response_format` as [stt]'s: with the gate on, both
+# get `verbose_json`), and `model` / `prompt` inherit when empty. `base_url` is required.
+# A lane reply with no text is retried on [stt] (a one-word clip can come back empty from
+# a fine-tuned model); a lane error is an error, reported as `stt[<code>]`. Example — a
+# Hebrew fine-tune behind its own path on the same server:
 #   [stt.by_language.he]
 #   base_url = "http://127.0.0.1:8770/he/v1"
 #   model = ""

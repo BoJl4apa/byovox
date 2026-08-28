@@ -71,6 +71,30 @@ pub struct SttLane {
     pub prompt: String,
 }
 
+impl SttConfig {
+    /// The effective `[stt]` for one lane: the lane's `base_url`, its `model` and `prompt`
+    /// where set and this section's where empty, and everything else — token, timeout, the
+    /// no-speech gate — from here. The one derivation the daemon and `byovox check` share,
+    /// so the row `check` prints exercises the request the daemon would send.
+    pub fn lane_config(&self, lane: &SttLane) -> SttConfig {
+        SttConfig {
+            base_url: lane.base_url.clone(),
+            model: if lane.model.is_empty() {
+                self.model.clone()
+            } else {
+                lane.model.clone()
+            },
+            prompt: if lane.prompt.is_empty() {
+                self.prompt.clone()
+            } else {
+                lane.prompt.clone()
+            },
+            by_language: Default::default(),
+            ..self.clone()
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LanguageConfig {
@@ -476,6 +500,48 @@ mod tests {
     fn unknown_key_is_an_error() {
         let err = toml::from_str::<Config>("[stt]\nbase_ur = \"typo\"\n").unwrap_err();
         assert!(err.to_string().contains("base_ur"), "{err}");
+    }
+
+    /// A lane inherits everything it does not set — and never its own `by_language`.
+    #[test]
+    fn a_lane_config_inherits_what_it_leaves_empty() {
+        let stt = SttConfig {
+            base_url: "http://x/v1".into(),
+            model: "whisper-1".into(),
+            api_key_env: "STT_TOKEN".into(),
+            prompt: "Glossary: Acme".into(),
+            timeout_s: 45,
+            no_speech_threshold: 0.2,
+            by_language: [(
+                "he".to_string(),
+                SttLane {
+                    base_url: "http://x/he/v1".into(),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let bare = stt.lane_config(&stt.by_language["he"]);
+        assert_eq!(bare.base_url, "http://x/he/v1");
+        assert_eq!(bare.model, "whisper-1");
+        assert_eq!(bare.prompt, "Glossary: Acme");
+        assert_eq!(bare.api_key_env, "STT_TOKEN");
+        assert_eq!(bare.timeout_s, 45);
+        assert_eq!(bare.no_speech_threshold, 0.2);
+        assert!(bare.by_language.is_empty());
+
+        let full = stt.lane_config(&SttLane {
+            base_url: "http://y/he/v1".into(),
+            model: "ivrit-large-v3".into(),
+            prompt: "Glossary: he".into(),
+        });
+        assert_eq!(
+            (full.model.as_str(), full.prompt.as_str()),
+            ("ivrit-large-v3", "Glossary: he")
+        );
+        assert_eq!(full.timeout_s, 45);
     }
 
     #[test]

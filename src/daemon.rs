@@ -167,24 +167,21 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
         let Some(lang) = lang::Lang::parse(code) else {
             continue;
         };
-        let model = if lane.model.is_empty() {
-            &cfg.stt.model
-        } else {
-            &lane.model
-        };
-        let prompt = Some(lane.prompt.clone()).filter(|p| !p.is_empty());
+        let lane_cfg = cfg.stt.lane_config(lane);
         stt = stt.lane(
             lang,
             Box::new(stt::SttClient::new(
-                &lane.base_url,
-                model,
+                &lane_cfg.base_url,
+                &lane_cfg.model,
                 stt_token.clone(),
                 stt_timeout,
                 stt_scored,
             )),
-            prompt,
+            Some(lane_cfg.prompt).filter(|p| !p.is_empty()),
         );
-        tracing::info!(lang = %lang, base_url = %lane.base_url, "stt lane");
+        // The key, never the URL: a `base_url` can carry `user:pass@`, and this file is
+        // kept for a week. Same choice as the cleartext warning above.
+        tracing::info!(lang = %lang, key = %format!("stt.by_language.{code}"), "stt lane");
     }
     let polisher: Option<Box<dyn polish::Polisher>> = if cfg.polish.enabled {
         let prompt = if cfg.polish.prompt_file.is_empty() {
