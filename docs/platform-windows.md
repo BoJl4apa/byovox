@@ -67,11 +67,10 @@ starts one with no key press involved, and focus can move while you speak. Then 
 applies to insertion instead — `type` and `paste` log `inject rung failed`, `clipboard-only`
 succeeds, and the done cue means *the text is on the clipboard, press Ctrl+V*.
 
-One thing to know about `type`: a newline in the text is typed as Enter, because that is what
-typing a newline means. The built-in cleanup prompt formats a spoken enumeration as a list,
-one item per line — so dictating a list into a chat box that sends on Enter sends the first
-item and types the rest into the next messages. Use `inject.mode = "paste"` where that
-matters; `paste` puts the whole text in at once.
+No rung ever presses Enter: a newline in the text becomes a space before it is typed or
+pasted, so a dictation into a chat box that sends on Enter stays one unsent message, and one
+into a terminal stays one unexecuted line. The built-in cleanup prompt formats a spoken
+enumeration as a numbered list on one line for the same reason.
 
 ## Language routing
 

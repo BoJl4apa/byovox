@@ -10,7 +10,8 @@ use std::time::Duration;
 use crate::lang::SttLanguage;
 use crate::multipart::Multipart;
 
-/// One transcription: the trimmed text, and how sure whisper is that the clip held no speech
+/// One transcription: the text, trimmed and with whisper's segment line breaks joined on a
+/// space (a segment boundary is a pause, not a spoken line break), and how sure whisper is that the clip held no speech
 /// at all. `None` when the reply carried no `segments` — a server flavour that does not score
 /// its output leaves the gate nothing to judge, which is the old behaviour rather than a
 /// silent zero.
@@ -196,8 +197,16 @@ impl Transcriber for SttClient {
             .get("text")
             .and_then(|t| t.as_str())
             .ok_or_else(|| format!("stt response has no text field: {}", body_prefix(&text)))?;
+        // whisper breaks `text` at segment boundaries — pauses, not spoken line breaks —
+        // so the lines are joined on a space before polish, the log or `byovox last` see it.
+        let joined = transcript
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
         Ok(Transcript {
-            text: transcript.trim().to_string(),
+            text: joined,
             // An unscored client reads no score at all: a server that answers a `json`
             // request with segments anyway cannot reach the gate, and no shape it puts in
             // them can fail a request whose scores nothing will read.
@@ -403,6 +412,21 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("stt response has no text field"), "{err}");
         assert!(err.contains("no speech detected"), "{err}");
+    }
+
+    /// whisper breaks its `text` at segment boundaries — pauses, not spoken line breaks.
+    /// They are joined on a space here, before polish, the capture log and `byovox last`
+    /// see the transcript (#9).
+    #[test]
+    fn segment_line_breaks_are_joined_on_a_space() {
+        let srv = MockServer::start(
+            200,
+            r#"{"text":" first thing \n second thing\r\n\nthird "}"#,
+        );
+        let out = client(srv.url())
+            .transcribe(b"RIFF", &SttLanguage::Auto { candidates: vec![] }, None)
+            .unwrap();
+        assert_eq!(out.text, "first thing second thing third");
     }
 
     #[test]

@@ -35,6 +35,7 @@ and an unmapped layout routes to `language.default`, so every row below would lo
 - [ ] an elevated window (Task Manager's search, or an admin PowerShell): the hotkey is ignored while it has focus — no recording starts, the tray icon stays grey, no line in the log
 - [ ] `inject.mode = "paste"`: clipboard content from before the dictation is restored afterwards
 - [ ] polish endpoint down (wrong port): raw transcript inserted, error cue, WARN in log
+- [ ] `inject.mode = "type"`, focus a chat box that sends on Enter, dictate "first foo, second bar": one *unsent* message reading `1. foo 2. bar` — nothing is submitted, no stray leading or trailing space
 
 ## Indicator
 - [ ] first press after the daemon starts: the recording cue is audible (the output device is opened at start, not by that press)

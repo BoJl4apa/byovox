@@ -19,19 +19,13 @@ pub enum KeyEvent {
     Vk { vk: u16, up: bool },
 }
 
-/// Pure planner: every UTF-16 unit as a unicode down/up; '\n' as VK_RETURN down/up.
+/// Pure planner: every UTF-16 unit as a unicode down/up. Never a virtual key: `sanitize`
+/// has already turned `\n` into a space, and a line break that somehow arrives here is
+/// skipped rather than pressed as Enter (#9).
 pub fn key_events(text: &str) -> Vec<KeyEvent> {
     let mut out = Vec::with_capacity(text.len() * 2);
     for ch in text.chars() {
-        if ch == '\n' {
-            out.push(KeyEvent::Vk {
-                vk: 0x0D,
-                up: false,
-            });
-            out.push(KeyEvent::Vk { vk: 0x0D, up: true });
-            continue;
-        }
-        if ch == '\r' {
+        if ch == '\n' || ch == '\r' {
             continue;
         }
         let mut units = [0u16; 2];
@@ -196,9 +190,13 @@ impl Inject for ClipboardOnlyInject {
 mod tests {
     use super::*;
 
+    /// A newline is never an Enter: `sanitize` turns it into a space before any rung sees
+    /// it, and this planner has no branch that could press Return even if one got through
+    /// (#9) — `\n` is skipped like `\r`, not typed as a U+000A unit a console might read as
+    /// Enter either.
     #[test]
-    fn plans_unicode_units_and_enter_for_newlines() {
-        let ev = key_events("a\n");
+    fn plans_unicode_units_and_never_a_virtual_key() {
+        let ev = key_events("a\n\rb");
         assert_eq!(
             ev,
             vec![
@@ -210,13 +208,17 @@ mod tests {
                     unit: 'a' as u16,
                     up: true
                 },
-                KeyEvent::Vk {
-                    vk: 0x0D,
+                KeyEvent::Unicode {
+                    unit: 'b' as u16,
                     up: false
                 },
-                KeyEvent::Vk { vk: 0x0D, up: true },
+                KeyEvent::Unicode {
+                    unit: 'b' as u16,
+                    up: true
+                },
             ]
         );
+        assert!(!ev.iter().any(|e| matches!(e, KeyEvent::Vk { .. })));
     }
 
     #[test]

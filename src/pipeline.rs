@@ -149,11 +149,12 @@ fn summary(e: &str) -> &str {
 /// True for a character the transcription endpoint must not be able to put on the keyboard.
 ///
 /// `char::is_control` is exactly C0 (U+0000–U+001F), DEL (U+007F) and C1 (U+0080–U+009F) —
-/// the Unicode `Cc` category. `\n` is kept out of it deliberately: `inject` sends it as a
-/// real Return, and the built-in polish prompt asks for enumerations one item per line, so
-/// it is content. Everything else in `Cc` is a keystroke the user never spoke — `\t`
+/// the Unicode `Cc` category. Every one of them is a keystroke the user never spoke — `\t`
 /// navigates fields or triggers completion, `\r` rewinds the caret, `\x1b` opens a terminal
-/// escape sequence — and no transcript legitimately contains one.
+/// escape sequence — and no transcript legitimately contains one. `\n` is in the set too,
+/// but `sanitize` turns it into a space first rather than dropping it: typed it is an Enter
+/// that submits a chat message or a shell line (#9), while the words on either side of it
+/// are still content.
 ///
 /// The bidi **overrides** (U+202A–U+202E) and **isolates** (U+2066–U+2069) go because they
 /// reorder what is *displayed* without changing what was typed: the window would show one
@@ -161,17 +162,22 @@ fn summary(e: &str) -> &str {
 /// joiners ZWJ/ZWNJ (U+200D/U+200C) are ordinary content in Hebrew, Arabic and emoji
 /// sequences, and dropping them would corrupt real dictations.
 fn is_forbidden(c: char) -> bool {
-    (c.is_control() && c != '\n') || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+    c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
-/// The transcript with everything `is_forbidden` names removed.
+/// The transcript with every `\n` turned into a space and everything `is_forbidden` names
+/// removed.
 ///
 /// The endpoint is the one part of the pipeline byovox does not control, and its answer is
 /// typed into whatever window has focus. This is the single choke point deciding which of
 /// those keystrokes may be pressed: applied once to the text about to be injected, so
-/// `type`, `paste` and `clipboard-only` are all covered by the one call.
+/// `type`, `paste` and `clipboard-only` are all covered by the one call — a pasted newline
+/// can submit a line too, so the paste rungs get no exemption.
 pub fn sanitize(text: &str) -> String {
-    text.chars().filter(|c| !is_forbidden(*c)).collect()
+    text.chars()
+        .map(|c| if c == '\n' { ' ' } else { c })
+        .filter(|c| !is_forbidden(*c))
+        .collect()
 }
 
 /// The score that condemns a transcript as silence, if any: `Some(p)` exactly when this
@@ -420,8 +426,12 @@ impl Pipeline {
         // typed. The count is logged and the text is not: a dropped character is exactly the
         // thing a hostile reply would want echoed somewhere.
         let served = polished.clone().unwrap_or_else(|| raw.clone());
-        let mut text = sanitize(&served);
-        let dropped = served.chars().count() - text.chars().count();
+        let sanitized = sanitize(&served);
+        let dropped = served.chars().count() - sanitized.chars().count();
+        // Counted before the trim: a reply that ends in a newline — the usual shape of a
+        // chat-completion answer — now ends in a space, and that is not a stray keystroke to
+        // type, nor a dropped character to warn about.
+        let mut text = sanitized.trim().to_string();
         if dropped > 0 {
             tracing::warn!(
                 dropped,
@@ -682,6 +692,27 @@ mod tests {
             [S::Recording, S::Working, S::Done]
         );
         assert_eq!((r.cap.starts(), r.cap.stops()), (1, 1));
+    }
+
+    /// A polished list reaches the window as one line with no Enter (#9), and a reply that
+    /// ends in a newline — the usual shape of a chat-completion answer — does not type a
+    /// stray trailing space in its place.
+    #[test]
+    fn a_polished_list_is_typed_on_one_line_without_a_stray_space() {
+        let mut r = rig(
+            FakeTranscriber::ok("first milk second eggs"),
+            Some(FakePolisher::ok("1. milk\n2. eggs\n")),
+            false,
+            false,
+        );
+        assert_eq!(
+            dictate(&mut r, Duration::from_millis(600)),
+            Some(Outcome::Inserted { rung: "type" })
+        );
+        assert_eq!(
+            r.rung1.texts.lock().unwrap().as_slice(),
+            ["1. milk 2. eggs"]
+        );
     }
 
     #[test]
@@ -1229,14 +1260,16 @@ mod tests {
     }
 
     /// The headline case: a compromised endpoint answers with something that would run if the
-    /// focused window were a terminal. The newline is content and stays — it is what makes a
-    /// dictated list a list — but the escape sequence around it is a keystroke nobody spoke.
+    /// focused window were a terminal. The newline becomes a space — typed as Enter it would
+    /// submit the line, and pasted it can too — and the escape sequence around it is a
+    /// keystroke nobody spoke. (#9: a dictated list into WhatsApp sent itself.)
     #[test]
-    fn a_terminal_payload_keeps_its_newline_and_loses_its_escape() {
-        assert_eq!(sanitize("ls\n rm -rf /\x1b[0m"), "ls\n rm -rf /[0m");
-        // Every other C0, DEL and C1 character goes the same way; `\n` alone survives.
+    fn a_newline_is_never_typed() {
+        assert_eq!(sanitize("ls\n rm -rf /\x1b[0m"), "ls  rm -rf /[0m");
+        // Every other C0, DEL and C1 character is dropped outright.
         assert_eq!(sanitize("a\tb\rc\x08d\x7fe\u{85}f"), "abcdef");
-        assert_eq!(sanitize("one\ntwo"), "one\ntwo");
+        assert_eq!(sanitize("one\ntwo"), "one two");
+        assert!(!sanitize("1. foo\n2. bar\n").contains('\n'));
     }
 
     /// The rule cuts overrides and isolates, which lie about what was typed, and must leave
@@ -1428,8 +1461,9 @@ mod tests {
         );
     }
 
-    /// The capture log is evidence, so it keeps what the server actually sent — sanitising is
-    /// about what reaches the keyboard, not about rewriting the corpus.
+    /// The capture log is evidence, so it keeps what the server actually sent (whisper's
+    /// segment line breaks already joined on a space by the STT client, nothing else touched)
+    /// — sanitising is about what reaches the keyboard, not about rewriting the corpus.
     #[test]
     fn the_capture_row_keeps_the_unsanitised_reply() {
         let mut r = rig(FakeTranscriber::ok("a\tb"), None, false, false);
