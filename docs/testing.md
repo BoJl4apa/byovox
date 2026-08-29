@@ -36,6 +36,8 @@ and an unmapped layout routes to `language.default`, so every row below would lo
 - [ ] `inject.mode = "paste"`: clipboard content from before the dictation is restored afterwards
 - [ ] polish endpoint down (wrong port): raw transcript inserted, error cue, WARN in log
 - [ ] `inject.mode = "type"`, focus a chat box that sends on Enter, dictate "first foo, second bar": one *unsent* message reading `1. foo 2. bar` — nothing is submitted, no stray leading or trailing space
+- [ ] with `[stt.by_language.he]` configured and a Hebrew layout: `byovox check` shows an `ok stt[he]` row; dictate "אני עוד רבע שעה אצלו" → `רבע שעה` (the default lane types `רבשה`); dictate one word ("תודה") → it still lands, and the log shows `stt lane returned nothing; retrying the default endpoint`
+- [ ] with a glossary in `stt.prompt`: dictate "שמנו את Tailscale מאחורי אותו proxy" under a Hebrew layout → `Tailscale` lands in Latin; dictate "ראיתי אריה בגן החיות" → `אריה` stays Hebrew
 
 ## Indicator
 - [ ] first press after the daemon starts: the recording cue is audible (the output device is opened at start, not by that press)
