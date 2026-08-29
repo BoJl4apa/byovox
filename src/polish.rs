@@ -48,6 +48,21 @@ pub fn system_prompt(base: &str, glossary: Option<&str>) -> String {
     }
 }
 
+/// The system prompt for a configuration: `base` with the glossary rule carrying the `[stt]`
+/// glossary *and* every lane's (`[stt.by_language.<code>] prompt`), in that order. One
+/// polisher serves every language, so the rule has to know the names whisper was primed with
+/// on any lane — a Hebrew lane's glossary that only reached whisper would leave its terms
+/// transliterated after polish. The one composition the daemon and `byovox check` share.
+pub fn prompt_for(base: &str, stt: &crate::config::SttConfig) -> String {
+    let glossary = std::iter::once(stt.prompt.as_str())
+        .chain(stt.by_language.values().map(|lane| lane.prompt.as_str()))
+        .map(str::trim)
+        .filter(|g| !g.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    system_prompt(base, Some(&glossary))
+}
+
 pub struct PolishClient {
     url: String,
     model: String,
@@ -262,6 +277,36 @@ mod tests {
         assert!(with.contains("אריה in a Hebrew sentence is a lion"));
         let file = system_prompt("Custom prompt.\n", Some("Glossary: Acme"));
         assert!(file.starts_with("Custom prompt.\n\n9. "), "{file}");
+        // Whitespace around the glossary never rides into the prompt.
+        assert!(system_prompt(BUILT_IN_PROMPT, Some("  Glossary: X  ")).ends_with("\nGlossary: X"));
+        // The rule is numbered 9 because the built-in prompt stops at 8; a ninth built-in
+        // rule would collide with it silently.
+        assert!(BUILT_IN_PROMPT.contains("\n8. ") && !BUILT_IN_PROMPT.contains("\n9. "));
+    }
+
+    /// The daemon's and `check`'s composition: the `[stt]` glossary and every lane's, or the
+    /// bare base when there is none anywhere.
+    #[test]
+    fn prompt_for_folds_the_global_and_every_lane_glossary() {
+        use crate::config::{SttConfig, SttLane};
+        let mut stt = SttConfig::default();
+        assert_eq!(prompt_for(BUILT_IN_PROMPT, &stt), BUILT_IN_PROMPT);
+        stt.prompt = "Glossary: Acme".into();
+        assert!(prompt_for(BUILT_IN_PROMPT, &stt).ends_with("\nGlossary: Acme"));
+        stt.by_language.insert(
+            "he".into(),
+            SttLane {
+                prompt: "Glossary: Tailscale".into(),
+                ..Default::default()
+            },
+        );
+        stt.by_language.insert("ru".into(), SttLane::default());
+        assert!(
+            prompt_for(BUILT_IN_PROMPT, &stt).ends_with("\nGlossary: Acme\nGlossary: Tailscale")
+        );
+        // A lane-only glossary still reaches polish.
+        stt.prompt.clear();
+        assert!(prompt_for(BUILT_IN_PROMPT, &stt).ends_with("\nGlossary: Tailscale"));
     }
 
     #[test]

@@ -158,8 +158,9 @@ fn stage_token(env_name: &str, file: &str) -> Result<Option<String>, String> {
     Ok(key)
 }
 
-/// The system prompt the daemon would send: `polish.prompt_file` when set, else the built-in
-/// one. Reading it here is what makes a path typo fail the check rather than the first
+/// The base of the system prompt the daemon would send — `polish.prompt_file` when set, else
+/// the built-in; `polish::prompt_for` adds the glossary rule on top of it. Reading the file
+/// here is what makes a path typo fail the check rather than the first
 /// dictation — and it is what the round trip below sends, so `check` exercises the prompt the
 /// daemon will use rather than a stand-in that could behave differently.
 fn prompt_text(prompt_file: &str) -> Result<String, String> {
@@ -216,7 +217,7 @@ pub fn probe_stt(cfg: &Config) -> bool {
 /// The `polish` row, for a gateway the user has just typed into `byovox setup`. As
 /// `probe_stt`: `run`'s own stage, printed as `run`'s own row.
 pub fn probe_polish(cfg: &Config) -> bool {
-    report("polish", polish_round_trip(&cfg.polish, &cfg.stt.prompt))
+    report("polish", polish_round_trip(&cfg.polish, &cfg.stt))
 }
 
 /// A stage result as its row, and whether it passed.
@@ -397,7 +398,7 @@ pub fn run(cfg: &Config, config_path: &Path) -> bool {
     }
 
     if cfg.polish.enabled {
-        match polish_round_trip(&cfg.polish, &cfg.stt.prompt) {
+        match polish_round_trip(&cfg.polish, &cfg.stt) {
             Ok(detail) => line("polish", Some(true), &detail),
             Err(e) => {
                 line("polish", Some(false), &e);
@@ -514,10 +515,10 @@ fn no_speech_row(prob: Option<f32>, threshold: f64) -> String {
 /// One polish of a fixed sample dictation, as the row detail to print. Both the token and
 /// `prompt_file` are proven before the request, so neither can fail silently behind a
 /// gateway that answers anyway. The error loses its body for the same reason as STT's.
-fn polish_round_trip(cfg: &PolishConfig, glossary: &str) -> Result<String, String> {
+fn polish_round_trip(cfg: &PolishConfig, stt: &SttConfig) -> Result<String, String> {
     let key = stage_token(&cfg.api_key_env, &cfg.api_key_file)?;
     // The same composition the daemon sends, glossary rule included.
-    let prompt = polish::system_prompt(&prompt_text(&cfg.prompt_file)?, Some(glossary));
+    let prompt = polish::prompt_for(&prompt_text(&cfg.prompt_file)?, stt);
     let client = PolishClient::new(
         &cfg.base_url,
         &cfg.model,
