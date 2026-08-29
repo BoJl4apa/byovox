@@ -38,6 +38,10 @@ api_key_env = ""
 api_key_file = ""
 # Vocabulary priming sent as the whisper `prompt` on every request. Names and jargon
 # whisper would otherwise mangle, e.g. "Glossary: Acme, Kubernetes, Postgres, LiteLLM".
+# The polish stage reads the same list: a listed tool, product or UI control that whisper
+# wrote in Hebrew or Cyrillic letters (גרפנה, רדיס) comes back in Latin script. Technical
+# terms only: people's names stay in the language being spoken, and an ordinary word that
+# sounds like a listed name is left alone.
 prompt = ""
 # Whole-request timeout in seconds (connect is always 5 s).
 timeout_s = 30

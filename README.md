@@ -17,7 +17,8 @@ at the moment you press the key.
   reference; anything serving OpenAI's `/v1/audio/transcriptions` works. `language_candidates`
   needs a build that understands the field — one without it auto-detects unconstrained.
 - Optionally, an **OpenAI-compatible `/v1/chat/completions` endpoint** for cleanup —
-  punctuation, filler removal, spoken lists. `polish.enabled = false` skips the stage.
+  punctuation, filler removal, spoken lists, and glossary terms back in Latin script when
+  whisper wrote them in Hebrew or Cyrillic. `polish.enabled = false` skips the stage.
 - **Windows 10 or 11.** Linux (KDE Wayland first) and macOS are designed, not implemented; the
   per-OS backend table is in [the design](docs/superpowers/specs/2026-08-24-byovox-design.md).
 

@@ -14,7 +14,7 @@ use crate::config::{
 use crate::hotkey::{HotkeyMode, parse_chord, validate_key_name};
 use crate::lang::{LanguagePolicy, SttLanguage};
 use crate::pipeline::no_speech;
-use crate::polish::{BUILT_IN_PROMPT, PolishClient, Polisher};
+use crate::polish::{self, BUILT_IN_PROMPT, PolishClient, Polisher};
 use crate::stt::{SttClient, Transcriber};
 
 /// How long the microphone stage records for.
@@ -216,7 +216,7 @@ pub fn probe_stt(cfg: &Config) -> bool {
 /// The `polish` row, for a gateway the user has just typed into `byovox setup`. As
 /// `probe_stt`: `run`'s own stage, printed as `run`'s own row.
 pub fn probe_polish(cfg: &Config) -> bool {
-    report("polish", polish_round_trip(&cfg.polish))
+    report("polish", polish_round_trip(&cfg.polish, &cfg.stt.prompt))
 }
 
 /// A stage result as its row, and whether it passed.
@@ -397,7 +397,7 @@ pub fn run(cfg: &Config, config_path: &Path) -> bool {
     }
 
     if cfg.polish.enabled {
-        match polish_round_trip(&cfg.polish) {
+        match polish_round_trip(&cfg.polish, &cfg.stt.prompt) {
             Ok(detail) => line("polish", Some(true), &detail),
             Err(e) => {
                 line("polish", Some(false), &e);
@@ -514,9 +514,10 @@ fn no_speech_row(prob: Option<f32>, threshold: f64) -> String {
 /// One polish of a fixed sample dictation, as the row detail to print. Both the token and
 /// `prompt_file` are proven before the request, so neither can fail silently behind a
 /// gateway that answers anyway. The error loses its body for the same reason as STT's.
-fn polish_round_trip(cfg: &PolishConfig) -> Result<String, String> {
+fn polish_round_trip(cfg: &PolishConfig, glossary: &str) -> Result<String, String> {
     let key = stage_token(&cfg.api_key_env, &cfg.api_key_file)?;
-    let prompt = prompt_text(&cfg.prompt_file)?;
+    // The same composition the daemon sends, glossary rule included.
+    let prompt = polish::system_prompt(&prompt_text(&cfg.prompt_file)?, Some(glossary));
     let client = PolishClient::new(
         &cfg.base_url,
         &cfg.model,
