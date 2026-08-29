@@ -38,6 +38,10 @@ api_key_env = ""
 api_key_file = ""
 # Vocabulary priming sent as the whisper `prompt` on every request. Names and jargon
 # whisper would otherwise mangle, e.g. "Glossary: Acme, Kubernetes, Postgres, LiteLLM".
+# The polish stage reads the same list: a listed tool, product or UI control that whisper
+# wrote in Hebrew or Cyrillic letters (גרפנה, רדיס) comes back in Latin script. Technical
+# terms only: people's names stay in the language being spoken, and an ordinary word that
+# sounds like a listed name is left alone.
 prompt = ""
 # Whole-request timeout in seconds (connect is always 5 s).
 timeout_s = 30
@@ -58,7 +62,8 @@ no_speech_threshold = 0.3
 # auto-detected ones included, still goes to [stt]. A lane is the same server family
 # with a different model — the token, timeout and no_speech_threshold above apply (so a
 # lane's server must take the same `response_format` as [stt]'s: with the gate on, both
-# get `verbose_json`), and `model` / `prompt` inherit when empty. `base_url` is required.
+# get `verbose_json`), and `model` / `prompt` inherit when empty; a lane `prompt` also joins
+# the polish stage's glossary rule. `base_url` is required.
 # A lane reply with no text is retried on [stt] (a one-word clip can come back empty from
 # a fine-tuned model); a lane error is an error, reported as `stt[<code>]`. Example — a
 # Hebrew fine-tune behind its own path on the same server:
@@ -102,7 +107,8 @@ api_key_env = ""
 api_key_file = ""
 # Skip polish for utterances shorter than this many words (0 = always polish).
 min_words = 0
-# Path to a file replacing the built-in system prompt. Empty = built-in.
+# Path to a file replacing the built-in system prompt. Empty = built-in. The glossary rule
+# from `stt.prompt` (and any lane's `prompt`) is still appended after it.
 prompt_file = ""
 timeout_s = 20
 

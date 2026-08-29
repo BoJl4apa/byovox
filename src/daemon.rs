@@ -184,7 +184,7 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
         tracing::info!(lang = %lang, key = %format!("stt.by_language.{code}"), "stt lane");
     }
     let polisher: Option<Box<dyn polish::Polisher>> = if cfg.polish.enabled {
-        let prompt = if cfg.polish.prompt_file.is_empty() {
+        let base = if cfg.polish.prompt_file.is_empty() {
             polish::BUILT_IN_PROMPT.to_string()
         } else {
             // Named in the error: `read_to_string` carries no path, so a typo would
@@ -193,6 +193,9 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
             std::fs::read_to_string(&file)
                 .with_context(|| format!("polish.prompt_file {}", file.display()))?
         };
+        // The STT glossaries are the polish glossary too: whisper hears the names and writes
+        // them in the sentence's script; this stage puts them back in Latin.
+        let prompt = polish::prompt_for(&base, &cfg.stt);
         let key = config::resolve_token(&cfg.polish.api_key_env, &cfg.polish.api_key_file);
         if key.is_none() && !cfg.polish.api_key_env.is_empty() {
             tracing::warn!(var = %cfg.polish.api_key_env, "polish token not found; polish requests will be unauthenticated");
