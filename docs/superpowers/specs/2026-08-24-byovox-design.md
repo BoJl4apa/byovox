@@ -186,7 +186,8 @@ silently becomes something else.
    configuration problems and retrying hides them. Response `text` is trimmed; the strongest
    `no_speech_prob` over the reply's segments is read alongside it, and is absent when the
    server sends no segments.
-5. **Nothing to insert** → Idle, logged at INFO, no cue. Two ways in: an empty transcript,
+5. **Nothing to insert** → Idle, logged at INFO, no cue. Ways in: an empty transcript —
+   including one emptied later by step 7's sanitising (#11) or period strip (#19) —
    and a transcript scored above `stt.no_speech_threshold` (default 0.3), which whisper fills
    with an invented stock phrase over near-silence. Neither polishes nor injects nor is held
    for `byovox last`; the score decides and the text is never inspected. The INFO line for
@@ -197,8 +198,9 @@ silently becomes something else.
    `polish.prompt_file`), user = `<transcription>…</transcription>`, `temperature 0.3`,
    `max_tokens 1024`, timeout `polish.timeout_s` (20). **On any failure the raw transcript
    is inserted**, the error cue plays, the cause is logged at WARN.
-7. **Inject.** Trim; append a space if `inject.trailing_space`; hand to the `Inject`
-   backend. Done cue. Indicator → Idle.
+7. **Inject.** Trim; strip exactly one terminal `.` — never an ellipsis, `?` or `!` (#19);
+   append a space if `inject.trailing_space`; hand to the `Inject` backend. Done cue.
+   Indicator → Idle.
 8. **Capture log** (opt-in): `<dir>/<timestamp>.wav` plus one JSONL row: timestamp,
    layout, language fields sent, raw text, `no_speech_prob`, polished text, per-stage
    latency, polish model. A dictation dropped by step 5's score is written too, with no

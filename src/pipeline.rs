@@ -432,13 +432,22 @@ impl Pipeline {
         // chat-completion answer — now ends in a space, and that is not a stray keystroke to
         // type, nor a dropped character to warn about.
         let mut text = sanitized.trim().to_string();
+        // The endpoint punctuates — whisper on its own, the polish prompt by rule — but a
+        // dictation usually lands mid-sentence, so exactly one terminal `.` goes. An ellipsis
+        // stays (the `..` guard), and `?`/`!` were asked for by tone (#19).
+        if text.ends_with('.') && !text.ends_with("..") {
+            text.pop();
+            // the pop can expose whitespace ("Hello .") — never type a stray trailing space
+            text.truncate(text.trim_end().len());
+        }
         if dropped > 0 {
             tracing::warn!(
                 dropped,
                 "removed control or bidi-override characters the endpoint returned"
             );
         }
-        // A reply that was nothing but those characters leaves nothing to type. Treated as
+        // A reply that was nothing but those characters — or a lone period — leaves nothing
+        // to type. Treated as
         // the empty transcript it now is, and deliberately not held for `byovox last`: that
         // command must never hand back something the user did not dictate.
         //
@@ -473,7 +482,7 @@ impl Pipeline {
                 IndicatorState::Idle
             };
             self.set_state(State::Idle, final_state);
-            tracing::info!(lang = %language.label(), stt_ms, dropped, "empty transcript after sanitising");
+            tracing::info!(lang = %language.label(), stt_ms, dropped, "empty transcript after sanitising and the period strip");
             return Outcome::Empty;
         }
         if self.cfg.trailing_space {
@@ -685,7 +694,7 @@ mod tests {
         assert_eq!(calls[0].0, vec![("language", "he".to_string())]);
         assert_eq!(calls[0].1.as_deref(), Some("Glossary: Acme"));
         assert_eq!(r.polish.calls.lock().unwrap().as_slice(), ["um hello"]);
-        assert_eq!(r.rung1.texts.lock().unwrap().as_slice(), ["Hello."]);
+        assert_eq!(r.rung1.texts.lock().unwrap().as_slice(), ["Hello"]);
         assert!(r.rung2.texts.lock().unwrap().is_empty());
         assert_eq!(
             r.ind.0.lock().unwrap().as_slice(),
@@ -1023,6 +1032,73 @@ mod tests {
         r.p.cfg.trailing_space = true;
         dictate(&mut r, Duration::from_secs(1));
         assert_eq!(r.rung1.texts.lock().unwrap().as_slice(), ["hi "]);
+    }
+
+    /// Every dictation used to land with a `.` nobody asked for. Exactly one terminal `.`
+    /// goes; an ellipsis, a `?` and a `!` stay, and so does every sentence-internal one (#19).
+    #[test]
+    fn the_trailing_period_is_stripped_before_typing() {
+        for (served, typed) in [
+            ("Hello.", "Hello"),
+            ("Hello .", "Hello"),
+            ("Okay. See you.", "Okay. See you"),
+            ("wait...", "wait..."),
+            ("Really?", "Really?"),
+            ("Stop!", "Stop!"),
+        ] {
+            let mut r = rig(
+                FakeTranscriber::ok("spoken words"),
+                Some(FakePolisher::ok(served)),
+                false,
+                false,
+            );
+            assert_eq!(
+                dictate(&mut r, Duration::from_secs(1)),
+                Some(Outcome::Inserted { rung: "type" }),
+                "{served}"
+            );
+            assert_eq!(
+                r.rung1.texts.lock().unwrap().as_slice(),
+                [typed],
+                "{served}"
+            );
+        }
+        // The raw fallback goes through the same strip as the polished text.
+        let mut r = rig(FakeTranscriber::ok("Raw words."), None, false, false);
+        dictate(&mut r, Duration::from_secs(1));
+        assert_eq!(r.rung1.texts.lock().unwrap().as_slice(), ["Raw words"]);
+    }
+
+    /// A dictation that is nothing but a period strips to nothing and takes the Empty path:
+    /// nothing typed, nothing held for `byovox last`.
+    #[test]
+    fn a_lone_period_ends_as_an_empty_dictation() {
+        let mut r = rig(FakeTranscriber::ok("."), None, false, false);
+        assert_eq!(
+            dictate(&mut r, Duration::from_secs(1)),
+            Some(Outcome::Empty)
+        );
+        assert!(r.rung1.texts.lock().unwrap().is_empty());
+        assert!(r.p.shared().lock().unwrap().last_transcript.is_none());
+    }
+
+    /// The strip runs before the trailing space is appended and before `byovox last` is
+    /// written, so both see the period-less text.
+    #[test]
+    fn the_stripped_text_feeds_trailing_space_and_last() {
+        let mut r = rig(
+            FakeTranscriber::ok("hello there"),
+            Some(FakePolisher::ok("Hello.")),
+            false,
+            false,
+        );
+        r.p.cfg.trailing_space = true;
+        dictate(&mut r, Duration::from_secs(1));
+        assert_eq!(r.rung1.texts.lock().unwrap().as_slice(), ["Hello "]);
+        assert_eq!(
+            r.p.shared().lock().unwrap().last_transcript.as_deref(),
+            Some("Hello ")
+        );
     }
 
     #[test]
