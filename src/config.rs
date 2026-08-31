@@ -39,6 +39,10 @@ pub struct SttConfig {
     /// compared against the example file — the pipeline narrows it to f32 at the boundary,
     /// where whisper's own scores live.
     pub no_speech_threshold: f64,
+    /// Play the warning cue when a *kept* transcript's `no_speech_prob` exceeds this;
+    /// `0.0` never warns. Measured bands: real speech scores ≤ 0.08, silent holds 0.54+ —
+    /// the gray zone between is where whisper mishears and hallucinates (#26).
+    pub no_speech_warn: f64,
     /// Per-language endpoints keyed by ISO 639-1 code: a dictation the layout routing
     /// resolved to that language goes to the lane's `base_url` instead of `base_url`.
     /// Token, timeout and `no_speech_threshold` come from here; `model` and `prompt`
@@ -57,6 +61,7 @@ impl Default for SttConfig {
             prompt: String::new(),
             timeout_s: 30,
             no_speech_threshold: 0.3,
+            no_speech_warn: 0.08,
             by_language: Default::default(),
         }
     }
@@ -433,6 +438,10 @@ fn validate(cfg: &Config) -> Result<()> {
     // could ever compare against.
     if !(0.0..=1.0).contains(&t) {
         bail!("stt.no_speech_threshold is {t}: expected 0.0 to 1.0 (0.0 disables the gate)");
+    }
+    let w = cfg.stt.no_speech_warn;
+    if !(0.0..=1.0).contains(&w) {
+        bail!("stt.no_speech_warn is {w}: expected 0.0 to 1.0 (0.0 disables the warning cue)");
     }
     Ok(())
 }

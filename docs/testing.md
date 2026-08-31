@@ -42,6 +42,7 @@ and an unmapped layout routes to `language.default`, so every row below would lo
 
 ## Indicator
 - [ ] first press after the daemon starts: the recording cue is audible (the output device is opened at start, not by that press)
+- [ ] dictate a quiet mumble from across the room: the text still lands, the completion cue is the lower warning tone (not the short done blip), and the log has a `stt.no_speech_warn` WARN line with the probability
 - [ ] tray icon: a mic glyph — grey idle, red recording, amber working, magenta for ~3 s on error; Disable shows the red ✕ over the grey mic
 - [ ] tray menu: Disable stops the hotkey; Toggle mode takes its check mark and the hotkey then starts/stops on separate presses; Show last transcript shows a dialog; Open config / Open logs open Explorer; Run check opens a console that shows every row and waits for Enter; Quit exits
 - [ ] with a chord hotkey and Disable active: pressing the chord types its trigger into the window (nothing is swallowed); Enable → the chord dictates again
