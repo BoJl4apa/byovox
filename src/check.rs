@@ -487,7 +487,11 @@ fn stt_round_trip(
     Ok(format!(
         "{:.2}s  {}\"{}\"",
         t.elapsed().as_secs_f32(),
-        no_speech_row(transcript.no_speech_prob, cfg.no_speech_threshold),
+        no_speech_row(
+            transcript.no_speech_prob,
+            cfg.no_speech_threshold,
+            cfg.no_speech_warn
+        ),
         prefix(&transcript.text)
     ))
 }
@@ -501,13 +505,16 @@ fn stt_round_trip(
 /// The verdict comes from `pipeline::no_speech`, and the configured `f64` is narrowed here
 /// exactly as the daemon narrows it: this row's whole job is to say what the daemon would do,
 /// so it must not decide a hair's breadth differently.
-fn no_speech_row(prob: Option<f32>, threshold: f64) -> String {
+fn no_speech_row(prob: Option<f32>, threshold: f64, warn: f64) -> String {
     let Some(p) = prob else {
         return String::new();
     };
     let gated = match no_speech(prob, threshold as f32) {
         Some(_) => " (would be dropped as silence)",
-        None => "",
+        None => match no_speech(prob, warn as f32) {
+            Some(_) => " (would play the warning cue)",
+            None => "",
+        },
     };
     format!("p_nospeech={p:.2}{gated}  ")
 }
@@ -578,14 +585,19 @@ mod tests {
     /// claims nothing.
     #[test]
     fn the_stt_row_says_what_the_no_speech_gate_would_do() {
-        assert_eq!(no_speech_row(None, 0.3), "");
-        assert_eq!(no_speech_row(Some(0.04), 0.3), "p_nospeech=0.04  ");
+        assert_eq!(no_speech_row(None, 0.3, 0.08), "");
+        assert_eq!(no_speech_row(Some(0.04), 0.3, 0.08), "p_nospeech=0.04  ");
         assert_eq!(
-            no_speech_row(Some(0.76), 0.3),
+            no_speech_row(Some(0.76), 0.3, 0.08),
             "p_nospeech=0.76 (would be dropped as silence)  "
         );
+        // The gray zone: kept, but the daemon would play the warning cue (#26).
+        assert_eq!(
+            no_speech_row(Some(0.19), 0.3, 0.08),
+            "p_nospeech=0.19 (would play the warning cue)  "
+        );
         // With the gate off nothing is dropped, however sure whisper is.
-        assert_eq!(no_speech_row(Some(0.99), 0.0), "p_nospeech=0.99  ");
+        assert_eq!(no_speech_row(Some(0.99), 0.0, 0.0), "p_nospeech=0.99  ");
     }
 
     /// The row's whole claim is "this is what the daemon would do", so it has to decide on
@@ -601,7 +613,12 @@ mod tests {
             "the widths must genuinely differ, or this test proves nothing"
         );
         assert_eq!(crate::pipeline::no_speech(Some(p), threshold as f32), None);
-        assert_eq!(no_speech_row(Some(p), threshold), "p_nospeech=0.30  ");
+        assert_eq!(no_speech_row(Some(p), threshold, 0.0), "p_nospeech=0.30  ");
+        // Same knife edge for the warn: exactly at it is in-band, no warning verdict.
+        assert_eq!(
+            no_speech_row(Some(0.08), 0.3, 0.08_f32 as f64),
+            "p_nospeech=0.08  "
+        );
     }
 
     /// A dictation is private: the report shows a prefix, cut on a character boundary so a

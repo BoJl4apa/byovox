@@ -443,6 +443,15 @@ fn validate(cfg: &Config) -> Result<()> {
     if !(0.0..=1.0).contains(&w) {
         bail!("stt.no_speech_warn is {w}: expected 0.0 to 1.0 (0.0 disables the warning cue)");
     }
+    // A threshold of 0.0 turns whisper scoring off entirely (plain `json` on the wire), so a
+    // warn left non-zero beside it would be silently inert — refused here so "the cue is
+    // armed" is never a false belief. This also keeps `threshold > 0` the exact scoring
+    // condition everywhere downstream.
+    if w > 0.0 && t == 0.0 {
+        bail!(
+            "stt.no_speech_warn is {w} but no_speech_threshold is 0.0, which turns whisper scoring off: set no_speech_warn = 0.0 with it, or raise no_speech_threshold"
+        );
+    }
     Ok(())
 }
 
@@ -521,6 +530,7 @@ mod tests {
             prompt: "Glossary: Acme".into(),
             timeout_s: 45,
             no_speech_threshold: 0.2,
+            no_speech_warn: 0.05,
             by_language: [(
                 "he".to_string(),
                 SttLane {
@@ -539,6 +549,7 @@ mod tests {
         assert_eq!(bare.api_key_env, "STT_TOKEN");
         assert_eq!(bare.timeout_s, 45);
         assert_eq!(bare.no_speech_threshold, 0.2);
+        assert_eq!(bare.no_speech_warn, 0.05);
         assert!(bare.by_language.is_empty());
 
         let full = stt.lane_config(&SttLane {
@@ -671,24 +682,39 @@ mod tests {
     fn a_threshold_outside_the_unit_range_names_the_key() {
         let dir = tempfile_dir("threshold_range");
         let path = dir.join("config.toml");
-        // Endpoints present, so the threshold is the only thing wrong with the file.
-        let with = |t: &str| {
-            format!(
-                "[stt]\nbase_url = \"http://x/v1\"\nno_speech_threshold = {t}\n[polish]\nenabled = false\n"
-            )
+        // Endpoints present, so the score key is the only thing wrong with the file.
+        let with = |key: &str, t: &str| {
+            format!("[stt]\nbase_url = \"http://x/v1\"\n{key} = {t}\n[polish]\nenabled = false\n")
         };
-        for bad in ["1.5", "-0.1", "nan"] {
-            std::fs::write(&path, with(bad)).unwrap();
-            // `{:#}` is how `main` prints a fatal, so this is the text the user sees.
-            let msg = format!("{:#}", load(&path).unwrap_err());
-            assert!(msg.contains("stt.no_speech_threshold"), "{bad}: {msg}");
-            assert!(msg.contains(&path.display().to_string()), "{bad}: {msg}");
+        for key in ["no_speech_threshold", "no_speech_warn"] {
+            for bad in ["1.5", "-0.1", "nan"] {
+                std::fs::write(&path, with(key, bad)).unwrap();
+                // `{:#}` is how `main` prints a fatal, so this is the text the user sees.
+                let msg = format!("{:#}", load(&path).unwrap_err());
+                assert!(msg.contains(&format!("stt.{key}")), "{key}={bad}: {msg}");
+                assert!(
+                    msg.contains(&path.display().to_string()),
+                    "{key}={bad}: {msg}"
+                );
+            }
         }
-        // The ends are usable: 1.0 gates only a certainty, 0.0 turns the gate off.
-        for good in ["0.0", "1.0", "0.6"] {
-            std::fs::write(&path, with(good)).unwrap();
+        // The ends are usable: 1.0 gates only a certainty.
+        for good in ["1.0", "0.6"] {
+            std::fs::write(&path, with("no_speech_threshold", good)).unwrap();
             assert!(load(&path).is_ok(), "{good}");
         }
+        // 0.0 turns scoring off entirely, which would leave a non-zero warn silently inert —
+        // refused with the fix in the message; explicit warn = 0.0 beside it is fine.
+        std::fs::write(&path, with("no_speech_threshold", "0.0")).unwrap();
+        let msg = format!("{:#}", load(&path).unwrap_err());
+        assert!(msg.contains("stt.no_speech_warn"), "{msg}");
+        assert!(msg.contains("set no_speech_warn = 0.0"), "{msg}");
+        std::fs::write(
+            &path,
+            "[stt]\nbase_url = \"http://x/v1\"\nno_speech_threshold = 0.0\nno_speech_warn = 0.0\n[polish]\nenabled = false\n",
+        )
+        .unwrap();
+        assert!(load(&path).is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -86,7 +86,7 @@ trait Hotkey   { fn run(self, tx: Sender<HotkeyEvent>) }        // Pressed | Rel
 trait Capture  { fn start(&mut self) -> Result<()>; fn stop(&mut self) -> Result<Audio> }   // 16 kHz mono i16
 trait Layout   { fn current(&self) -> Option<Lang> }             // ISO 639-1 of the foreground window's layout
 trait Inject   { fn type_text(&mut self, text: &str) -> Result<()> }
-trait Indicator{ fn set(&mut self, state: IndicatorState) }      // Idle | Recording | Working | Done | Error
+trait Indicator{ fn set(&mut self, state: IndicatorState) }      // Idle | Recording | Working | Done | Uncertain (#26) | Error
 ```
 
 The pipeline holds boxed trait objects and knows no OS. `platform::detect()` probes the
@@ -199,7 +199,8 @@ silently becomes something else.
    `max_tokens 1024`, timeout `polish.timeout_s` (20). **On any failure the raw transcript
    is inserted**, the error cue plays, the cause is logged at WARN.
 7. **Inject.** Trim; strip exactly one terminal `.` — never an ellipsis, `?` or `!` (#19);
-   append a space if `inject.trailing_space`; hand to the `Inject` backend. Done cue.
+   append a space if `inject.trailing_space`; hand to the `Inject` backend. Done cue — or the
+   warning cue when the kept transcript scored above `stt.no_speech_warn` (#26).
    Indicator → Idle.
 8. **Capture log** (opt-in): `<dir>/<timestamp>.wav` plus one JSONL row: timestamp,
    layout, language fields sent, raw text, `no_speech_prob`, polished text, per-stage
@@ -344,8 +345,8 @@ last transcript · Open config · Open logs · Run check · Quit. Icons: idle, r
 working, error (3 s).
 
 **Indicator.** Pill: a small frameless always-on-top window near the cursor showing
-"● recording" / "… working", hidden when idle; disabled on Wayland in v1. Cues: three
-short tones (start, done, error), synthesised at run time rather than shipped as
+"● recording" / "… working", hidden when idle; disabled on Wayland in v1. Cues: four
+short tones (start, done, warning, error), synthesised at run time rather than shipped as
 assets — nothing to load, nothing to fail to load. Only a dictation that reached the
 focused window plays the done tone: a tap, a cancel and an empty transcript are silent.
 The cues follow the default output device rather than staying on the one they opened on,

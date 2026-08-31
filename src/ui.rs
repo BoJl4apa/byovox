@@ -1128,5 +1128,12 @@ mod tests {
         assert_eq!(pill_text(IndicatorState::Recording), Some("●  recording"));
         assert_eq!(pill_text(IndicatorState::Working), Some("…  working"));
         assert_eq!(pill_text(IndicatorState::Idle), None);
+        // Uncertain is a completion: no pill, and painted exactly like the idle glyph — the
+        // cue alone carries the warning (#26).
+        assert_eq!(pill_text(IndicatorState::Uncertain), None);
+        assert_eq!(
+            icon_rgba(IndicatorState::Uncertain),
+            icon_rgba(IndicatorState::Idle)
+        );
     }
 }
