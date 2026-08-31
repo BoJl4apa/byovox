@@ -130,6 +130,8 @@ pub fn build_event_loop() -> Result<(EventLoop<UserEvent>, EventLoopProxy<UserEv
     Ok((event_loop, proxy))
 }
 
+/// A microphone glyph — capsule body, cradle arc, stem and base — drawn per pixel on a
+/// transparent ground, coloured by state (#20).
 pub fn icon_rgba(state: IndicatorState) -> Vec<u8> {
     let (r, g, b) = match state {
         IndicatorState::Idle | IndicatorState::Done => (140, 140, 140),
@@ -141,8 +143,16 @@ pub fn icon_rgba(state: IndicatorState) -> Vec<u8> {
     for y in 0..32 {
         for x in 0..32 {
             let dx = x as f32 - 15.5;
-            let dy = y as f32 - 15.5;
-            if dx * dx + dy * dy <= 13.0 * 13.0 {
+            let fy = y as f32;
+            // the capsule: a rounded pill, its core running from y=9 to y=13
+            let dy = fy - fy.clamp(9.0, 13.0);
+            let body = dx * dx + dy * dy <= 4.5 * 4.5;
+            // the cradle: the lower half of a ring around the capsule's foot
+            let ring = (dx * dx + (fy - 12.5) * (fy - 12.5)).sqrt();
+            let cradle = fy >= 12.5 && (ring - 7.5).abs() <= 1.4;
+            let stem = dx.abs() <= 1.2 && (20.0..=24.0).contains(&fy);
+            let base = dx.abs() <= 6.0 && (24.0..=26.0).contains(&fy);
+            if body || cradle || stem || base {
                 let i = (y * 32 + x) * 4;
                 px[i..i + 4].copy_from_slice(&[r, g, b, 255]);
             }
@@ -151,7 +161,7 @@ pub fn icon_rgba(state: IndicatorState) -> Vec<u8> {
     px
 }
 
-/// The idle disc with a red cross over it: dictation is switched off from the tray.
+/// The idle mic with a red cross over it: dictation is switched off from the tray.
 pub fn disabled_icon_rgba() -> Vec<u8> {
     let mut px = icon_rgba(IndicatorState::Idle);
     for y in 0..32 {
@@ -958,21 +968,24 @@ mod tests {
         let idle = icon_rgba(IndicatorState::Idle);
         assert_eq!(idle.len(), 32 * 32 * 4);
         let rec = icon_rgba(IndicatorState::Recording);
-        // centre pixel: red channel dominates when recording, not when idle
-        let c = (16 * 32 + 16) * 4;
+        // a pixel in the mic's capsule: red channel dominates when recording, not when idle
+        let c = (8 * 32 + 16) * 4;
         assert!(rec[c] > rec[c + 1] && rec[c] > rec[c + 2]);
-        assert!(idle[c] == idle[c + 1] && idle[c] == idle[c + 2]);
+        assert!(idle[c] == idle[c + 1] && idle[c] == idle[c + 2] && idle[c + 3] == 255);
+        // off the glyph the ground stays transparent
+        let corner = (2 * 32 + 2) * 4;
+        assert_eq!(idle[corner + 3], 0);
     }
 
     #[test]
-    fn the_disabled_icon_is_a_red_cross_on_the_idle_disc() {
+    fn the_disabled_icon_is_a_red_cross_on_the_idle_mic() {
         let off = disabled_icon_rgba();
         assert_eq!(off.len(), 32 * 32 * 4);
-        // centre sits on both diagonals: red
+        // centre sits on both diagonals (and inside the capsule): red
         let c = (16 * 32 + 16) * 4;
         assert!(off[c] > off[c + 1] && off[c] > off[c + 2]);
-        // a disc pixel off the diagonals keeps the idle grey
-        let side = (16 * 32 + 24) * 4;
+        // a stem pixel off the diagonals keeps the idle grey
+        let side = (21 * 32 + 16) * 4;
         assert!(off[side] == off[side + 1] && off[side] == off[side + 2] && off[side + 3] == 255);
     }
 
