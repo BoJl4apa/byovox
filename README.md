@@ -72,7 +72,7 @@ the zip and must stay together — and verify it first:
 
 ```sh
 sha256sum -c SHA256SUMS                                              # published beside the zip
-gh attestation verify byovox-v0.1.2-x86_64-pc-windows-msvc.zip --owner BoJl4apa
+gh attestation verify byovox-v0.1.3-x86_64-pc-windows-msvc.zip --owner BoJl4apa
 ```
 
 `sha256sum` wants Git Bash or WSL; from PowerShell use `Get-FileHash -Algorithm SHA256` and
