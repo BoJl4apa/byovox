@@ -144,13 +144,16 @@ pub fn icon_rgba(state: IndicatorState) -> Vec<u8> {
         for x in 0..32 {
             let dx = x as f32 - 15.5;
             let fy = y as f32;
-            // the capsule: a rounded pill, its core running from y=9 to y=13
+            // the capsule: a rounded pill, its core running from y=9 to y=13. The tray draws
+            // the icon at 16 px on a 100% DPI display, so the body-to-cradle gap must hold a
+            // 2:1 box downscale: body radius 4 against the ring's inner edge at 7.2 keeps a
+            // 3 px clearance in the master, one full pixel at 16.
             let dy = fy - fy.clamp(9.0, 13.0);
-            let body = dx * dx + dy * dy <= 4.5 * 4.5;
+            let body = dx * dx + dy * dy <= 4.0 * 4.0;
             // the cradle: the lower half of a ring around the capsule's foot
             let ring = (dx * dx + (fy - 12.5) * (fy - 12.5)).sqrt();
-            let cradle = fy >= 12.5 && (ring - 7.5).abs() <= 1.4;
-            let stem = dx.abs() <= 1.2 && (20.0..=24.0).contains(&fy);
+            let cradle = fy >= 12.5 && (ring - 8.5).abs() <= 1.3;
+            let stem = dx.abs() <= 1.7 && (21.0..=24.0).contains(&fy);
             let base = dx.abs() <= 6.0 && (24.0..=26.0).contains(&fy);
             if body || cradle || stem || base {
                 let i = (y * 32 + x) * 4;
@@ -975,17 +978,35 @@ mod tests {
         // off the glyph the ground stays transparent
         let corner = (2 * 32 + 2) * 4;
         assert_eq!(idle[corner + 3], 0);
+        // the silhouette is pinned by its bounding box: any shift, scale or shape change
+        // moves it
+        let (mut min_x, mut max_x, mut min_y, mut max_y) = (31, 0, 31, 0);
+        for y in 0..32 {
+            for x in 0..32 {
+                if idle[(y * 32 + x) * 4 + 3] == 255 {
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                    min_y = min_y.min(y);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+        assert_eq!((min_x, max_x, min_y, max_y), (6, 25, 6, 26));
     }
 
     #[test]
     fn the_disabled_icon_is_a_red_cross_on_the_idle_mic() {
         let off = disabled_icon_rgba();
         assert_eq!(off.len(), 32 * 32 * 4);
-        // centre sits on both diagonals (and inside the capsule): red
+        // the centre sits on both diagonals: red
         let c = (16 * 32 + 16) * 4;
         assert!(off[c] > off[c + 1] && off[c] > off[c + 2]);
-        // a stem pixel off the diagonals keeps the idle grey
-        let side = (21 * 32 + 16) * 4;
+        // a capsule pixel off both diagonals keeps the idle grey — the cross overlays the
+        // glyph, it does not repaint it
+        let cap = (9 * 32 + 19) * 4;
+        assert!(off[cap] == off[cap + 1] && off[cap] == off[cap + 2] && off[cap + 3] == 255);
+        // so does a stem pixel below the cross
+        let side = (22 * 32 + 16) * 4;
         assert!(off[side] == off[side + 1] && off[side] == off[side + 2] && off[side + 3] == 255);
     }
 
