@@ -24,7 +24,8 @@ at the moment you press the key.
 
 **You get**
 
-- Hold a key, speak, release; the text lands in the focused window — any window, no plugin.
+- Hold a key, speak, release; the text lands in the focused window — any window, no plugin —
+  minus the final period the endpoint insists on (an ellipsis, a `?` or a `!` stays).
 - The language routed from that window's keyboard layout: switch layout, and dictation language
   switches with it, with nothing configured per app.
 - Cleanup that **falls back to the raw transcript** whenever it fails, for any reason.
