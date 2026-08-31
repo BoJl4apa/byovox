@@ -24,6 +24,9 @@ pub struct PipelineConfig {
     pub polish_min_words: usize,
     pub prompt: Option<String>,
     pub trailing_space: bool,
+    /// Play the warning cue when a kept transcript's `no_speech_prob` is above this;
+    /// `0.0` never warns (#26).
+    pub no_speech_warn: f32,
     /// Discard a transcript whose `no_speech_prob` is above this; `0.0` keeps every one.
     /// `config::load` has already refused anything outside `0.0..=1.0`.
     pub no_speech_threshold: f32,
@@ -548,9 +551,19 @@ impl Pipeline {
             Some(rung) => {
                 tracing::info!(lang = %language.label(), stt_ms, polish_ms, inject_ms, total_ms, rung, "dictation inserted");
                 // The one path that earns the done cue. Every other route back to Idle — a
-                // tap, a cancel, a disable, an empty transcript — is silent by spec.
+                // tap, a cancel, a disable, an empty transcript — is silent by spec. A kept
+                // transcript scored out of the speech band was typed all the same, but its
+                // cue says "proofread me" — the gray zone between the speech band and the
+                // discard gate is where whisper mishears and hallucinates (#26).
+                let uncertain = no_speech(no_speech_prob, self.cfg.no_speech_warn).is_some();
                 let final_state = if errored {
                     IndicatorState::Error
+                } else if uncertain {
+                    tracing::warn!(
+                        no_speech_prob = no_speech_prob.unwrap_or_default(),
+                        "kept transcript scored above stt.no_speech_warn; warning cue played"
+                    );
+                    IndicatorState::Uncertain
                 } else {
                     IndicatorState::Done
                 };
@@ -650,6 +663,7 @@ mod tests {
             polish_model: "cleanup-1".into(),
             max_chars: 20_000,
             no_speech_threshold: 0.6,
+            no_speech_warn: 0.0,
         };
         let p = Pipeline::new(
             cfg,
@@ -920,6 +934,42 @@ mod tests {
                 vec![words.to_string()]
             )
         );
+    }
+
+    /// A kept transcript scored above `stt.no_speech_warn` is typed all the same, but ends
+    /// Uncertain — the warning cue — instead of Done. In-band scores and `warn = 0` keep
+    /// the plain Done (#26).
+    #[test]
+    fn an_out_of_band_score_types_the_text_and_warns() {
+        for (what, p, warn, expect) in [
+            ("gray zone warns", 0.19_f32, 0.08_f32, S::Uncertain),
+            ("in-band is done", 0.01, 0.08, S::Done),
+            ("0 turns the warning off", 0.19, 0.0, S::Done),
+        ] {
+            let mut r = rig(
+                FakeTranscriber::scored("Травма на всю жизнь", p),
+                None,
+                false,
+                false,
+            );
+            r.p.cfg.no_speech_warn = warn;
+            assert_eq!(
+                dictate(&mut r, Duration::from_secs(1)),
+                Some(Outcome::Inserted { rung: "type" }),
+                "{what}"
+            );
+            assert_eq!(
+                r.rung1.texts.lock().unwrap().len(),
+                1,
+                "{what}: the text still types"
+            );
+            assert_eq!(r.ind.0.lock().unwrap().last(), Some(&expect), "{what}");
+        }
+        // A reply no server scored can never warn.
+        let mut r = rig(FakeTranscriber::ok("hello"), None, false, false);
+        r.p.cfg.no_speech_warn = 0.08;
+        dictate(&mut r, Duration::from_secs(1));
+        assert_eq!(r.ind.0.lock().unwrap().last(), Some(&S::Done));
     }
 
     /// The gate's line has to say enough to tune the threshold from — the probability that
@@ -1259,6 +1309,7 @@ mod tests {
                 polish_model: String::new(),
                 max_chars: 20_000,
                 no_speech_threshold: 0.6,
+                no_speech_warn: 0.0,
             },
             Box::new(cap),
             Box::new(FakeLayout(None)),

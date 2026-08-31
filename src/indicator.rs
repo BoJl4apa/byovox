@@ -10,6 +10,10 @@ pub enum IndicatorState {
     /// sub-`min_hold` tap is discarded *silently* and an empty transcript gets *no cue*, and
     /// a cancelled recording must not sound like a successful one.
     Done,
+    /// Done, but the transcript's `no_speech_prob` was out of the measured speech band:
+    /// the text was typed and may be fine — the cue says "proofread me". Painted exactly
+    /// like Done/Idle; only the sound differs.
+    Uncertain,
     /// Shown for ~3 s by the UI, then Idle; the pipeline never sets Idle after Error.
     Error,
 }

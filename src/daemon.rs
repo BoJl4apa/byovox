@@ -236,6 +236,7 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
             polish_model: cfg.polish.model.clone(),
             // Narrowed here: the file holds a TOML f64, whisper scores in f32.
             no_speech_threshold: cfg.stt.no_speech_threshold as f32,
+            no_speech_warn: cfg.stt.no_speech_warn as f32,
         },
         backends.capture,
         backends.layout,

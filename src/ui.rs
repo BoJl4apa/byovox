@@ -134,7 +134,7 @@ pub fn build_event_loop() -> Result<(EventLoop<UserEvent>, EventLoopProxy<UserEv
 /// transparent ground, coloured by state (#20).
 pub fn icon_rgba(state: IndicatorState) -> Vec<u8> {
     let (r, g, b) = match state {
-        IndicatorState::Idle | IndicatorState::Done => (140, 140, 140),
+        IndicatorState::Idle | IndicatorState::Done | IndicatorState::Uncertain => (140, 140, 140),
         IndicatorState::Recording => (220, 40, 40),
         IndicatorState::Working => (230, 160, 30),
         IndicatorState::Error => (200, 30, 90),
@@ -195,7 +195,7 @@ pub fn pill_text(state: IndicatorState) -> Option<&'static str> {
         IndicatorState::Recording => Some("●  recording"),
         IndicatorState::Working => Some("…  working"),
         IndicatorState::Error => Some("✕  failed"),
-        IndicatorState::Idle | IndicatorState::Done => None,
+        IndicatorState::Idle | IndicatorState::Done | IndicatorState::Uncertain => None,
     }
 }
 
@@ -203,7 +203,7 @@ pub fn pill_text(state: IndicatorState) -> Option<&'static str> {
 /// separate the completion cue from the silent returns to Idle.
 fn state_word(state: IndicatorState) -> &'static str {
     match state {
-        IndicatorState::Idle | IndicatorState::Done => "idle",
+        IndicatorState::Idle | IndicatorState::Done | IndicatorState::Uncertain => "idle",
         IndicatorState::Recording => "recording",
         IndicatorState::Working => "working",
         IndicatorState::Error => "error",
@@ -351,6 +351,9 @@ impl App {
                 // Only a dictation that landed: a tap, a cancel and an empty transcript are
                 // silent returns to Idle, and must not sound like a success.
                 IndicatorState::Done => cue.play(660.0, 60),
+                // Between Done's short high blip and Error's long low tone: "typed, but
+                // proofread me" (#26).
+                IndicatorState::Uncertain => cue.play(330.0, 180),
                 IndicatorState::Error => cue.play(220.0, 220),
                 IndicatorState::Idle | IndicatorState::Working => {}
             }
@@ -1125,5 +1128,12 @@ mod tests {
         assert_eq!(pill_text(IndicatorState::Recording), Some("●  recording"));
         assert_eq!(pill_text(IndicatorState::Working), Some("…  working"));
         assert_eq!(pill_text(IndicatorState::Idle), None);
+        // Uncertain is a completion: no pill, and painted exactly like the idle glyph — the
+        // cue alone carries the warning (#26).
+        assert_eq!(pill_text(IndicatorState::Uncertain), None);
+        assert_eq!(
+            icon_rgba(IndicatorState::Uncertain),
+            icon_rgba(IndicatorState::Idle)
+        );
     }
 }

@@ -111,7 +111,7 @@ for as long as the stream is open. With byovox that is every dictation: music in
 headphones jumps in pitch and volume on the press and jumps back on the release, and the
 transcript is worse than the built-in array would have given.
 
-The playback byovox does — the start, done and error cues — is not the cause. An output stream
+The playback byovox does — the start, done, warning and error cues — is not the cause. An output stream
 leaves A2DP alone; only a *capture* stream forces the switch.
 
 Pin the microphone instead of unpairing the headset:
@@ -129,7 +129,7 @@ hands-free endpoint.
 
 ## Cue output
 
-The start, done and error cues play on whatever Windows has as the default output device, and
+The start, done, warning and error cues play on whatever Windows has as the default output device, and
 they follow it: byovox registers for endpoint notifications (`IMMNotificationClient`), so
 switching the default in the Sound panel — or switching a Bluetooth headset off, which
 switches it for you — re-binds the cues to the device that took over, with one INFO

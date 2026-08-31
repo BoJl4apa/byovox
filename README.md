@@ -31,7 +31,7 @@ at the moment you press the key.
 - Cleanup that **falls back to the raw transcript** whenever it fails, for any reason.
 - **Never lossy:** a dictation that reached the server is inserted even if every later stage
   fails; if no injection path works at all, `byovox last` hands the text back.
-- A tray icon, a recording pill, three short cues — no settings window, no auto-update, no
+- A tray icon, a recording pill, four short cues — no settings window, no auto-update, no
   telemetry — and one TOML file, which holds no token: only the name of a variable, or the path
   of a file, to read one from.
 
