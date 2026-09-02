@@ -20,11 +20,7 @@ use crate::stt::{SttClient, Transcriber};
 /// How long the microphone stage records for.
 const SAMPLE: Duration = Duration::from_secs(1);
 
-/// Discarded before the peak is measured: WASAPI opens with a click that reads full scale,
-/// which would otherwise mask a muted microphone.
-const START_TRANSIENT: Duration = Duration::from_millis(150);
-
-/// Less audio than this after the transient is a device that never delivered, not a quiet one.
+/// Less audio than this is a device that never delivered, not a quiet one.
 const MIN_USABLE: Duration = Duration::from_millis(500);
 
 /// Below this a microphone is muted or attenuated, not merely quiet.
@@ -123,23 +119,21 @@ fn hotkey_row(h: &HotkeyConfig) -> String {
     format!("{} {}, cancel {}", h.key, h.mode, h.cancel_key)
 }
 
-/// The captured clip minus its start transient: what the peak is measured over and what STT
-/// is sent, so the row reports the audio the request actually carried. `Err` when too little
-/// arrives to judge — a device that opened but delivered nothing reads as digital silence,
-/// and silence is a warning, not the dead-capture failure this command exists to catch.
-fn steady_state(a: &Audio) -> Result<Audio, String> {
-    let samples_in = |d: Duration| (SAMPLE_RATE as f64 * d.as_secs_f64()) as usize;
-    let kept = a.samples.get(samples_in(START_TRANSIENT)..).unwrap_or(&[]);
-    if kept.len() < samples_in(MIN_USABLE) {
+/// The captured clip, once there is enough of it to judge. The click a WASAPI device opens
+/// with is already cut by `CpalCapture::stop`, so what the peak is measured over is what STT
+/// is sent. `Err` when too little arrives — a device that opened but delivered nothing reads
+/// as digital silence, and silence is a warning, not the dead-capture failure this command
+/// exists to catch.
+fn enough_audio(a: Audio) -> Result<Audio, String> {
+    let min = (SAMPLE_RATE as f64 * MIN_USABLE.as_secs_f64()) as usize;
+    if a.samples.len() < min {
         return Err(format!(
             "mic delivered {} samples in {:.0} s",
             a.samples.len(),
             SAMPLE.as_secs_f32()
         ));
     }
-    Ok(Audio {
-        samples: kept.to_vec(),
-    })
+    Ok(a)
 }
 
 /// The token for a stage, or the message for its FAIL row. An `api_key_env` that names a
@@ -436,7 +430,7 @@ pub fn run(cfg: &Config, config_path: &Path) -> bool {
 /// arrived; `info` says which device it was.
 fn sample_microphone(selector: &str, info: &DeviceInfo) -> Result<Audio, String> {
     record(selector)
-        .and_then(|a| steady_state(&a))
+        .and_then(enough_audio)
         .map_err(|e| format!("{info}: {e}"))
 }
 
@@ -554,9 +548,9 @@ fn record(selector: &str) -> Result<Audio, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Audio, BUILT_IN_PROMPT, HotkeyConfig, PREFIX_CHARS, QUIET_DBFS, SAMPLE_RATE,
-        cleartext_endpoints, hotkey_error, hotkey_row, is_hands_free, no_speech_row, prefix,
-        prompt_text, stage_token, steady_state, strip_body,
+        Audio, BUILT_IN_PROMPT, HotkeyConfig, PREFIX_CHARS, cleartext_endpoints, enough_audio,
+        hotkey_error, hotkey_row, is_hands_free, no_speech_row, prefix, prompt_text, stage_token,
+        strip_body,
     };
 
     /// Recording through a headset's hands-free endpoint drags it out of stereo for the whole
@@ -672,20 +666,6 @@ mod tests {
         }
     }
 
-    /// The device's opening click reads full scale; measuring the peak over it would report
-    /// a muted microphone as a healthy one.
-    #[test]
-    fn a_start_transient_cannot_mask_a_quiet_microphone() {
-        let mut samples = vec![i16::MAX; 2_000];
-        samples.resize(SAMPLE_RATE as usize, 100);
-        let captured = Audio { samples };
-        assert!(captured.peak_dbfs() > -0.1, "{}", captured.peak_dbfs());
-
-        let steady = steady_state(&captured).expect("0.85 s survives the transient");
-        assert!(steady.peak_dbfs() < QUIET_DBFS, "{}", steady.peak_dbfs());
-        assert!((steady.duration_secs() - 0.85).abs() < 0.01);
-    }
-
     /// A capture that delivered nothing is `-120 dBFS` — indistinguishable from silence, and
     /// silence is only a warning. Too short to judge must FAIL, and say how short.
     #[test]
@@ -693,20 +673,20 @@ mod tests {
         let empty = Audio { samples: vec![] };
         assert!(empty.peak_dbfs() <= -120.0);
         assert_eq!(
-            steady_state(&empty).unwrap_err(),
+            enough_audio(empty).unwrap_err(),
             "mic delivered 0 samples in 1 s"
         );
         // 300 ms: something arrived, still not enough to judge.
         assert!(
-            steady_state(&Audio {
+            enough_audio(Audio {
                 samples: vec![0; 4_800]
             })
             .is_err()
         );
-        // 700 ms leaves 550 ms after the transient, which is enough.
+        // 500 ms is enough.
         assert!(
-            steady_state(&Audio {
-                samples: vec![0; 11_200]
+            enough_audio(Audio {
+                samples: vec![0; 8_000]
             })
             .is_ok()
         );
