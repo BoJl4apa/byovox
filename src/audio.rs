@@ -71,11 +71,11 @@ impl Audio {
         if !pinned {
             return self;
         }
-        let windows = self.samples.chunks_exact(CLICK_WINDOW);
+        let limit = self.samples.len().min(START_CLICK_MAX_SAMPLES);
         let mut end = 0;
         let mut prev = f32::INFINITY;
-        for w in windows.take(START_CLICK_MAX_SAMPLES / CLICK_WINDOW) {
-            let db = rms_dbfs(w);
+        while end + CLICK_WINDOW <= limit {
+            let db = rms_dbfs(&self.samples[end..end + CLICK_WINDOW]);
             // 1 dB of tolerance: the decay is not monotonic at the 10 ms scale.
             if db <= -30.0 || db > prev + 1.0 {
                 break;
