@@ -128,7 +128,7 @@ fn enough_audio(a: Audio) -> Result<Audio, String> {
     let min = (SAMPLE_RATE as f64 * MIN_USABLE.as_secs_f64()) as usize;
     if a.samples.len() < min {
         return Err(format!(
-            "mic delivered {} samples in {:.0} s",
+            "mic delivered {} usable samples in {:.0} s",
             a.samples.len(),
             SAMPLE.as_secs_f32()
         ));
@@ -422,8 +422,8 @@ pub fn run(cfg: &Config, config_path: &Path) -> bool {
     all_ok
 }
 
-/// One `SAMPLE`-long recording from the microphone `capture.device` chose — past its start
-/// transient. The only place `check` puts a microphone live: `platform::detect` merely reads
+/// One `SAMPLE`-long recording from the microphone `capture.device` chose, minus the start
+/// click `CpalCapture::stop` cuts. The only place `check` puts a microphone live: `platform::detect` merely reads
 /// the device's config, and the `Capture` it hands back is never started.
 ///
 /// The error already names the rate, channels or format that was refused, or how little audio
@@ -548,9 +548,9 @@ fn record(selector: &str) -> Result<Audio, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Audio, BUILT_IN_PROMPT, HotkeyConfig, PREFIX_CHARS, cleartext_endpoints, enough_audio,
-        hotkey_error, hotkey_row, is_hands_free, no_speech_row, prefix, prompt_text, stage_token,
-        strip_body,
+        Audio, BUILT_IN_PROMPT, HotkeyConfig, PREFIX_CHARS, QUIET_DBFS, SAMPLE_RATE,
+        cleartext_endpoints, enough_audio, hotkey_error, hotkey_row, is_hands_free, no_speech_row,
+        prefix, prompt_text, stage_token, strip_body,
     };
 
     /// Recording through a headset's hands-free endpoint drags it out of stereo for the whole
@@ -666,6 +666,18 @@ mod tests {
         }
     }
 
+    /// The click a device opens with is cut before the peak is measured, so click plus room
+    /// tone reads as quiet and a muted microphone cannot hide behind it.
+    #[test]
+    fn a_start_click_cannot_mask_a_quiet_microphone() {
+        let mut samples = vec![i16::MAX; 2_000];
+        samples.resize(SAMPLE_RATE as usize, 100);
+        let steady =
+            enough_audio(Audio { samples }.without_start_click()).expect("0.87 s is enough");
+        assert!(steady.peak_dbfs() < QUIET_DBFS, "{}", steady.peak_dbfs());
+        assert!((steady.duration_secs() - 0.87).abs() < 0.01);
+    }
+
     /// A capture that delivered nothing is `-120 dBFS` — indistinguishable from silence, and
     /// silence is only a warning. Too short to judge must FAIL, and say how short.
     #[test]
@@ -674,7 +686,7 @@ mod tests {
         assert!(empty.peak_dbfs() <= -120.0);
         assert_eq!(
             enough_audio(empty).unwrap_err(),
-            "mic delivered 0 samples in 1 s"
+            "mic delivered 0 usable samples in 1 s"
         );
         // 300 ms: something arrived, still not enough to judge.
         assert!(

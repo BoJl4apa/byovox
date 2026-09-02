@@ -338,6 +338,14 @@ impl Pipeline {
             tracing::info!("tap discarded");
             return Outcome::Discarded;
         }
+        // A hold just over `min_hold` on a device that opens with the click is nothing but
+        // the click, and `Audio::without_start_click` leaves no samples. Whisper answers an
+        // empty WAV with HTTP 400 — an error cue for a fumbled tap — so it is not asked.
+        if audio.samples.is_empty() {
+            self.set_state(State::Idle, IndicatorState::Idle);
+            tracing::info!("empty capture");
+            return Outcome::Empty;
+        }
         self.indicator.set(IndicatorState::Working);
         self.shared.lock().unwrap().state = "working";
 
@@ -1214,6 +1222,27 @@ mod tests {
             r.p.handle(HotkeyEvent::Released, t0 + Duration::from_secs(1))
                 .is_none()
         );
+    }
+
+    /// A hold just over `min_hold` on a device that opens with the click is cut to nothing.
+    /// Whisper answers an empty WAV with HTTP 400, so it is never asked: the dictation is
+    /// empty, not failed.
+    #[test]
+    fn an_empty_capture_is_an_empty_dictation_without_a_request() {
+        let mut r = rig_with_capture(
+            FakeCapture::new(0),
+            FakeTranscriber::ok("hi"),
+            None,
+            false,
+            false,
+        );
+        assert_eq!(
+            dictate(&mut r, Duration::from_secs(1)),
+            Some(Outcome::Empty)
+        );
+        assert!(r.stt.calls.lock().unwrap().is_empty());
+        assert_eq!(r.p.shared().lock().unwrap().state, "idle");
+        assert_ne!(r.ind.0.lock().unwrap().last(), Some(&S::Error));
     }
 
     #[test]

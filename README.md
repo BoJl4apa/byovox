@@ -125,7 +125,7 @@ $ byovox check
 ok   config    C:\Users\you\AppData\Roaming\byovox\config\config.toml
 ok   hotkey    ControlRight hold, cancel Escape
 ok   backends  hotkey=hook layout=win32 inject=type,paste,clipboard-only
-ok   mic       Microphone Array (48000 Hz, 2 ch, F32)  peak -21.7 dBFS over 0.9s
+ok   mic       Microphone Array (48000 Hz, 2 ch, F32)  peak -21.7 dBFS over 0.7s
      layout    en → language_candidates=en,ru
 ok   stt       0.34s  p_nospeech=0.71 (would be dropped as silence)  "Thank you."
 ok   stt[he]   0.50s  p_nospeech=0.00  ""
