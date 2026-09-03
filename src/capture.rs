@@ -311,7 +311,7 @@ impl Capture for CpalCapture {
         if let Some(e) = rec.error.lock().unwrap().take() {
             return Err(format!("capture stream error: {e}"));
         }
-        Ok(Audio::from_f32(&samples, self.channels, self.rate))
+        Ok(Audio::from_f32(&samples, self.channels, self.rate).without_start_click())
     }
 }
 
