@@ -305,6 +305,9 @@ def self_test() -> None:
 
 
 def main() -> int:
+    # Items are Hebrew and Cyrillic; a Windows console defaults to a code page that cannot
+    # print them and would kill the run on the first such item.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", type=Path, default=default_config(), help="byovox config.toml (default: the daemon's)")
     ap.add_argument("--items", type=Path, default=HERE / "polish_items.jsonl")
