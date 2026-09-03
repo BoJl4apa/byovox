@@ -114,8 +114,8 @@ pub enum Outcome {
 impl Outcome {
     /// Whether the dictation reached Working — Transcribing/Polishing/Inserting — and so
     /// occupied the pipeline thread long enough for hotkey events to queue up behind it.
-    /// `Discarded` (tap, cancel, disabled) and `CaptureFailed` are decided before the first
-    /// request, so nothing can have been waiting on them.
+    /// `Discarded` (tap, cancel, disabled, an all-click capture) and `CaptureFailed` are
+    /// decided before the first request, so nothing can have been waiting on them.
     fn reached_working(&self) -> bool {
         !matches!(self, Outcome::Discarded | Outcome::CaptureFailed(_))
     }
@@ -336,6 +336,16 @@ impl Pipeline {
         if now.duration_since(since) < self.cfg.min_hold {
             self.set_state(State::Idle, IndicatorState::Idle);
             tracing::info!("tap discarded");
+            return Outcome::Discarded;
+        }
+        // A hold just over `min_hold` on a device that opens with the click is nothing but
+        // the click, and `Audio::without_start_click` leaves no samples. Whisper answers an
+        // empty WAV with HTTP 400 — an error cue for a fumbled tap — so it is not asked, and
+        // like a tap the outcome is `Discarded`: decided before any request, so `pump` must
+        // not drop the press queued behind it.
+        if audio.samples.is_empty() {
+            self.set_state(State::Idle, IndicatorState::Idle);
+            tracing::info!("empty capture discarded");
             return Outcome::Discarded;
         }
         self.indicator.set(IndicatorState::Working);
@@ -1216,6 +1226,27 @@ mod tests {
         );
     }
 
+    /// A hold just over `min_hold` on a device that opens with the click is cut to nothing.
+    /// Whisper answers an empty WAV with HTTP 400, so it is never asked: the dictation is
+    /// discarded like a tap, not failed.
+    #[test]
+    fn an_empty_capture_is_discarded_without_a_request() {
+        let mut r = rig_with_capture(
+            FakeCapture::new(0),
+            FakeTranscriber::ok("hi"),
+            None,
+            false,
+            false,
+        );
+        assert_eq!(
+            dictate(&mut r, Duration::from_secs(1)),
+            Some(Outcome::Discarded)
+        );
+        assert!(r.stt.calls.lock().unwrap().is_empty());
+        assert_eq!(r.p.shared().lock().unwrap().state, "idle");
+        assert_ne!(r.ind.0.lock().unwrap().last(), Some(&S::Error));
+    }
+
     #[test]
     fn microphone_stop_failure_is_its_own_outcome() {
         let mut cap = FakeCapture::new(16_000);
@@ -1383,6 +1414,35 @@ mod tests {
         pump(&mut p, &rx);
 
         assert_eq!(cap.starts(), 2, "the press after a tap was dropped");
+        assert_eq!(p.shared().lock().unwrap().state, "recording");
+    }
+
+    /// The same for a capture cut to nothing by `Audio::without_start_click`: it is decided
+    /// before any request, so the press queued behind it is a dictation, not an echo of the
+    /// one that was Working.
+    #[test]
+    fn a_press_behind_an_empty_capture_still_dictates() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cap = FakeCapture::new(0);
+        let ind = FakeIndicator::default();
+        let mut p = pump_rig(
+            HotkeyMode::Toggle,
+            cap.clone(),
+            Box::new(FakeTranscriber::ok("hi there")),
+            ind.clone(),
+        );
+
+        tx.send(HotkeyEvent::Toggle).unwrap(); // start
+        tx.send(HotkeyEvent::Toggle).unwrap(); // stop: the capture is all click, cut to nothing
+        tx.send(HotkeyEvent::Toggle).unwrap(); // the next dictation, already queued
+        drop(tx);
+        pump(&mut p, &rx);
+
+        assert_eq!(
+            cap.starts(),
+            2,
+            "the press after an empty capture was dropped"
+        );
         assert_eq!(p.shared().lock().unwrap().state, "recording");
     }
 

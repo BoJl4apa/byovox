@@ -7,6 +7,17 @@ use std::io::Cursor;
 
 pub const SAMPLE_RATE: u32 = 16_000;
 
+/// The most a recording loses to WASAPI's opening click. The stream's first samples sit
+/// pinned at full scale and decay over ~250 ms — 188 of 364 captures on the reference
+/// machine, under −30 dBFS by 230–300 ms. Sent to whisper, the click inflates the first
+/// segment's `no_speech_prob` (median 0.030 → 0.012 without it over those 188), which is
+/// what tripped `stt.no_speech_warn` on clean speech, and on short clips it is what whisper
+/// turned into subtitle credits ("Субтитры создавал DimaTorzok").
+const START_CLICK_MAX_SAMPLES: usize = SAMPLE_RATE as usize * 300 / 1000;
+
+/// One window of the click's decay: 10 ms, the first of which is also the detector's probe.
+const CLICK_WINDOW: usize = SAMPLE_RATE as usize / 100;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Audio {
     /// 16 kHz mono, 16-bit.
@@ -43,6 +54,39 @@ impl Audio {
         20.0 * (peak as f32 / i16::MAX as f32).log10()
     }
 
+    /// `self` minus the click a WASAPI capture opens with, when it did. The signature is the
+    /// first 10 ms pinned far from zero: speech crosses zero every few samples, so 160 in a
+    /// row above a quarter of full scale is a rail, never a voice. Detected rather than
+    /// assumed, so a device that opens cleanly keeps its first 300 ms of speech.
+    ///
+    /// The cut follows the decay window by window and ends at the first window that is not
+    /// the click any more: one that rises (speech arriving under the tail — a fixed 300 ms
+    /// cost a leading word in 1 of the 188 reference captures, spoken 200 ms in) or one
+    /// under −30 dBFS (room tone), or the 300 ms cap. The rising window is kept.
+    pub fn without_start_click(mut self) -> Audio {
+        let pinned = self.samples.len() >= CLICK_WINDOW
+            && self.samples[..CLICK_WINDOW]
+                .iter()
+                .all(|s| s.unsigned_abs() > i16::MAX as u16 / 4);
+        if !pinned {
+            return self;
+        }
+        let limit = self.samples.len().min(START_CLICK_MAX_SAMPLES);
+        let mut end = 0;
+        let mut prev = f32::INFINITY;
+        while end + CLICK_WINDOW <= limit {
+            let db = rms_dbfs(&self.samples[end..end + CLICK_WINDOW]);
+            // 1 dB of tolerance: the decay is not monotonic at the 10 ms scale.
+            if db <= -30.0 || db > prev + 1.0 {
+                break;
+            }
+            prev = db;
+            end += CLICK_WINDOW;
+        }
+        self.samples.drain(..end);
+        self
+    }
+
     pub fn to_wav(&self) -> Vec<u8> {
         let spec = hound::WavSpec {
             channels: 1,
@@ -77,6 +121,12 @@ fn downmix(input: &[f32], channels: usize) -> Vec<f32> {
 // The prefilter window is `[i - win/2, i + win/2]` inclusive, so `2*(win/2)+1` taps — 3 for
 // 48k→16k and 44.1k→16k, 7 for 96k→16k — and any ratio below 1.5 (22.05k→16k, say) rounds
 // `win` to 1 and is therefore not prefiltered at all.
+/// RMS level of a window in dBFS; `-inf` for digital silence.
+fn rms_dbfs(w: &[i16]) -> f32 {
+    let mean_sq = w.iter().map(|s| (*s as f32).powi(2)).sum::<f32>() / w.len().max(1) as f32;
+    20.0 * (mean_sq.sqrt() / i16::MAX as f32).log10()
+}
+
 fn resample(mono: &[f32], from: u32, to: u32) -> Vec<f32> {
     if from == to || from == 0 || mono.is_empty() {
         return mono.to_vec();
@@ -111,6 +161,62 @@ fn resample(mono: &[f32], from: u32, to: u32) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The click halving every 50 ms from the rail: pinned for the probe, −1.2 dB a window,
+    /// −24 dBFS at 200 ms.
+    fn click(ms: usize) -> Vec<i16> {
+        (0..SAMPLE_RATE as usize * ms / 1000)
+            .map(|i| (i16::MAX as f32 * 0.5f32.powf(i as f32 / 800.0)) as i16)
+            .collect()
+    }
+
+    /// The click loses exactly its own samples: the cut ends at room tone, at speech rising
+    /// under the tail, or at 300 ms, and a clean start, quiet or loud, loses nothing.
+    #[test]
+    fn a_wasapi_start_click_is_cut_and_a_clean_start_is_kept() {
+        // Rail, then room tone at 100: the 2 000 pinned samples go, plus the one window they
+        // share with the tone (still −3 dBFS); the first all-tone window is kept.
+        let mut samples = vec![i16::MAX; 2_000];
+        samples.resize(SAMPLE_RATE as usize, 100);
+        let cut = Audio { samples }.without_start_click();
+        assert_eq!(cut.samples.len(), 16_000 - 2_080);
+        assert!(cut.samples.iter().all(|s| *s == 100));
+        // Decay for 200 ms, then a voice at −6 dBFS: the cut ends where the level rises, and
+        // the voice is kept from its first sample.
+        let voice = Audio::from_f32(&sine(SAMPLE_RATE, 1, 0.5, 200.0, 0.5), 1, SAMPLE_RATE).samples;
+        let mut samples = click(200);
+        samples.extend_from_slice(&voice);
+        assert_eq!(Audio { samples }.without_start_click().samples, voice);
+        // Decay that neither rises nor reaches −30 dBFS within 300 ms: the cap.
+        let mut samples = vec![i16::MAX; 400];
+        samples.resize(16_000, i16::MAX / 2);
+        let capped = Audio { samples }.without_start_click();
+        assert_eq!(capped.samples.len(), 16_000 - 4_800);
+        // The rail has a sign; a negative one is the same click, and a buffer that is all
+        // click is cut to nothing.
+        let neg = Audio {
+            samples: vec![i16::MIN; 4_000],
+        }
+        .without_start_click();
+        assert!(neg.samples.is_empty());
+        // Room tone, and a voice near full scale from the first sample: kept whole, because
+        // a voice crosses zero inside the 10 ms probe and a rail does not.
+        let voice =
+            Audio::from_f32(&sine(SAMPLE_RATE, 1, 1.0, 200.0, 0.95), 1, SAMPLE_RATE).samples;
+        for start in [vec![100i16; 16_000], voice] {
+            let kept = Audio {
+                samples: start.clone(),
+            }
+            .without_start_click();
+            assert_eq!(kept.samples, start);
+        }
+        // Shorter than the probe: nothing to judge, nothing cut.
+        let short = Audio {
+            samples: vec![i16::MAX; 100],
+        }
+        .without_start_click();
+        assert_eq!(short.samples.len(), 100);
+    }
 
     fn sine(rate: u32, channels: u16, secs: f32, hz: f32, amp: f32) -> Vec<f32> {
         let n = (rate as f32 * secs) as usize;
