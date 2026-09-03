@@ -69,9 +69,24 @@ pub fn hotkey_availability(chord: &crate::hotkey::Chord) -> Availability {
 /// spawner between the daemon and any device.
 pub fn validate(cfg: &Config) -> Result<InjectMode> {
     // A chord or a single name; the cancel key is one name, pressed on its own.
-    parse_chord(&cfg.hotkey.key).map_err(|e| anyhow::anyhow!("hotkey.key: {e}"))?;
+    let chord = parse_chord(&cfg.hotkey.key).map_err(|e| anyhow::anyhow!("hotkey.key: {e}"))?;
     validate_key_name(&cfg.hotkey.cancel_key)
         .map_err(|e| anyhow::anyhow!("hotkey.cancel_key: {e}"))?;
+    // The cancel key must differ from every element of the hotkey: while a chord is held its
+    // branch wins, so cancel could never fire. A rule about names, so it is made here for
+    // every platform — `byovox hotkey` refuses it on Linux and macOS too, where the Windows
+    // backend below is not compiled to say so.
+    let cancel = &cfg.hotkey.cancel_key;
+    if chord.trigger == *cancel || chord.modifiers.iter().any(|m| m == cancel) {
+        anyhow::bail!(if chord.modifiers.is_empty() {
+            format!(
+                "hotkey and cancel key are both `{}`; they must differ",
+                cfg.hotkey.key
+            )
+        } else {
+            format!("cancel key `{cancel}` is part of the hotkey `{chord}`; they must differ")
+        });
+    }
     let mode = InjectMode::parse(&cfg.inject.mode).ok_or_else(|| {
         anyhow::anyhow!(
             "inject.mode `{}`: expected auto | type | paste | clipboard-only",
