@@ -162,6 +162,10 @@ cancel_key = "Escape"
 mode = "auto"
 # Append a space after the inserted text.
 trailing_space = false
+# Drop exactly one period from the end of the text before typing. Whisper and the cleanup
+# model both end a sentence with one, but a dictation usually lands mid-sentence; `false`
+# types the period as it came. An ellipsis is never touched either way.
+strip_terminal_period = true
 # Longest transcript, in characters, that byovox will type. A reply over this is NOT
 # truncated — it is held for `byovox last` with the error cue, the same as a dictation no
 # injection method could place, so nothing you said is ever lost. The point is a runaway or
