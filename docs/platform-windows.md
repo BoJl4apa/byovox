@@ -157,6 +157,145 @@ The tray's **Audio cues** item silences them for the running daemon and closes t
 stream with them. `indicator.cue` in the config is the value the daemon starts at, and the
 item does not write back to it.
 
+## Setup, start to finish
+
+Five steps. Only the first two are required — byovox needs a speech server and nothing else.
+
+### 1. Whisper server
+
+byovox posts to `{stt.base_url}/audio/transcriptions`, the OpenAI shape. whisper.cpp serves it
+but **not at that path by default**, which is the single most common way this fails.
+
+1. Download `whisper-bin-x64.zip` from
+   [whisper.cpp releases](https://github.com/ggml-org/whisper.cpp/releases) and unzip it, e.g.
+   to `C:\tools\whisper`. (This is **whisper.cpp**, not the unrelated "WhisperFlow" product.)
+2. Download a model from
+   [huggingface.co/ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp/tree/main)
+   and drop the `.bin` beside the executables:
+
+   | model | size | notes |
+   |---|---|---|
+   | `ggml-base.bin` | ~150 MB | fast, rough — fine for proving the pipeline works |
+   | `ggml-large-v3-turbo.bin` | ~1.6 GB | the useful one on a CPU-only laptop |
+
+3. Run it:
+
+   ```sh
+   whisper-server -m ggml-large-v3-turbo.bin --host 127.0.0.1 --port 8770 -l auto ^
+     --inference-path /v1/audio/transcriptions
+   ```
+
+`--inference-path` is what puts it on `/v1/audio/transcriptions`. Without it whisper.cpp
+listens on `/inference` and byovox reports `stt HTTP 404`. `-l auto` stops the server forcing
+English and silently translating everything into it.
+
+Add `-t 8` on a machine with cores to spare; the default is 4. Check the startup banner for
+`whisper_backend_init_gpu: no GPU found` — CPU-only transcription of a long sentence takes
+seconds, not milliseconds.
+
+`byovox` then wants `stt.base_url = "http://127.0.0.1:8770/v1"`.
+
+### 2. byovox
+
+```sh
+byovox setup
+byovox check
+```
+
+### 3. Text clean-up (optional)
+
+Any `/v1/chat/completions` server. [Ollama](https://ollama.com/download) is the easy one:
+
+```sh
+ollama pull gemma4:e2b
+```
+
+**Ollama cannot do step 1.** Whisper models in its registry do not load — Ollama runs
+llama.cpp, which has no Whisper support, and `/v1/audio/transcriptions` answers `HTTP 500`
+with `unknown model architecture`. Clean-up only.
+
+**Watch the model size.** This model is resident and runs on every dictation, so it competes
+with whisper for the same CPU and RAM. On a laptop that struggles with a 4B model, a 7B or
+larger one will make dictation slower than typing. Start small: `gemma4:e2b`, `llama3.2:3b`,
+`qwen2.5:3b`. If clean-up takes longer than a few seconds, the model is too big for the
+machine — polish failing or timing out is not fatal (byovox types the raw transcript instead),
+but you paid the wait for nothing.
+
+If nothing local is fast enough, Ollama's hosted models (`gemma4:31b-cloud` and friends) are
+far better and cost nothing to try — **but your transcripts leave the machine.** `byovox setup`
+lists them after the local ones, marked *hosted by ollama.com*, and writes one only after a
+question whose default is no. Or say so deliberately in the config:
+
+```toml
+[polish]
+base_url = "http://127.0.0.1:11434/v1"
+model    = "gemma4:31b-cloud"          # proxied by Ollama to ollama.com
+```
+
+Only the transcript is sent, never audio, and only when polish is enabled. If that is not a
+trade you want, keep a small local model or set `polish.enabled = false`.
+
+### 4. ffmpeg (optional, and usually unnecessary)
+
+**byovox does not need ffmpeg.** It sends 16 kHz mono WAV, which whisper.cpp reads directly.
+You need it only if you pass `--convert` to `whisper-server` to feed it other audio formats
+yourself — and if you pass `--convert` without it, the server exits at startup with
+`ffmpeg is not found`.
+
+If you do want it: download a Windows build from
+[gyan.dev](https://www.gyan.dev/ffmpeg/builds/) or
+[BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds/releases), unzip it, and rename the
+versioned folder to something stable such as `C:\tools\ffmpeg` so an upgrade does not change
+the path.
+
+**Do not add it to `PATH` with `setx PATH "%PATH%;C:\tools\ffmpeg\bin"`.** In `cmd`, `%PATH%`
+is the *system* PATH and the *user* PATH already joined, and `setx` writes the result to the
+user PATH — so every system entry gets copied into your user PATH, permanently duplicated and
+frozen at today's value. `setx` also truncates anything past 1024 characters, which silently
+destroys a long PATH.
+
+Use the editor instead: **Win+R → `rundll32 sysdm.cpl,EditEnvironmentVariables`** → under
+*User variables* select `Path` → *Edit* → *New* → `C:\tools\ffmpeg\bin`. Or from PowerShell,
+which touches only the user PATH:
+
+```powershell
+$user = [Environment]::GetEnvironmentVariable('Path','User')
+[Environment]::SetEnvironmentVariable('Path', "$user;C:\tools\ffmpeg\bin", 'User')
+```
+
+Either way, open a new terminal before `where ffmpeg` will find it — a running shell keeps the
+PATH it started with.
+
+## Starting everything at login
+
+Two separate things have to come up, and byovox does not manage the server.
+
+**byovox** has it built in:
+
+```sh
+byovox autostart --enable
+```
+
+**whisper-server** does not. A shortcut in the Startup folder shows a console window at every
+logon; a one-line VBScript launcher starts it hidden. Save this as
+`C:\tools\whisper\start-hidden.vbs`:
+
+```vbscript
+CreateObject("WScript.Shell").Run _
+  """C:\tools\whisper\whisper-server.exe"" -m ""C:\tools\whisper\ggml-large-v3-turbo.bin"" " & _
+  "--host 127.0.0.1 --port 8770 -l auto --inference-path /v1/audio/transcriptions", 0, False
+```
+
+The `0` is what hides the window. Then press **Win+R**, run `shell:startup`, and put a shortcut
+to that `.vbs` in the folder that opens. Remove the shortcut to undo it.
+
+The model takes a few seconds to load, so the server may not be ready for a dictation in the
+first moments after logon. byovox does not care: it starts, and the first press once the server
+is up works normally. `byovox check` is how you confirm both halves are running.
+
+To watch it start, run the `whisper-server` command in a terminal by hand instead — the banner
+ends with `whisper server listening at http://127.0.0.1:8770`.
+
 ## Autostart
 
 `byovox autostart --enable` writes the quoted path of `byovox-daemon.exe` — the binary beside

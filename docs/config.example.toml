@@ -23,7 +23,9 @@
 # https:// — note that byovox verifies against the bundled Mozilla roots, not the Windows
 # certificate store, so a privately-signed certificate will not be accepted.
 # Required: byovox refuses to start until this names your server, e.g.
-# "http://127.0.0.1:8770/v1" for a whisper.cpp server on this machine.
+# "http://127.0.0.1:8770/v1" for a whisper.cpp server on this machine. Ollama cannot serve
+# this stage — its runner refuses whisper models and answers HTTP 500 — but `byovox setup`
+# finds a local Ollama by itself and offers the models it has pulled for [polish] below.
 base_url = ""
 # Sent as the `model` field. Self-hosted whisper.cpp ignores it; hosted APIs need a real name.
 model = "whisper-1"
@@ -121,6 +123,8 @@ prompt_file = ""
 timeout_s = 20
 
 [hotkey]
+# `byovox hotkey --set <key>` changes this line without an editor, and refuses a key another
+# application has already registered system-wide; `byovox hotkey --list` names every one.
 # One W3C UI Events `code` name — bare modifiers work on Windows and on Linux via evdev —
 # or a chord: Modifier+...+Key, e.g. "ControlLeft+ShiftLeft+Z". Every element but the last
 # must be held down; the last one triggers on top of them. A held element still does whatever

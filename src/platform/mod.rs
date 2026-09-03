@@ -31,6 +31,36 @@ pub fn detect(cfg: &Config) -> Result<Backends> {
     platform_detect(cfg, mode)
 }
 
+/// Whether a hotkey is free for byovox to take, as far as the platform will say.
+pub enum Availability {
+    /// Nobody has claimed it.
+    Free,
+    /// Another application holds it system-wide.
+    Taken,
+    /// Nothing could be learned, and why — the ordinary answer for a bare modifier, and the
+    /// only answer at all on a platform with no way to ask.
+    Unknown(String),
+}
+
+/// Ask the platform whether `chord` is already somebody else's hotkey.
+///
+/// Advisory in both directions, which is why `byovox hotkey` prints the reason rather than
+/// treating this as a verdict: see `windows::hotkey::claimed_elsewhere` for what it can and
+/// cannot see.
+pub fn hotkey_availability(chord: &crate::hotkey::Chord) -> Availability {
+    #[cfg(windows)]
+    match windows::hotkey::claimed_elsewhere(chord) {
+        Ok(true) => Availability::Taken,
+        Ok(false) => Availability::Free,
+        Err(why) => Availability::Unknown(why),
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = chord;
+        Availability::Unknown("this platform has no way to ask".into())
+    }
+}
+
 /// Every refusal `detect` makes before it opens a device, and the inject mode it settled on.
 ///
 /// Split out so the CLI can make the same refusals on the console it was typed into, before it
@@ -39,9 +69,24 @@ pub fn detect(cfg: &Config) -> Result<Backends> {
 /// spawner between the daemon and any device.
 pub fn validate(cfg: &Config) -> Result<InjectMode> {
     // A chord or a single name; the cancel key is one name, pressed on its own.
-    parse_chord(&cfg.hotkey.key).map_err(|e| anyhow::anyhow!("hotkey.key: {e}"))?;
+    let chord = parse_chord(&cfg.hotkey.key).map_err(|e| anyhow::anyhow!("hotkey.key: {e}"))?;
     validate_key_name(&cfg.hotkey.cancel_key)
         .map_err(|e| anyhow::anyhow!("hotkey.cancel_key: {e}"))?;
+    // The cancel key must differ from every element of the hotkey: while a chord is held its
+    // branch wins, so cancel could never fire. A rule about names, so it is made here for
+    // every platform — `byovox hotkey` refuses it on Linux and macOS too, where the Windows
+    // backend below is not compiled to say so.
+    let cancel = &cfg.hotkey.cancel_key;
+    if chord.trigger == *cancel || chord.modifiers.iter().any(|m| m == cancel) {
+        anyhow::bail!(if chord.modifiers.is_empty() {
+            format!(
+                "hotkey and cancel key are both `{}`; they must differ",
+                cfg.hotkey.key
+            )
+        } else {
+            format!("cancel key `{cancel}` is part of the hotkey `{chord}`; they must differ")
+        });
+    }
     let mode = InjectMode::parse(&cfg.inject.mode).ok_or_else(|| {
         anyhow::anyhow!(
             "inject.mode `{}`: expected auto | type | paste | clipboard-only",

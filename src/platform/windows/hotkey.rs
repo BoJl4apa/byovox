@@ -10,10 +10,11 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Mutex, OnceLock};
 
-use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{ERROR_HOTKEY_ALREADY_REGISTERED, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
-    VIRTUAL_KEY,
+    GetAsyncKeyState, HOT_KEY_MODIFIERS, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+    KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, RegisterHotKey, SendInput,
+    UnregisterHotKey, VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, KBDLLHOOKSTRUCT, MSG, SetWindowsHookExW,
@@ -125,6 +126,64 @@ pub struct HookHotkey {
     /// The chord's virtual keys: its modifiers in order, then the trigger.
     vks: Vec<u32>,
     cancel_vk: u32,
+}
+
+/// The `MOD_` flag a chord element maps onto as a `RegisterHotKey` modifier, or `None` for a
+/// key that is not one. Left and right collapse together: `RegisterHotKey` has no way to say
+/// which Ctrl, so a probe for `ControlLeft+Z` answers for `ControlRight+Z` as well.
+fn hot_key_modifier(name: &str) -> Option<HOT_KEY_MODIFIERS> {
+    Some(match name {
+        "ControlLeft" | "ControlRight" => MOD_CONTROL,
+        "AltLeft" | "AltRight" => MOD_ALT,
+        "ShiftLeft" | "ShiftRight" => MOD_SHIFT,
+        "MetaLeft" | "MetaRight" => MOD_WIN,
+        _ => return None,
+    })
+}
+
+/// The id the probe registers under. Scoped to this thread, held for the length of one call.
+const PROBE_ID: i32 = 0x0B70;
+
+/// Whether another application has already claimed `chord` as a system-wide hotkey, or `Err`
+/// with the reason nothing could be learned.
+///
+/// Asked by registering the chord and letting go of it again: `RegisterHotKey` answers
+/// `ERROR_HOTKEY_ALREADY_REGISTERED` when somebody else holds it, and that is the only
+/// question Windows will answer about a hotkey it did not give you.
+///
+/// Two limits, both structural, and `byovox hotkey` prints them rather than implying a
+/// certainty this does not have. It sees only `RegisterHotKey` users: an application that
+/// watches the keyboard through a hook of its own — AutoHotkey, Discord, a game overlay,
+/// byovox itself — claims nothing and is invisible here. And a `false` is a fact about this
+/// moment only, since the owner of a hotkey may not be running yet.
+pub fn claimed_elsewhere(chord: &Chord) -> Result<bool, String> {
+    if hot_key_modifier(&chord.trigger).is_some() {
+        return Err(format!(
+            "`{}` is a bare modifier, which Windows does not register as a hotkey at all — \
+             nothing can claim it, and nothing can conflict with it",
+            chord.trigger
+        ));
+    }
+    let mut flags = HOT_KEY_MODIFIERS(0);
+    for m in &chord.modifiers {
+        flags |= hot_key_modifier(m)
+            .ok_or_else(|| format!("`{m}` is not a modifier Windows can register a hotkey with"))?;
+    }
+    let vk =
+        vk_for(&chord.trigger).ok_or_else(|| format!("no virtual key for `{}`", chord.trigger))?;
+    // SAFETY: a plain registration on this thread, undone before returning. `None` for the
+    // window means the message would come to this thread's queue, which nothing reads: the
+    // hotkey exists for as long as it takes to learn whether it could be created.
+    unsafe {
+        match RegisterHotKey(None, PROBE_ID, flags, vk) {
+            Ok(()) => {
+                let _ = UnregisterHotKey(None, PROBE_ID);
+                Ok(false)
+            }
+            Err(e) if e.code() == ERROR_HOTKEY_ALREADY_REGISTERED.to_hresult() => Ok(true),
+            Err(e) => Err(format!("RegisterHotKey: {e}")),
+        }
+    }
 }
 
 impl HookHotkey {
