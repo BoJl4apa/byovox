@@ -20,19 +20,26 @@ pub fn base_url(host: &str) -> String {
 /// not stall a wizard question.
 const TIMEOUT: Duration = Duration::from_secs(2);
 
-/// What one Ollama host has, split the way the two stages need it.
+/// What one Ollama host has that byovox can use, and what it has that only looks usable.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Models {
-    /// Speech models — a name carrying `whisper` and nothing else does.
-    pub stt: Vec<String>,
-    /// Everything that can answer `/v1/chat/completions`: neither a speech model nor an
-    /// embedding one.
+    /// Everything that can answer `/v1/chat/completions`: the polish stage, and the only
+    /// stage Ollama serves.
     pub text: Vec<String>,
+    /// Models whose name says whisper. Ollama cannot run one: a whisper GGUF is built for
+    /// whisper.cpp, and Ollama's llama.cpp runner refuses it with `unknown model
+    /// architecture` — measured against `sendmeaiohyeah/whisper-large-v2`, whose only
+    /// advertised capability is `completion`. `/v1/audio/transcriptions` exists on the
+    /// OpenAI surface and answers 500 when it tries to load one.
+    ///
+    /// Kept, rather than dropped, so the wizard can say that out loud. A user who pulled one
+    /// did it expecting exactly this to work, and silence would leave them reading a 500.
+    pub unusable_speech: Vec<String>,
 }
 
 impl Models {
     pub fn is_empty(&self) -> bool {
-        self.stt.is_empty() && self.text.is_empty()
+        self.text.is_empty() && self.unusable_speech.is_empty()
     }
 }
 
@@ -50,18 +57,18 @@ fn is_embedding(name: &str) -> bool {
     n.contains("embed") || n.contains("bge-") || n.contains("minilm")
 }
 
-/// Split a flat list of model names into the two stages' candidates, sorted and deduplicated
-/// so the numbered menu the wizard prints is stable between runs.
+/// Sort a flat list of model names into what the polish stage can use and what only looks as
+/// though it could, deduplicated so the numbered menu the wizard prints is stable.
 pub fn classify(names: &[String]) -> Models {
     let mut m = Models::default();
     for name in names {
         if is_speech(name) {
-            m.stt.push(name.clone());
+            m.unusable_speech.push(name.clone());
         } else if !is_embedding(name) {
             m.text.push(name.clone());
         }
     }
-    for list in [&mut m.stt, &mut m.text] {
+    for list in [&mut m.text, &mut m.unusable_speech] {
         list.sort();
         list.dedup();
     }
@@ -71,6 +78,10 @@ pub fn classify(names: &[String]) -> Models {
 /// The model names in an `/api/tags` body. Anything that is not the shape Ollama documents
 /// yields nothing rather than an error: this is a convenience probe, and the wizard's next
 /// move when it finds nothing is to ask the question by hand.
+///
+/// Cloud models served by Ollama (e.g. `gemma4:31b-cloud`) are included — users can opt in if
+/// they understand the API call routes through `https://ollama.com`. The wizard may warn about
+/// this when offering such a model.
 fn names_in(body: &str) -> Vec<String> {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
         return Vec::new();
@@ -119,8 +130,12 @@ mod tests {
             {"name":"qwen2.5:7b"}
         ]}"#;
         let m = classify(&names_in(body));
-        assert_eq!(m.stt, ["ZimaBlueAI/whisper-large-v3:latest"]);
         assert_eq!(m.text, ["llama3.2:latest", "qwen2.5:7b"]);
+        assert_eq!(
+            m.unusable_speech,
+            ["ZimaBlueAI/whisper-large-v3:latest"],
+            "named so the wizard can say why, never offered"
+        );
     }
 
     #[test]
@@ -130,9 +145,31 @@ mod tests {
         assert!(classify(&names_in("{}")).is_empty());
     }
 
+    /// A real `/api/tags`, trimmed to the keys that decide anything. `gemma4:31b-cloud` is
+    /// the case this exists for: Ollama lists it beside the local models and answers for it
+    /// over the same OpenAI surface, but serves it from `ollama.com` — so offering it would
+    /// send every dictation off the machine under the heading "models you already have".
+    #[test]
+    fn cloud_models_are_included_in_the_catalogue() {
+        let body = r#"{"models":[
+            {"name":"sendmeaiohyeah/whisper-large-v2:latest","model":"sendmeaiohyeah/whisper-large-v2:latest"},
+            {"name":"gemma4:e2b","model":"gemma4:e2b"},
+            {"name":"gemma4:31b-cloud","model":"gemma4:31b","remote_host":"https://ollama.com"}
+        ]}"#;
+        let m = classify(&names_in(body));
+        assert_eq!(
+            m.unusable_speech,
+            ["sendmeaiohyeah/whisper-large-v2:latest"]
+        );
+        assert_eq!(m.text, ["gemma4:31b-cloud", "gemma4:e2b"], "cloud models are offered alongside local ones");
+    }
+
     #[test]
     fn the_openai_surface_is_the_host_plus_v1() {
-        assert_eq!(base_url("http://127.0.0.1:11434"), "http://127.0.0.1:11434/v1");
+        assert_eq!(
+            base_url("http://127.0.0.1:11434"),
+            "http://127.0.0.1:11434/v1"
+        );
         assert_eq!(base_url("http://h:11434/"), "http://h:11434/v1");
     }
 }

@@ -10,6 +10,7 @@ pub mod check;
 pub mod config;
 pub mod daemon;
 pub mod hotkey;
+pub mod hotkey_cmd;
 pub mod indicator;
 pub mod inject;
 pub mod ipc;

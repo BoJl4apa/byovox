@@ -124,6 +124,8 @@ prompt_file = ""
 timeout_s = 20
 
 [hotkey]
+# `byovox hotkey --set <key>` changes this line without an editor, and refuses a key another
+# application has already registered system-wide; `byovox hotkey --list` names every one.
 # One W3C UI Events `code` name — bare modifiers work on Windows and on Linux via evdev —
 # or a chord: Modifier+...+Key, e.g. "ControlLeft+ShiftLeft+Z". Every element but the last
 # must be held down; the last one triggers on top of them. A held element still does whatever

@@ -31,6 +31,36 @@ pub fn detect(cfg: &Config) -> Result<Backends> {
     platform_detect(cfg, mode)
 }
 
+/// Whether a hotkey is free for byovox to take, as far as the platform will say.
+pub enum Availability {
+    /// Nobody has claimed it.
+    Free,
+    /// Another application holds it system-wide.
+    Taken,
+    /// Nothing could be learned, and why — the ordinary answer for a bare modifier, and the
+    /// only answer at all on a platform with no way to ask.
+    Unknown(String),
+}
+
+/// Ask the platform whether `chord` is already somebody else's hotkey.
+///
+/// Advisory in both directions, which is why `byovox hotkey` prints the reason rather than
+/// treating this as a verdict: see `windows::hotkey::claimed_elsewhere` for what it can and
+/// cannot see.
+pub fn hotkey_availability(chord: &crate::hotkey::Chord) -> Availability {
+    #[cfg(windows)]
+    match windows::hotkey::claimed_elsewhere(chord) {
+        Ok(true) => Availability::Taken,
+        Ok(false) => Availability::Free,
+        Err(why) => Availability::Unknown(why),
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = chord;
+        Availability::Unknown("this platform has no way to ask".into())
+    }
+}
+
 /// Every refusal `detect` makes before it opens a device, and the inject mode it settled on.
 ///
 /// Split out so the CLI can make the same refusals on the console it was typed into, before it

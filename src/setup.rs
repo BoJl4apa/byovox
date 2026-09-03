@@ -102,6 +102,24 @@ fn place(out: &mut Vec<String>, entries: &[String]) {
     out.splice(at..at, entries.iter().cloned());
 }
 
+/// `text` with `section.key` set, wherever that has to happen: replaced in place when the key
+/// is there, added to the section when it is not, and given a new section when there is none.
+///
+/// `set_key` alone is right for the example file, which spells out every key at its default.
+/// A file a user has lived in is not that: every key is optional, so `byovox config --init`
+/// output that has had its `[hotkey]` paragraph deleted is a perfectly good config, and
+/// `byovox hotkey --set` must still be able to change the binding in it.
+pub fn set_or_add_key(text: &str, section: &str, key: &str, value: &str) -> String {
+    if let Ok(out) = set_key(text, section, key, value) {
+        return out;
+    }
+    let entry = format!("{key} = {value}");
+    if let Ok(out) = append_to_section(text, section, std::slice::from_ref(&entry)) {
+        return out;
+    }
+    format!("{}\n\n[{section}]\n{entry}\n", text.trim_end())
+}
+
 /// LF, and a trailing newline: `.gitattributes` pins the example file to LF, and `lines`
 /// dropped the last one.
 fn join(lines: Vec<String>) -> String {
@@ -612,24 +630,28 @@ fn ask_stt(p: &mut dyn Prompter, probe: &mut dyn Probe, a: &mut Answers) -> Resu
     let local = probe.ollama().unwrap_or_default();
     loop {
         println!("\nWhere is your speech-to-text server?");
-        match offer_ollama(p, "speech-to-text", &local.stt)? {
-            Some((url, model)) => {
-                a.stt_base_url = url;
-                a.stt_model = model;
-                a.stt_api_key_env = String::new();
-                a.stt_api_key_file = String::new();
-            }
-            None => {
-                a.stt_base_url = ask(
-                    p,
-                    "  OpenAI-compatible base URL, e.g. http://127.0.0.1:8770/v1 (required)",
-                    parse_base_url,
-                )?;
-                let (env, file) = ask_token(p)?;
-                a.stt_api_key_env = env;
-                a.stt_api_key_file = file;
-            }
+        // Ollama is deliberately not offered here, however many whisper models it lists.
+        if !local.unusable_speech.is_empty() {
+            println!(
+                "  Note: Ollama has {}, which it cannot run — a whisper",
+                local.unusable_speech.join(", ")
+            );
+            println!("  model is built for whisper.cpp, and Ollama's runner refuses it with");
+            println!("  `unknown model architecture`. Pointing byovox at it gives HTTP 500.");
+            println!("  Speech needs its own server, e.g. whisper.cpp's whisper-server:");
+            println!(
+                "    whisper-server -m ggml-large-v3-turbo.bin --host 127.0.0.1 --port 8770 \
+                 -l auto --inference-path /v1/audio/transcriptions"
+            );
         }
+        a.stt_base_url = ask(
+            p,
+            "  OpenAI-compatible base URL, e.g. http://127.0.0.1:8770/v1 (required)",
+            parse_base_url,
+        )?;
+        let (env, file) = ask_token(p)?;
+        a.stt_api_key_env = env;
+        a.stt_api_key_file = file;
         println!("  transcribing a second of silence...");
         if probe.stt(&partial_config(a)?) {
             return Ok(());
@@ -657,6 +679,14 @@ fn ask_polish(p: &mut dyn Prompter, probe: &mut dyn Probe, a: &mut Answers) -> R
     loop {
         match offer_ollama(p, "text", &local.text)? {
             Some((url, model)) => {
+                if model.ends_with("-cloud") {
+                    println!("  ⚠️ This model is proxied through https://ollama.com — your");
+                    println!("     text goes to their server. Only the transcript text is sent;");
+                    println!("     audio is transcribed locally. Continue? [Y/n]");
+                    if !ask(p, "", |s| parse_yes_no(s, true))? {
+                        continue;
+                    }
+                }
                 a.polish_base_url = url;
                 a.polish_model = model;
                 a.polish_api_key_env = String::new();
@@ -1226,10 +1256,11 @@ mod tests {
             }
         }
 
-        /// A machine with Ollama running and these models pulled.
-        fn with_ollama(mut self, stt: &[&str], text: &[&str]) -> Verdicts {
+        /// A machine with Ollama running: `speech` are whisper models it cannot actually
+        /// run, `text` the ones it can.
+        fn with_ollama(mut self, speech: &[&str], text: &[&str]) -> Verdicts {
             self.installed = Some(ollama::Models {
-                stt: stt.iter().map(|s| s.to_string()).collect(),
+                unusable_speech: speech.iter().map(|s| s.to_string()).collect(),
                 text: text.iter().map(|s| s.to_string()).collect(),
             });
             self
@@ -1250,60 +1281,73 @@ mod tests {
         }
     }
 
-    /// The point of discovery: a user with models already pulled types no URL and no model
-    /// name, and the file still names both.
+    /// The point of discovery: a user with a text model already pulled types no URL and no
+    /// model name for the polish stage.
     #[test]
-    fn a_local_ollama_is_offered_and_the_pick_is_written() {
+    fn a_local_ollama_is_offered_for_polish_and_the_pick_is_written() {
         let mut p = Script::new(&[
-            "",  // use Ollama for speech-to-text? default yes
-            "2", // the second whisper model
-            "",  // polish? default yes
-            "",  // use Ollama for text? default yes
-            "1", // the first text model
-            "",  // hotkey
-            "",  // candidates
-            "",  // by_layout
-            "",  // capture log
+            "http://127.0.0.1:8770/v1", // stt is still a server of its own
+            "",                         // no token
+            "",                         // polish? default yes
+            "",                         // use Ollama for text? default yes
+            "2",                        // the second text model
+            "",                         // hotkey
+            "",                         // candidates
+            "",                         // by_layout
+            "",                         // capture log
         ]);
-        let mut probes = Verdicts::new(&[true], &[true])
-            .with_ollama(&["whisper-small", "whisper-large-v3"], &["llama3.2", "qwen2.5"]);
+        let mut probes = Verdicts::new(&[true], &[true]).with_ollama(&[], &["llama3.2", "qwen2.5"]);
         let a = interview(&mut p, &mut probes).unwrap();
         assert!(p.answers.is_empty(), "the script covered every question");
-        assert_eq!(a.stt_base_url, ollama::base_url(ollama::DEFAULT_HOST));
-        assert_eq!(a.stt_model, "whisper-large-v3");
         assert_eq!(a.polish_base_url, ollama::base_url(ollama::DEFAULT_HOST));
-        assert_eq!(a.polish_model, "llama3.2");
-        assert!(
-            !p.asked.iter().any(|q| q.contains("OpenAI-compatible")),
-            "no URL was typed: {:?}",
-            p.asked
-        );
+        assert_eq!(a.polish_model, "qwen2.5");
         let cfg: Config = toml::from_str(&render(&a).unwrap()).unwrap();
-        assert_eq!(cfg.stt.model, "whisper-large-v3");
-        assert_eq!(cfg.polish.model, "llama3.2");
+        assert_eq!(cfg.polish.model, "qwen2.5");
     }
 
-    /// One model is not a choice, and declining Ollama falls straight through to the
-    /// questions a machine without it gets.
+    /// Ollama cannot run a whisper model: its runner refuses the GGUF and
+    /// `/v1/audio/transcriptions` answers 500. Offering one would write a config whose very
+    /// first dictation fails, so the wizard names the problem and asks for a real server.
     #[test]
-    fn one_model_is_taken_without_asking_and_no_falls_back_to_the_url_question() {
+    fn a_whisper_model_in_ollama_is_never_offered_for_speech() {
         let mut p = Script::new(&[
-            "n", // do not use Ollama for speech-to-text
-            "http://127.0.0.1:8770/v1",
-            "",  // no token
-            "",  // polish? yes
-            "",  // use Ollama for text? yes — and there is only one
-            "",  // hotkey
-            "",  // candidates
-            "",  // by_layout
-            "",  // capture log
+            "http://127.0.0.1:8770/v1", // the URL question is asked, not skipped
+            "",                         // no token
+            "n",                        // polish off
+            "",                         // hotkey
+            "",                         // candidates
+            "",                         // by_layout
+            "",                         // capture log
         ]);
         let mut probes =
-            Verdicts::new(&[true], &[true]).with_ollama(&["whisper-tiny"], &["llama3.2"]);
+            Verdicts::new(&[true], &[]).with_ollama(&["whisper-large-v3"], &["llama3.2"]);
         let a = interview(&mut p, &mut probes).unwrap();
         assert!(p.answers.is_empty(), "the script covered every question");
         assert_eq!(a.stt_base_url, "http://127.0.0.1:8770/v1");
-        assert_eq!(a.stt_model, "", "the example file's own default is kept");
+        assert_eq!(a.stt_model, "", "nothing from Ollama reached stt.model");
+        assert!(
+            !p.asked.iter().any(|q| q.contains("speech-to-text?")),
+            "Ollama was never offered for speech: {:?}",
+            p.asked
+        );
+    }
+
+    /// One model is not a choice: there is nothing to choose between, so it is taken.
+    #[test]
+    fn one_text_model_is_taken_without_asking_which() {
+        let mut p = Script::new(&[
+            "http://127.0.0.1:8770/v1",
+            "", // no token
+            "", // polish? yes
+            "", // use Ollama for text? yes — and there is only one
+            "", // hotkey
+            "", // candidates
+            "", // by_layout
+            "", // capture log
+        ]);
+        let mut probes = Verdicts::new(&[true], &[true]).with_ollama(&[], &["llama3.2"]);
+        let a = interview(&mut p, &mut probes).unwrap();
+        assert!(p.answers.is_empty(), "the script covered every question");
         assert_eq!(a.polish_model, "llama3.2");
         assert!(
             !p.asked.iter().any(|q| q.contains("which one?")),
