@@ -1,7 +1,7 @@
 //! byovox — push-to-talk dictation against a speech-to-text server you run.
 //! CLI entry: subcommand dispatch. The daemon itself lives in `byovox::daemon`.
 
-use byovox::{check, config, daemon, ipc, setup};
+use byovox::{check, config, daemon, hotkey_cmd, ipc, setup};
 // Only the Windows autostart path names it; on other targets the import would be unused.
 #[cfg(windows)]
 use byovox::platform;
@@ -47,6 +47,24 @@ enum Cmd {
         #[arg(long)]
         pause: bool,
     },
+    /// Show or change the push-to-talk hotkey
+    Hotkey {
+        /// Bind this key or chord, e.g. F13 or ControlLeft+ShiftLeft+Z
+        #[arg(long, value_name = "KEY")]
+        set: Option<String>,
+        /// hold = push to talk; toggle = press once to start, once to send
+        #[arg(long, value_name = "MODE")]
+        mode: Option<String>,
+        /// The key that discards a dictation in progress
+        #[arg(long, value_name = "KEY")]
+        cancel: Option<String>,
+        /// Print every key name a binding may use
+        #[arg(long, conflicts_with_all = ["set", "mode", "cancel", "force"])]
+        list: bool,
+        /// Bind the key even though another application has registered it
+        #[arg(long, requires = "set")]
+        force: bool,
+    },
     /// Print the effective configuration, or write the documented default file
     Config {
         /// Write the documented default file instead of printing the effective config
@@ -80,6 +98,13 @@ fn main() {
         Some(Cmd::Last) => last(),
         Some(Cmd::Setup) => setup_cmd(path),
         Some(Cmd::Check { pause }) => check_cmd(path, pause),
+        Some(Cmd::Hotkey {
+            set,
+            mode,
+            cancel,
+            list,
+            force,
+        }) => hotkey_cmd_dispatch(path, set, mode, cancel, list, force),
         Some(Cmd::Config { init }) => config_cmd(path, init),
         Some(Cmd::Autostart { enable, disable }) => autostart(enable, disable, given),
     };
@@ -213,6 +238,31 @@ fn setup_cmd(path: PathBuf) -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// `byovox hotkey`: no flags shows the binding, `--list` names what it may be, and anything
+/// else changes it.
+fn hotkey_cmd_dispatch(
+    path: PathBuf,
+    set: Option<String>,
+    mode: Option<String>,
+    cancel: Option<String>,
+    list: bool,
+    force: bool,
+) -> Result<()> {
+    if list {
+        hotkey_cmd::list();
+        return Ok(());
+    }
+    let change = hotkey_cmd::Change {
+        key: set,
+        mode,
+        cancel,
+    };
+    if change.is_empty() {
+        return hotkey_cmd::show(&path);
+    }
+    hotkey_cmd::set(&path, &change, force)
 }
 
 fn config_cmd(path: PathBuf, init: bool) -> Result<()> {
