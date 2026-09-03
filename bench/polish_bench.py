@@ -12,11 +12,13 @@ so every item runs `--runs` times and passes only when every run matches.
     python bench/polish_bench.py                      # the current prompt, bench/polish_items.jsonl
     python bench/polish_bench.py --candidate rule.txt # the same, with a rule appended to the base
     python bench/polish_bench.py --prompt-file p.txt  # a copy of the prompt living elsewhere (voxdroid)
-    python bench/polish_bench.py --capture %APPDATA%/byovox/data/capture/dictations.jsonl
+    python bench/polish_bench.py --capture <dictations.jsonl>  # byovox's capture log as the baseline
     python bench/polish_bench.py --self-test          # no network: extraction and scoring
 
 Strata: `punctuation` (spoken names to marks, #28), `trap` (words that only sound like one),
 `cleanup` (fillers, repetitions), `injection` (content shaped like an instruction to the model).
+Scoring compares punctuation like any other character — never stripped or normalised away —
+because a punctuation rule is what this bench exists for.
 Exit status is 0 when every selected stratum passes, 1 otherwise, 2 on a setup error. The
 bearer token is never printed. Item text is printed for failures; capture-log rows are
 counted, never printed, unless --verbose.
@@ -28,6 +30,7 @@ import os
 import re
 import sys
 import tomllib
+import unicodedata
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -63,13 +66,15 @@ def compose(base: str, glossary: str, rule: str) -> str:
     g = glossary.strip()
     if not g:
         return base
-    return rule.replace("{}", base.rstrip()).replace("{g}", g)
+    head, tail = rule.split("{}", 1)
+    return head + base.rstrip() + tail.replace("{g}", g, 1)
 
 
 def fold_glossary(stt: dict) -> str:
     """`polish::prompt_for`: the [stt] glossary and every lane's, trimmed, non-empty, joined."""
+    # `SttConfig::by_language` is a BTreeMap: lanes fold in code order, not file order.
     parts = [stt.get("prompt", "")] + [
-        lane.get("prompt", "") for lane in stt.get("by_language", {}).values()
+        lane.get("prompt", "") for _, lane in sorted(stt.get("by_language", {}).items())
     ]
     return "\n".join(p.strip() for p in parts if p.strip())
 
@@ -150,7 +155,12 @@ def polish(url: str, model: str, token: str | None, system: str, raw: str, timeo
         raise RuntimeError(f"polish HTTP {e.code}") from None
     except (urllib.error.URLError, TimeoutError) as e:
         raise RuntimeError(f"polish transport: {e}") from None
-    content = reply.get("choices", [{}])[0].get("message", {}).get("content")
+    except ValueError as e:
+        raise RuntimeError(f"polish JSON: {e}") from None
+    try:
+        content = reply["choices"][0]["message"]["content"]
+    except (LookupError, TypeError):
+        raise RuntimeError("polish response has no content field") from None
     if not isinstance(content, str) or not content.strip():
         raise RuntimeError("polish returned empty content")
     return content.strip()
@@ -159,12 +169,20 @@ def polish(url: str, model: str, token: str | None, system: str, raw: str, timeo
 # ---------------------------------------------------------------- scoring
 
 
+def forbidden(c: str) -> bool:
+    """`pipeline::is_forbidden`: every control character (Unicode Cc) and the bidi overrides
+    and isolates; the marks and joiners Hebrew and emoji need are content and stay."""
+    return unicodedata.category(c) == "Cc" or "\u202a" <= c <= "\u202e" or "\u2066" <= c <= "\u2069"
+
+
 def typed(text: str) -> str:
-    """What the pipeline types: whitespace collapsed, exactly one terminal period popped
-    (an ellipsis stays), the way `Pipeline::finish` does before injecting."""
-    t = " ".join(text.split())
+    """What the pipeline types, step for step (`sanitize` then the tail of `Pipeline::finish`):
+    every newline becomes a space, forbidden characters go, the ends are trimmed, exactly one
+    terminal period is popped (an ellipsis stays) and the space it may expose goes with it.
+    Nothing else is normalised: a doubled space in the reply is a doubled space typed."""
+    t = "".join(" " if c == "\n" else c for c in text if c == "\n" or not forbidden(c)).strip()
     if t.endswith(".") and not t.endswith(".."):
-        t = t[:-1]
+        t = t[:-1].rstrip()
     return t
 
 
@@ -219,6 +237,8 @@ def load_capture(path: Path) -> list[dict]:
 
 # ---------------------------------------------------------------- the two runs
 
+SUMMARY: dict[str, dict[str, tuple[int, int]]] = {}
+
 
 def run_items(items: list[dict], ask, runs: int, label: str, verbose: bool) -> bool:
     print(f"\n== {label}: {len(items)} items x {runs} runs")
@@ -243,13 +263,17 @@ def run_items(items: list[dict], ask, runs: int, label: str, verbose: bool) -> b
                 if typed(o) != typed(it["expected"]) or verbose:
                     print(f"       got:      {typed(o)}")
     all_ok = True
+    totals = {}
     for s, results in by_stratum.items():
         if not results:
             continue
         good = sum(results)
+        totals[s] = (good, len(results))
         state = "pass" if good == len(results) else "FAIL"
         all_ok &= good == len(results)
         print(f"  {s:<11} {good}/{len(results)} items  {state}")
+    print(f"  total       {sum(g for g, _ in totals.values())}/{len(items)} items  {'pass' if all_ok else 'FAIL'}")
+    SUMMARY[label] = totals
     return all_ok
 
 
@@ -289,9 +313,16 @@ def self_test() -> None:
     assert with_g.startswith(base.rstrip() + "\n\n9. ") and with_g.endswith("\nGlossary: X"), with_g[-40:]
     assert fold_glossary({"prompt": " A ", "by_language": {"he": {"prompt": "B"}, "ru": {"prompt": ""}}}) == "A\nB"
     assert fold_glossary({}) == ""
-    assert typed("  Hello,   world. ") == "Hello, world"
+    assert typed("  Hello, world. ") == "Hello, world"
+    assert typed("Hello .") == "Hello", "the pop must not expose a trailing space"
     assert typed("Wait...") == "Wait..."
     assert typed("Really?") == "Really?"
+    assert typed("1. a\n2. b\n") == "1. a 2. b"
+    assert typed("a\tb\u202ec\u2066d") == "abcd", "control and bidi-override characters go, as sanitize drops them"
+    assert typed("Hello,  world") == "Hello,  world", "a doubled space is typed as is"
+    assert typed("\u05e9\u05dc\u05d5\u05dd\u200f") == "\u05e9\u05dc\u05d5\u05dd\u200f", "the bidi mark is content"
+    assert compose("Base with {g} literal.", "G", rule) == "Base with {g} literal.\n\n" + rule[4:].replace("{g}", "G", 1)
+    assert fold_glossary({"by_language": {"ru": {"prompt": "R"}, "he": {"prompt": "H"}}}) == "H\nR", "lanes fold in code order"
     assert levenshtein("kitten", "sitting") == 3 and levenshtein("", "ab") == 2
     assert edit_rate("Hello world.", "Hello world") == 0.0
     assert abs(edit_rate("Hello there", "Hello world") - 5 / 11) < 1e-9
@@ -314,7 +345,7 @@ def main() -> int:
     ap.add_argument("--capture", type=Path, help="a byovox dictations.jsonl; its polished column is the baseline")
     ap.add_argument("--candidate", type=Path, help="a rule appended to the base prompt; scored beside the baseline")
     ap.add_argument("--prompt-file", type=Path, help="a replacement base prompt, e.g. voxdroid's copy; the glossary rule is still composed on top")
-    ap.add_argument("--runs", type=int, default=3)
+    ap.add_argument("--runs", type=int, default=3, help="passes per item; an item passes only when every run matches")
     ap.add_argument("--only", choices=STRATA)
     ap.add_argument("--show-prompt", action="store_true", help="print the composed system prompt(s) and exit")
     ap.add_argument("--verbose", action="store_true", help="print every output, and capture rows that disagree")
@@ -335,18 +366,29 @@ def main() -> int:
         return 2
     url = polish_cfg["base_url"].rstrip("/") + "/chat/completions"
     token = resolve_token(polish_cfg.get("api_key_env", ""), polish_cfg.get("api_key_file", ""))
-    timeout = float(polish_cfg.get("timeout_s", 30))
-    candidate = a.candidate.read_text(encoding="utf-8") if a.candidate else None
-    prompts = [("baseline", system_prompt_for(cfg, None, a.prompt_file))]
-    if candidate:
-        prompts.append(("candidate", system_prompt_for(cfg, candidate, a.prompt_file)))
+    timeout = float(polish_cfg.get("timeout_s", 20))  # PolishConfig's default
+    if a.runs < 1:
+        print("--runs must be at least 1", file=sys.stderr)
+        return 2
+    try:
+        candidate = a.candidate.read_text(encoding="utf-8") if a.candidate else None
+        prompts = [("baseline", system_prompt_for(cfg, None, a.prompt_file))]
+        if candidate:
+            prompts.append(("candidate", system_prompt_for(cfg, candidate, a.prompt_file)))
+    except OSError as e:
+        print(f"prompt: {e}", file=sys.stderr)
+        return 2
     if a.show_prompt:
         for label, p in prompts:
             print(f"---- {label}\n{p}")
         return 0
 
-    items = load_items(a.items, a.only)
-    rows = load_capture(a.capture) if a.capture else []
+    try:
+        items = load_items(a.items, a.only)
+        rows = load_capture(a.capture) if a.capture else []
+    except OSError as e:
+        print(f"items: {e}", file=sys.stderr)
+        return 2
     print(f"polish {polish_cfg['model']} at {polish_cfg['base_url']}; config {a.config}")
     verdict = True
     for label, system in prompts:
@@ -357,6 +399,12 @@ def main() -> int:
         # With a candidate the exit status is the candidate's; alone, the baseline's.
         if label == prompts[-1][0]:
             verdict = ok
+    if len(prompts) == 2 and SUMMARY.get("baseline") and SUMMARY.get("candidate"):
+        print("\n== candidate vs baseline")
+        for s in STRATA:
+            if s in SUMMARY["baseline"]:
+                b, c = SUMMARY["baseline"][s][0], SUMMARY["candidate"][s][0]
+                print(f"  {s:<11} {b} -> {c} of {SUMMARY['baseline'][s][1]}  {'+' if c > b else '-' if c < b else '='}{abs(c - b)}")
     return 0 if verdict else 1
 
 
