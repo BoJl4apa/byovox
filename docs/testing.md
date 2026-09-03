@@ -37,6 +37,7 @@ and an unmapped layout routes to `language.default`, so every row below would lo
 - [ ] polish endpoint down (wrong port): raw transcript inserted, error cue, WARN in log
 - [ ] `inject.mode = "type"`, focus a chat box that sends on Enter, dictate "first foo, second bar": one *unsent* message reading `1. foo 2. bar` — nothing is submitted, no stray leading or trailing space
 - [ ] dictate a plain sentence: the text lands with no final period; dictate a question: the `?` stays
+- [ ] dictate "rename it to training period strip" and read the raw transcript in the log first: **when whisper wrote the words undotted**, `training.strip` is typed, not the three words; dictate "the Jurassic period ended" → `period` stays a word. When whisper dotted them itself (`training.period.strip`) nothing is converted and the dotted form is typed — that is the known limit, not a regression (#28)
 - [ ] with `[stt.by_language.he]` configured and a Hebrew layout: `byovox check` shows an `ok stt[he]` row; dictate "אני עוד רבע שעה אצלו" → `רבע שעה` (the default lane types `רבשה`); dictate one word ("תודה") → it still lands, and the log shows `stt lane returned nothing; retrying the default endpoint`
 - [ ] with a glossary in `stt.prompt`: dictate "שמנו את Tailscale מאחורי אותו proxy" under a Hebrew layout → `Tailscale` lands in Latin; dictate "ראיתי אריה בגן החיות" → `אריה` stays Hebrew
 
@@ -60,7 +61,7 @@ and an unmapped layout routes to `language.default`, so every row below would lo
 - [ ] `byovox autostart --enable`, sign out/in: daemon running; `--disable` removes it
 - [ ] unknown key in config: exit 2 naming the key, from the bare `byovox` as well as from `byovox run` — and no daemon left behind
 - [ ] `byovox setup` on a fresh config: probes pass, file written with comments intact, `check` passes
-- [ ] `python bench/polish_bench.py` (`python3` on Linux and macOS): the `trap` and `cleanup` strata pass on every run; `punctuation` fails until #28 lands and `injection` until the prompt stops obeying an imperative dictation, each naming its items — a rule change is scored here (`--candidate <file>`, `--prompt-file <file>` for a copy), never eyeballed
+- [ ] `python bench/polish_bench.py` (`python3` on Linux and macOS): the `trap` and `cleanup` strata pass on every run; `injection` fails until the prompt stops obeying an imperative dictation (#38), and `punctuation` on `p-predotted` alone — whisper's pre-dotted identifier form, still open on #28 — each naming its items — a rule change is scored here (`--candidate <file>`, `--prompt-file <file>` for a copy), never eyeballed
 - [ ] with a Bluetooth headset connected as the default recording device and `capture.device = "Microphone Array"`: `check`'s `mic` row names the array at 48 kHz, and a dictation leaves music in the headphones untouched (no pitch jump on press or release); a name that matches nothing → exit 2 listing the devices
 
 ## Last run
