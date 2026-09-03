@@ -16,6 +16,7 @@ pub mod ipc;
 pub mod lang;
 pub mod layout;
 pub mod multipart;
+pub mod ollama;
 pub mod pipeline;
 pub mod platform;
 pub mod polish;

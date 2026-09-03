@@ -15,6 +15,7 @@ use crate::check;
 use crate::config::{self, Config};
 use crate::hotkey::parse_chord;
 use crate::lang::Lang;
+use crate::ollama;
 
 /// The section header a line opens, if it opens one: `[polish]` → `polish`.
 fn section_of(line: &str) -> Option<&str> {
@@ -130,7 +131,7 @@ const DEFAULT_KEY_FILE: &str = "~/.config/byovox/env";
 /// deliberately not a thing, because there is no answer it could invent for `stt.base_url`.
 const NO_TERMINAL: &str = "setup needs a terminal — run `byovox config --init` and edit the file";
 
-const ABORTED: &str = "aborted — nothing was written";
+const ABORTED: &str = "aborted";
 
 /// One question, one line of input: the wizard's whole input surface, so the flow can be
 /// walked in a test with scripted answers instead of a keyboard.
@@ -168,6 +169,12 @@ pub trait Probe {
     fn stt(&mut self, cfg: &Config) -> bool;
     /// Print the `polish` row for this config; `true` when it passed.
     fn polish(&mut self, cfg: &Config) -> bool;
+    /// What Ollama on this machine has installed, or `None` when it is not running. Default
+    /// `None` so a scripted test never reaches for a socket: discovery is an offer the wizard
+    /// makes, and a run without it just asks the questions by hand.
+    fn ollama(&mut self) -> Option<ollama::Models> {
+        None
+    }
 }
 
 /// The stages themselves.
@@ -180,13 +187,19 @@ impl Probe for Stages {
     fn polish(&mut self, cfg: &Config) -> bool {
         check::probe_polish(cfg)
     }
+    fn ollama(&mut self) -> Option<ollama::Models> {
+        ollama::discover(ollama::DEFAULT_HOST).filter(|m| !m.is_empty())
+    }
 }
 
 /// Every question the wizard asks, in the order it asks them. Everything else in the config
 /// file keeps the default the example documents.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Answers {
     pub stt_base_url: String,
+    /// Sent as the `model` field. Empty keeps the example file's `whisper-1`, which is what a
+    /// whisper.cpp server ignores anyway; an Ollama pick puts a real name here.
+    pub stt_model: String,
     pub stt_api_key_env: String,
     pub stt_api_key_file: String,
     pub polish_enabled: bool,
@@ -198,6 +211,29 @@ pub struct Answers {
     pub candidates: Vec<String>,
     pub by_layout: Vec<(String, String)>,
     pub capture_log: bool,
+}
+
+/// The state of an interview nobody has answered anything in yet — which is also what gets
+/// written when a run ends early, so every unanswered question here holds the value the
+/// example file already documents rather than an empty one that would not load.
+impl Default for Answers {
+    fn default() -> Self {
+        Self {
+            stt_base_url: String::new(),
+            stt_model: String::new(),
+            stt_api_key_env: String::new(),
+            stt_api_key_file: String::new(),
+            polish_enabled: true,
+            polish_base_url: String::new(),
+            polish_model: String::new(),
+            polish_api_key_env: String::new(),
+            polish_api_key_file: String::new(),
+            hotkey_key: "ControlRight".into(),
+            candidates: Vec::new(),
+            by_layout: Vec::new(),
+            capture_log: false,
+        }
+    }
 }
 
 /// Every `[section]`, key and rendered value the answers set. The single list of keys the
@@ -213,6 +249,11 @@ fn edits(a: &Answers) -> Vec<(&'static str, &'static str, String)> {
         ("hotkey", "key", toml_string(&a.hotkey_key)),
         ("capture_log", "enabled", a.capture_log.to_string()),
     ];
+    // Only when a model was picked: the empty answer means nobody was asked, and the example
+    // file's own `whisper-1` is the right value then.
+    if !a.stt_model.is_empty() {
+        v.push(("stt", "model", toml_string(&a.stt_model)));
+    }
     // Nothing was asked about a gateway that will not be called, so its keys keep the empty
     // defaults the example already documents.
     if a.polish_enabled {
@@ -520,17 +561,75 @@ fn partial_config(a: &Answers) -> Result<Config> {
     toml::from_str(&render(a)?).context("the file the wizard produced is not valid TOML")
 }
 
+/// Pick one name out of `models`, by number. One candidate is not a question — there is
+/// nothing to choose between — so it is announced and taken.
+fn choose_model(p: &mut dyn Prompter, what: &str, models: &[String]) -> Result<String> {
+    if let [only] = models {
+        println!("  using the only {what} model installed: {only}");
+        return Ok(only.clone());
+    }
+    println!("  {what} models installed:");
+    for (i, m) in models.iter().enumerate() {
+        println!("    {}) {m}", i + 1);
+    }
+    let n = models.len();
+    let picked = ask(p, &format!("  which one? [1-{n}]"), move |s| {
+        s.trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|i| (1..=n).contains(i))
+            .ok_or_else(|| format!("answer a number from 1 to {n}"))
+    })?;
+    Ok(models[picked - 1].clone())
+}
+
+/// Offer the local Ollama for a stage, and return the base URL and model chosen there.
+/// `None` means "ask the ordinary questions instead" — Ollama is not running, has no model
+/// this stage could use, or the user said no.
+fn offer_ollama(
+    p: &mut dyn Prompter,
+    what: &str,
+    models: &[String],
+) -> Result<Option<(String, String)>> {
+    if models.is_empty() {
+        return Ok(None);
+    }
+    println!(
+        "  Ollama is running at {} with {} {what} model(s).",
+        ollama::DEFAULT_HOST,
+        models.len()
+    );
+    if !ask(p, &format!("  Use Ollama for {what}? [Y/n]"), |s| {
+        parse_yes_no(s, true)
+    })? {
+        return Ok(None);
+    }
+    let model = choose_model(p, what, models)?;
+    Ok(Some((ollama::base_url(ollama::DEFAULT_HOST), model)))
+}
+
 fn ask_stt(p: &mut dyn Prompter, probe: &mut dyn Probe, a: &mut Answers) -> Result<()> {
+    let local = probe.ollama().unwrap_or_default();
     loop {
         println!("\nWhere is your speech-to-text server?");
-        a.stt_base_url = ask(
-            p,
-            "  OpenAI-compatible base URL, e.g. http://127.0.0.1:8770/v1 (required)",
-            parse_base_url,
-        )?;
-        let (env, file) = ask_token(p)?;
-        a.stt_api_key_env = env;
-        a.stt_api_key_file = file;
+        match offer_ollama(p, "speech-to-text", &local.stt)? {
+            Some((url, model)) => {
+                a.stt_base_url = url;
+                a.stt_model = model;
+                a.stt_api_key_env = String::new();
+                a.stt_api_key_file = String::new();
+            }
+            None => {
+                a.stt_base_url = ask(
+                    p,
+                    "  OpenAI-compatible base URL, e.g. http://127.0.0.1:8770/v1 (required)",
+                    parse_base_url,
+                )?;
+                let (env, file) = ask_token(p)?;
+                a.stt_api_key_env = env;
+                a.stt_api_key_file = file;
+            }
+        }
         println!("  transcribing a second of silence...");
         if probe.stt(&partial_config(a)?) {
             return Ok(());
@@ -554,20 +653,31 @@ fn ask_polish(p: &mut dyn Prompter, probe: &mut dyn Probe, a: &mut Answers) -> R
     if !a.polish_enabled {
         return Ok(());
     }
+    let local = probe.ollama().unwrap_or_default();
     loop {
-        a.polish_base_url = ask(
-            p,
-            "  Chat-completions base URL, e.g. http://127.0.0.1:4000/v1 (required)",
-            parse_base_url,
-        )?;
-        a.polish_model = ask(
-            p,
-            "  Model name, or the alias your gateway serves (required)",
-            parse_required,
-        )?;
-        let (env, file) = ask_token(p)?;
-        a.polish_api_key_env = env;
-        a.polish_api_key_file = file;
+        match offer_ollama(p, "text", &local.text)? {
+            Some((url, model)) => {
+                a.polish_base_url = url;
+                a.polish_model = model;
+                a.polish_api_key_env = String::new();
+                a.polish_api_key_file = String::new();
+            }
+            None => {
+                a.polish_base_url = ask(
+                    p,
+                    "  Chat-completions base URL, e.g. http://127.0.0.1:4000/v1 (required)",
+                    parse_base_url,
+                )?;
+                a.polish_model = ask(
+                    p,
+                    "  Model name, or the alias your gateway serves (required)",
+                    parse_required,
+                )?;
+                let (env, file) = ask_token(p)?;
+                a.polish_api_key_env = env;
+                a.polish_api_key_file = file;
+            }
+        }
         println!("  polishing a sample sentence...");
         if probe.polish(&partial_config(a)?) {
             return Ok(());
@@ -580,12 +690,11 @@ fn ask_polish(p: &mut dyn Prompter, probe: &mut dyn Probe, a: &mut Answers) -> R
     }
 }
 
-/// Every question, in order. Nothing is written and nothing outside this process is touched:
-/// a `Ctrl+C` or an abort here leaves the machine exactly as it was.
-pub fn interview(p: &mut dyn Prompter, probe: &mut dyn Probe) -> Result<Answers> {
-    let mut a = Answers::default();
-    ask_stt(p, probe, &mut a)?;
-    ask_polish(p, probe, &mut a)?;
+/// Every question, in order. Answers land in `a` as they are given, so a run that ends early
+/// — an abort, a closed stdin — still hands the caller everything answered up to that point.
+pub fn interview_into(p: &mut dyn Prompter, probe: &mut dyn Probe, a: &mut Answers) -> Result<()> {
+    ask_stt(p, probe, a)?;
+    ask_polish(p, probe, a)?;
 
     println!("\nThe key you hold down to dictate.");
     a.hotkey_key = ask(
@@ -622,6 +731,13 @@ pub fn interview(p: &mut dyn Prompter, probe: &mut dyn Probe) -> Result<Answers>
         "  Keep a local copy of every dictation (audio + text) for your own re-scoring? [y/N]",
         |s| parse_yes_no(s, false),
     )?;
+    Ok(())
+}
+
+/// Every question, in order, for a caller with nothing to salvage on failure.
+pub fn interview(p: &mut dyn Prompter, probe: &mut dyn Probe) -> Result<Answers> {
+    let mut a = Answers::default();
+    interview_into(p, probe, &mut a)?;
     Ok(a)
 }
 
@@ -699,11 +815,16 @@ fn write_config(p: &mut dyn Prompter, path: &Path, text: &str, granted: bool) ->
 /// the daemon, or by a tray item that has no business ending the process.
 pub fn run(path: &Path) -> Result<bool> {
     println!("byovox setup — a few questions, each answer probed as you give it.");
-    println!("Enter takes the default in brackets; Ctrl+C stops without writing anything.");
+    println!("Enter takes the default in brackets. Stop at any point and what you have");
+    println!("answered so far is still written; Ctrl+C writes nothing.");
     println!("Config file: {}", path.display());
     let mut p = Console;
     let granted = confirm_overwrite(&mut p, path)?;
-    let answers = interview(&mut p, &mut Stages)?;
+    // Answers accumulate here rather than inside `interview`, so a run that ends early still
+    // has everything answered up to that point to write down. Losing eight good answers to a
+    // ninth question is the one failure a wizard must not have.
+    let mut answers = Answers::default();
+    let ended = interview_into(&mut p, &mut Stages, &mut answers);
     let text = render(&answers)?;
     // Parsed before it is written, so a wizard that produced junk says so instead of leaving
     // the junk on disk. `load` below is the one that validates.
@@ -714,6 +835,11 @@ pub fn run(path: &Path) -> Result<bool> {
     // inform — the file is written either way — so saying it twice is only noise.
     write_config(&mut p, path, &text, granted)?;
     println!("wrote {}\n", path.display());
+    if let Err(e) = ended {
+        println!("setup ended early ({e}) — what you answered is saved.");
+        println!("Edit {} or run `byovox setup` again.", path.display());
+        return Ok(false);
+    }
     let cfg = config::load(path)?;
     Ok(check::run(&cfg, path))
 }
@@ -849,13 +975,15 @@ mod tests {
     /// or refuse outright — so the example file cannot drift away from the wizard.
     #[test]
     fn every_key_the_wizard_writes_is_settable_exactly_once_in_the_example() {
-        // Polish on, so the keys that are only written when it is enabled are covered too.
+        // Polish on and a model picked, so the keys that are only written when something was
+        // answered for them are covered too.
         let a = Answers {
             polish_enabled: true,
+            stt_model: "whisper-large-v3".into(),
             ..Default::default()
         };
         let written = edits(&a);
-        assert!(written.len() >= 11, "{written:?}");
+        assert!(written.len() >= 12, "{written:?}");
         for (section, key, _) in &written {
             let mut current = "";
             let mut hits = 0;
@@ -1084,6 +1212,7 @@ mod tests {
         polish: std::collections::VecDeque<bool>,
         stt_seen: Vec<Config>,
         polish_seen: Vec<Config>,
+        installed: Option<ollama::Models>,
     }
 
     impl Verdicts {
@@ -1093,7 +1222,17 @@ mod tests {
                 polish: polish.iter().copied().collect(),
                 stt_seen: Vec::new(),
                 polish_seen: Vec::new(),
+                installed: None,
             }
+        }
+
+        /// A machine with Ollama running and these models pulled.
+        fn with_ollama(mut self, stt: &[&str], text: &[&str]) -> Verdicts {
+            self.installed = Some(ollama::Models {
+                stt: stt.iter().map(|s| s.to_string()).collect(),
+                text: text.iter().map(|s| s.to_string()).collect(),
+            });
+            self
         }
     }
 
@@ -1106,6 +1245,87 @@ mod tests {
             self.polish_seen.push(cfg.clone());
             self.polish.pop_front().unwrap_or(true)
         }
+        fn ollama(&mut self) -> Option<ollama::Models> {
+            self.installed.clone()
+        }
+    }
+
+    /// The point of discovery: a user with models already pulled types no URL and no model
+    /// name, and the file still names both.
+    #[test]
+    fn a_local_ollama_is_offered_and_the_pick_is_written() {
+        let mut p = Script::new(&[
+            "",  // use Ollama for speech-to-text? default yes
+            "2", // the second whisper model
+            "",  // polish? default yes
+            "",  // use Ollama for text? default yes
+            "1", // the first text model
+            "",  // hotkey
+            "",  // candidates
+            "",  // by_layout
+            "",  // capture log
+        ]);
+        let mut probes = Verdicts::new(&[true], &[true])
+            .with_ollama(&["whisper-small", "whisper-large-v3"], &["llama3.2", "qwen2.5"]);
+        let a = interview(&mut p, &mut probes).unwrap();
+        assert!(p.answers.is_empty(), "the script covered every question");
+        assert_eq!(a.stt_base_url, ollama::base_url(ollama::DEFAULT_HOST));
+        assert_eq!(a.stt_model, "whisper-large-v3");
+        assert_eq!(a.polish_base_url, ollama::base_url(ollama::DEFAULT_HOST));
+        assert_eq!(a.polish_model, "llama3.2");
+        assert!(
+            !p.asked.iter().any(|q| q.contains("OpenAI-compatible")),
+            "no URL was typed: {:?}",
+            p.asked
+        );
+        let cfg: Config = toml::from_str(&render(&a).unwrap()).unwrap();
+        assert_eq!(cfg.stt.model, "whisper-large-v3");
+        assert_eq!(cfg.polish.model, "llama3.2");
+    }
+
+    /// One model is not a choice, and declining Ollama falls straight through to the
+    /// questions a machine without it gets.
+    #[test]
+    fn one_model_is_taken_without_asking_and_no_falls_back_to_the_url_question() {
+        let mut p = Script::new(&[
+            "n", // do not use Ollama for speech-to-text
+            "http://127.0.0.1:8770/v1",
+            "",  // no token
+            "",  // polish? yes
+            "",  // use Ollama for text? yes — and there is only one
+            "",  // hotkey
+            "",  // candidates
+            "",  // by_layout
+            "",  // capture log
+        ]);
+        let mut probes =
+            Verdicts::new(&[true], &[true]).with_ollama(&["whisper-tiny"], &["llama3.2"]);
+        let a = interview(&mut p, &mut probes).unwrap();
+        assert!(p.answers.is_empty(), "the script covered every question");
+        assert_eq!(a.stt_base_url, "http://127.0.0.1:8770/v1");
+        assert_eq!(a.stt_model, "", "the example file's own default is kept");
+        assert_eq!(a.polish_model, "llama3.2");
+        assert!(
+            !p.asked.iter().any(|q| q.contains("which one?")),
+            "{:?}",
+            p.asked
+        );
+    }
+
+    /// The failure this wizard must not have: eight good answers lost to a ninth question.
+    /// What was answered before the abort is still in the caller's hands, and what was not
+    /// holds the default the example file documents — so the render loads.
+    #[test]
+    fn answers_given_before_an_abort_survive_it() {
+        let mut p = Script::new(&["http://127.0.0.1:8770/v1", "", "a"]);
+        let mut a = Answers::default();
+        let e = interview_into(&mut p, &mut Verdicts::new(&[false], &[]), &mut a).unwrap_err();
+        assert_eq!(e.to_string(), ABORTED);
+        assert_eq!(a.stt_base_url, "http://127.0.0.1:8770/v1");
+        assert_eq!(a.hotkey_key, "ControlRight", "never reached, still valid");
+        let cfg: Config = toml::from_str(&render(&a).unwrap()).expect("a partial file loads");
+        assert_eq!(cfg.stt.base_url, "http://127.0.0.1:8770/v1");
+        assert_eq!(cfg.hotkey.key, "ControlRight");
     }
 
     /// Every answer of a full run, in order: the script below reads as the transcript does.
@@ -1250,7 +1470,7 @@ mod tests {
         let a = interview(&mut p, &mut probes).unwrap();
         assert_eq!(a.stt_base_url, "http://later:8770/v1");
 
-        // Abort: nothing is returned to write.
+        // Abort: the interview stops, and `run` writes down what was answered before it.
         let mut p = Script::new(&["http://nope:8770/v1", "", "a"]);
         let mut probes = Verdicts::new(&[false], &[]);
         let e = interview(&mut p, &mut probes).unwrap_err();
