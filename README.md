@@ -44,6 +44,10 @@ slow? Ollama's hosted models are faster — but your transcripts leave your mach
 `byovox setup` lists them apart from the local ones and asks you, default no, before it writes
 one into the config ([details](docs/platform-windows.md#3-text-clean-up-optional)).
 
+A dictation usually lands mid-sentence, so the capital the clean-up adds to the first word is
+often unwanted. `polish.capitalize_first_word = false` leaves it as you said it — except where
+it would carry a capital anywhere, like a name, an acronym or "I".
+
 ### 3. Install byovox
 
 Download the Windows zip from [Releases](https://github.com/BoJl4apa/byovox/releases) and unzip

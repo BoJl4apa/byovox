@@ -37,6 +37,7 @@ and an unmapped layout routes to `language.default`, so every row below would lo
 - [ ] polish endpoint down (wrong port): raw transcript inserted, error cue, WARN in log
 - [ ] `inject.mode = "type"`, focus a chat box that sends on Enter, dictate "first foo, second bar": one *unsent* message reading `1. foo 2. bar` — nothing is submitted, no stray leading or trailing space
 - [ ] dictate a plain sentence: the text lands with no final period; dictate a question: the `?` stays
+- [ ] with `polish.capitalize_first_word = false`: dictate "we should ship it today" → it lands lowercase; dictate "NASA confirmed it" and "I think we ship" → the capital stays. With a `polish.prompt_file` set, the flag changes nothing — that file owns its own rule 1
 - [ ] with `[stt.by_language.he]` configured and a Hebrew layout: `byovox check` shows an `ok stt[he]` row; dictate "אני עוד רבע שעה אצלו" → `רבע שעה` (the default lane types `רבשה`); dictate one word ("תודה") → it still lands, and the log shows `stt lane returned nothing; retrying the default endpoint`
 - [ ] with a glossary in `stt.prompt`: dictate "שמנו את Tailscale מאחורי אותו proxy" under a Hebrew layout → `Tailscale` lands in Latin; dictate "ראיתי אריה בגן החיות" → `אריה` stays Hebrew
 
@@ -60,7 +61,7 @@ and an unmapped layout routes to `language.default`, so every row below would lo
 - [ ] `byovox autostart --enable`, sign out/in: daemon running; `--disable` removes it
 - [ ] unknown key in config: exit 2 naming the key, from the bare `byovox` as well as from `byovox run` — and no daemon left behind
 - [ ] `byovox setup` on a fresh config: probes pass, file written with comments intact, `check` passes
-- [ ] `python bench/polish_bench.py` (`python3` on Linux and macOS): the `trap` and `cleanup` strata pass on every run; `punctuation` fails until #28 lands and `injection` until the prompt stops obeying an imperative dictation, each naming its items — a rule change is scored here (`--candidate <file>`, `--prompt-file <file>` for a copy), never eyeballed
+- [ ] `python bench/polish_bench.py` (`python3` on Linux and macOS): the `trap` and `cleanup` strata pass on every run; `punctuation` fails until #28 lands and `injection` until the prompt stops obeying an imperative dictation, each naming its items — a rule change is scored here (`--candidate <file>`, `--prompt-file <file>` for a copy), never eyeballed. the first-word rule (#37) picks which half of the items is scored: with it **on** — the shipped default, or a run without `--no-capitalize` — the four strata above are scored and `capitalization` is skipped; with it **off**, via `--no-capitalize` or `polish.capitalize_first_word = false` in the config, only `capitalization` is. The two sets of expected texts differ in the first word, so they are never scored together, and a selection that comes up empty (`--only` crossed with the wrong half) exits 2 rather than passing with nothing measured
 - [ ] with a Bluetooth headset connected as the default recording device and `capture.device = "Microphone Array"`: `check`'s `mic` row names the array at 48 kHz, and a dictation leaves music in the headphones untouched (no pitch jump on press or release); a name that matches nothing → exit 2 listing the devices
 
 ## Last run

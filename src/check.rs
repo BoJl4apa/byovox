@@ -14,7 +14,7 @@ use crate::config::{
 use crate::hotkey::{HotkeyMode, parse_chord, validate_key_name};
 use crate::lang::{LanguagePolicy, SttLanguage};
 use crate::pipeline::no_speech;
-use crate::polish::{self, BUILT_IN_PROMPT, PolishClient, Polisher};
+use crate::polish::{self, PolishClient, Polisher};
 use crate::stt::{SttClient, Transcriber};
 
 /// How long the microphone stage records for.
@@ -157,9 +157,9 @@ fn stage_token(env_name: &str, file: &str) -> Result<Option<String>, String> {
 /// here is what makes a path typo fail the check rather than the first
 /// dictation — and it is what the round trip below sends, so `check` exercises the prompt the
 /// daemon will use rather than a stand-in that could behave differently.
-fn prompt_text(prompt_file: &str) -> Result<String, String> {
+fn prompt_text(prompt_file: &str, capitalize_first_word: bool) -> Result<String, String> {
     if prompt_file.is_empty() {
-        return Ok(BUILT_IN_PROMPT.to_string());
+        return Ok(crate::polish::built_in(capitalize_first_word));
     }
     let path = expand_home(prompt_file);
     std::fs::read_to_string(&path)
@@ -519,7 +519,10 @@ fn no_speech_row(prob: Option<f32>, threshold: f64, warn: f64) -> String {
 fn polish_round_trip(cfg: &PolishConfig, stt: &SttConfig) -> Result<String, String> {
     let key = stage_token(&cfg.api_key_env, &cfg.api_key_file)?;
     // The same composition the daemon sends, glossary rule included.
-    let prompt = polish::prompt_for(&prompt_text(&cfg.prompt_file)?, stt);
+    let prompt = polish::prompt_for(
+        &prompt_text(&cfg.prompt_file, cfg.capitalize_first_word)?,
+        stt,
+    );
     let client = PolishClient::new(
         &cfg.base_url,
         &cfg.model,
@@ -547,10 +550,12 @@ fn record(selector: &str) -> Result<Audio, String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::polish::BUILT_IN_PROMPT;
+
     use super::{
-        Audio, BUILT_IN_PROMPT, HotkeyConfig, PREFIX_CHARS, QUIET_DBFS, SAMPLE_RATE,
-        cleartext_endpoints, enough_audio, hotkey_error, hotkey_row, is_hands_free, no_speech_row,
-        prefix, prompt_text, stage_token, strip_body,
+        Audio, HotkeyConfig, PREFIX_CHARS, QUIET_DBFS, SAMPLE_RATE, cleartext_endpoints,
+        enough_audio, hotkey_error, hotkey_row, is_hands_free, no_speech_row, prefix, prompt_text,
+        stage_token, strip_body,
     };
 
     /// Recording through a headset's hands-free endpoint drags it out of stereo for the whole
@@ -728,15 +733,24 @@ mod tests {
     /// configured text rather than the built-in stand-in.
     #[test]
     fn the_configured_prompt_is_what_check_reads_and_sends() {
-        assert_eq!(prompt_text("").unwrap(), BUILT_IN_PROMPT);
+        assert_eq!(prompt_text("", true).unwrap(), BUILT_IN_PROMPT);
+        // The flag reaches the same round trip: rule 1 is swapped, nothing else is.
+        let lowered = prompt_text("", false).unwrap();
+        assert_ne!(lowered, BUILT_IN_PROMPT);
+        assert!(lowered.contains(crate::polish::LOWERCASE_FIRST_RULE));
         let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
-        let text = prompt_text(manifest).expect("a readable file");
+        let text = prompt_text(manifest, true).expect("a readable file");
+        assert_eq!(
+            prompt_text(manifest, false).unwrap(),
+            text,
+            "a prompt_file owns its own rule 1 and is never rewritten"
+        );
         assert!(
             text.contains("byovox"),
             "the file's own text, not the built-in"
         );
         assert_ne!(text, BUILT_IN_PROMPT);
-        let e = prompt_text("no-such-dir/no-such-prompt.txt").unwrap_err();
+        let e = prompt_text("no-such-dir/no-such-prompt.txt", true).unwrap_err();
         let (path, io) = e
             .strip_prefix("polish.prompt_file ")
             .and_then(|rest| rest.split_once(": "))
