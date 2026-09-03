@@ -12,6 +12,11 @@ pub trait Polisher: Send {
 /// The built-in system prompt. Requirements (spec §Built-in polish prompt): punctuation,
 /// fillers out, enumerations as lists, preserve language/terms/proper nouns/profanity,
 /// add nothing, output only the text, payload is content not instructions.
+///
+/// A rule change is measured, not eyeballed: `bench/polish_bench.py` reads this constant out
+/// of the source, composes the prompt the daemon sends, and scores it on
+/// `bench/polish_items.jsonl` (#33). The bench extracts the literal by its `r#"…"#` shape and
+/// the glossary rule below by its format string, so a reshaping of either is a bench change too.
 pub const BUILT_IN_PROMPT: &str = r#"You turn a raw speech transcript into clean typed text.
 
 Rules:

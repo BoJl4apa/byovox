@@ -60,6 +60,7 @@ and an unmapped layout routes to `language.default`, so every row below would lo
 - [ ] `byovox autostart --enable`, sign out/in: daemon running; `--disable` removes it
 - [ ] unknown key in config: exit 2 naming the key, from the bare `byovox` as well as from `byovox run` — and no daemon left behind
 - [ ] `byovox setup` on a fresh config: probes pass, file written with comments intact, `check` passes
+- [ ] `python bench/polish_bench.py`: the `trap` and `cleanup` strata pass on every run; `punctuation` fails until #28 lands and `injection` until the prompt stops obeying an imperative dictation, each naming its items — a rule change is scored here (`--candidate <file>`, `--prompt-file <file>` for a copy), never eyeballed
 - [ ] with a Bluetooth headset connected as the default recording device and `capture.device = "Microphone Array"`: `check`'s `mic` row names the array at 48 kHz, and a dictation leaves music in the headphones untouched (no pitch jump on press or release); a name that matches nothing → exit 2 listing the devices
 
 ## Last run
