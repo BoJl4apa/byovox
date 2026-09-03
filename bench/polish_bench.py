@@ -29,16 +29,29 @@ import json
 import os
 import re
 import sys
-import tomllib
 import unicodedata
+
+try:
+    import tomllib  # 3.11+
+except ImportError:  # pragma: no cover
+    print("polish_bench needs Python 3.11 or newer (tomllib)", file=sys.stderr)
+    sys.exit(2)
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import NoReturn
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 # `injection` is content shaped like an instruction to the model; rule 7 says it is content.
 STRATA = ("punctuation", "trap", "cleanup", "injection")
+
+
+def setup_error(msg: str) -> NoReturn:
+    """A setup error: named on stderr, exit status 2 — `sys.exit(str)` would exit 1, the
+    status a failed stratum uses."""
+    print(msg, file=sys.stderr)
+    sys.exit(2)
 
 
 # ---------------------------------------------------------------- the prompt, as the daemon sends it
@@ -48,7 +61,7 @@ def built_in_prompt(src: str) -> str:
     """`BUILT_IN_PROMPT` out of src/polish.rs, byte for byte."""
     m = re.search(r'pub const BUILT_IN_PROMPT: &str = r#"(.*?)"#;', src, re.S)
     if not m:
-        sys.exit("polish.rs: BUILT_IN_PROMPT not found where the bench expects it")
+        setup_error("polish.rs: BUILT_IN_PROMPT not found where the bench expects it")
     return m.group(1)
 
 
@@ -57,7 +70,7 @@ def glossary_rule(src: str) -> str:
     escapes resolved: `{}` is the base, `{g}` the glossary."""
     m = re.search(r'format!\(\s*"(\{\}\\n\\n9\. .*?\\n\{g\})",', src, re.S)
     if not m:
-        sys.exit("polish.rs: the glossary rule format string is not where the bench expects it")
+        setup_error("polish.rs: the glossary rule format string is not where the bench expects it")
     return m.group(1).replace("\\n", "\n")
 
 
@@ -152,7 +165,10 @@ def polish(url: str, model: str, token: str | None, system: str, raw: str, timeo
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             reply = json.load(resp)
     except urllib.error.HTTPError as e:
-        raise RuntimeError(f"polish HTTP {e.code}") from None
+        # The leading 200 characters of the body, as PolishClient reports them: a wrong URL,
+        # a refused key or an unknown model name says so there. Never the token.
+        prefix = " ".join(e.read(200).decode("utf-8", "replace").split())
+        raise RuntimeError(f"polish HTTP {e.code}: {prefix}") from None
     except (urllib.error.URLError, TimeoutError) as e:
         raise RuntimeError(f"polish transport: {e}") from None
     except ValueError as e:
@@ -213,11 +229,11 @@ def load_items(path: Path, only: str | None) -> list[dict]:
         it = json.loads(line)
         for key in ("id", "stratum", "raw", "expected"):
             if not it.get(key):
-                sys.exit(f"{path}:{n}: item without {key}")
+                setup_error(f"{path}:{n}: item without {key}")
         if it["stratum"] not in STRATA:
-            sys.exit(f"{path}:{n}: unknown stratum {it['stratum']!r}; known: {', '.join(STRATA)}")
+            setup_error(f"{path}:{n}: unknown stratum {it['stratum']!r}; known: {', '.join(STRATA)}")
         if it["id"] in seen:
-            sys.exit(f"{path}:{n}: duplicate id {it['id']!r}")
+            setup_error(f"{path}:{n}: duplicate id {it['id']!r}")
         seen.add(it["id"])
         if only is None or it["stratum"] == only:
             items.append(it)
