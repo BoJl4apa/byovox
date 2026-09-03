@@ -23,12 +23,11 @@
 # https:// — note that byovox verifies against the bundled Mozilla roots, not the Windows
 # certificate store, so a privately-signed certificate will not be accepted.
 # Required: byovox refuses to start until this names your server, e.g.
-# "http://127.0.0.1:8770/v1" for a whisper.cpp server on this machine, or
-# "http://127.0.0.1:11434/v1" for Ollama. `byovox setup` finds a local Ollama by itself and
-# offers the models it has pulled.
+# "http://127.0.0.1:8770/v1" for a whisper.cpp server on this machine. Ollama cannot serve
+# this stage — its runner refuses whisper models and answers HTTP 500 — but `byovox setup`
+# finds a local Ollama by itself and offers the models it has pulled for [polish] below.
 base_url = ""
-# Sent as the `model` field. Self-hosted whisper.cpp ignores it; hosted APIs and Ollama need
-# a real name, e.g. "ZimaBlueAI/whisper-large-v3".
+# Sent as the `model` field. Self-hosted whisper.cpp ignores it; hosted APIs need a real name.
 model = "whisper-1"
 # Name of an environment variable holding a bearer token. Empty = no Authorization header
 # (right for a server that authenticates by network identity).

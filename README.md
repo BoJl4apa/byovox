@@ -40,15 +40,24 @@ ollama pull gemma4:e2b
 
 **Start small.** This model runs on every dictation and fights whisper for the same CPU. If
 your laptop struggles with a 4B model, a 7B one will make dictating slower than typing. Too
-slow? Use one of Ollama's free hosted models instead — but your transcripts leave your machine,
-so byovox makes you
-[opt in by hand](docs/platform-windows.md#3-text-clean-up-optional).
+slow? Ollama's hosted models are faster — but your transcripts leave your machine, so
+`byovox setup` lists them apart from the local ones and asks you, default no, before it writes
+one into the config ([details](docs/platform-windows.md#3-text-clean-up-optional)).
 
 ### 3. Install byovox
 
 Download the Windows zip from [Releases](https://github.com/BoJl4apa/byovox/releases) and unzip
-it — keep both `.exe` files together. Windows warns on first run (More info → Run anyway),
-because the binaries aren't code-signed.
+it — keep both `.exe` files together. Verify it first; both files are published beside the zip:
+
+```sh
+sha256sum -c SHA256SUMS                                              # Git Bash or WSL; PowerShell: Get-FileHash
+gh attestation verify byovox-v0.1.3-x86_64-pc-windows-msvc.zip --owner BoJl4apa
+```
+
+The attestation is GitHub's build provenance: it says this archive came out of this
+repository's release workflow and names the commit it was built from, the one `byovox --version`
+prints. Windows warns on first run (More info → Run anyway), because the binaries aren't
+code-signed.
 
 Or build it with Rust 1.88+:
 
@@ -63,7 +72,7 @@ byovox setup
 ```
 
 It asks for your Whisper server, then finds Ollama and offers your models for the clean-up
-step. Press Enter to take a default. Stop halfway and your answers are still saved.
+step. Press Enter to take a default; Ctrl+C stops without writing anything.
 
 ```sh
 byovox
@@ -86,17 +95,26 @@ It tests every part — mic, server, hotkey — and names the broken one.
 ```
 ok   config    C:\Users\you\AppData\Roaming\byovox\config\config.toml
 ok   hotkey    ControlRight hold, cancel Escape
-ok   mic       Microphone Array (48000 Hz, 2 ch, F32)  peak -21.7 dBFS over 0.9s
-ok   stt       0.34s  "Thank you."
+ok   backends  hotkey=hook layout=win32 inject=type,paste,clipboard-only
+ok   mic       Microphone Array (48000 Hz, 2 ch, F32)  peak -21.7 dBFS over 0.7s
+     layout    en → language_candidates=en,ru
+ok   stt       0.34s  p_nospeech=0.71 (would be dropped as silence)  "Thank you."
 ok   polish    0.46s  "So this is a test."
+     inject    dry-run: would use `type` first
+
 all required stages passed
 ```
+
+`check` records one second of room tone, so a high `p_nospeech` beside an invented stock phrase
+is the healthy result, not a broken server.
 
 ## Commands
 
 | | |
 |---|---|
 | `byovox` | start it (tray icon + hotkey) |
+| `byovox run` | run it in this terminal instead, logging to stderr too |
+| `byovox status` | pipeline state and last error of the running daemon |
 | `byovox setup` | the wizard |
 | `byovox hotkey` | show or change the push-to-talk key |
 | `byovox check` | self-test |
