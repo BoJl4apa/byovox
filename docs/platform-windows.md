@@ -223,8 +223,8 @@ but you paid the wait for nothing.
 
 If nothing local is fast enough, Ollama's hosted models (`gemma4:31b-cloud` and friends) are
 far better and cost nothing to try — **but your transcripts leave the machine.** `byovox setup`
-will not offer them for that reason: it lists only models Ollama serves locally. To use one
-anyway, say so deliberately in the config:
+lists them after the local ones, marked *hosted by ollama.com*, and writes one only after a
+question whose default is no. Or say so deliberately in the config:
 
 ```toml
 [polish]

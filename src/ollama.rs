@@ -23,9 +23,14 @@ const TIMEOUT: Duration = Duration::from_secs(2);
 /// What one Ollama host has that byovox can use, and what it has that only looks usable.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Models {
-    /// Everything that can answer `/v1/chat/completions`: the polish stage, and the only
-    /// stage Ollama serves.
+    /// Everything local that can answer `/v1/chat/completions`: the polish stage, and the
+    /// only stage Ollama serves.
     pub text: Vec<String>,
+    /// Models Ollama answers for over the same surface but serves from `ollama.com`: the
+    /// catalogue marks them with `remote_host` (and names them with a `-cloud` tag). Every
+    /// dictation's text would leave the machine, so the wizard lists them apart from `text`
+    /// and writes one only after a confirmation that says so.
+    pub cloud: Vec<String>,
     /// Models whose name says whisper. Ollama cannot run one: a whisper GGUF is built for
     /// whisper.cpp, and Ollama's llama.cpp runner refuses it with `unknown model
     /// architecture` — measured against `sendmeaiohyeah/whisper-large-v2`, whose only
@@ -39,7 +44,7 @@ pub struct Models {
 
 impl Models {
     pub fn is_empty(&self) -> bool {
-        self.text.is_empty() && self.unusable_speech.is_empty()
+        self.text.is_empty() && self.cloud.is_empty() && self.unusable_speech.is_empty()
     }
 }
 
@@ -57,32 +62,35 @@ fn is_embedding(name: &str) -> bool {
     n.contains("embed") || n.contains("bge-") || n.contains("minilm")
 }
 
-/// Sort a flat list of model names into what the polish stage can use and what only looks as
-/// though it could, deduplicated so the numbered menu the wizard prints is stable.
-pub fn classify(names: &[String]) -> Models {
+/// Sort the catalogue into what the polish stage can use locally, what it can use only by
+/// sending text to `ollama.com`, and what only looks usable — deduplicated so the numbered
+/// menu the wizard prints is stable.
+pub fn classify(entries: &[(String, bool)]) -> Models {
     let mut m = Models::default();
-    for name in names {
+    for (name, cloud) in entries {
         if is_speech(name) {
             m.unusable_speech.push(name.clone());
-        } else if !is_embedding(name) {
+        } else if is_embedding(name) {
+            continue;
+        } else if *cloud {
+            m.cloud.push(name.clone());
+        } else {
             m.text.push(name.clone());
         }
     }
-    for list in [&mut m.text, &mut m.unusable_speech] {
+    for list in [&mut m.text, &mut m.cloud, &mut m.unusable_speech] {
         list.sort();
         list.dedup();
     }
     m
 }
 
-/// The model names in an `/api/tags` body. Anything that is not the shape Ollama documents
-/// yields nothing rather than an error: this is a convenience probe, and the wizard's next
-/// move when it finds nothing is to ask the question by hand.
-///
-/// Cloud models served by Ollama (e.g. `gemma4:31b-cloud`) are included — users can opt in if
-/// they understand the API call routes through `https://ollama.com`. The wizard may warn about
-/// this when offering such a model.
-fn names_in(body: &str) -> Vec<String> {
+/// The model names in an `/api/tags` body, each with whether Ollama serves it from
+/// `ollama.com`: `remote_host` is the field the catalogue carries for those, and the `-cloud`
+/// tag is the name Ollama gives them, so either marks one. Anything that is not the shape
+/// Ollama documents yields nothing rather than an error: this is a convenience probe, and the
+/// wizard's next move when it finds nothing is to ask the question by hand.
+fn names_in(body: &str) -> Vec<(String, bool)> {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
         return Vec::new();
     };
@@ -91,9 +99,11 @@ fn names_in(body: &str) -> Vec<String> {
         .map(|models| {
             models
                 .iter()
-                .filter_map(|m| m.get("name").or_else(|| m.get("model")))
-                .filter_map(|n| n.as_str())
-                .map(str::to_string)
+                .filter_map(|m| {
+                    let name = m.get("name").or_else(|| m.get("model"))?.as_str()?;
+                    let remote = m.get("remote_host").and_then(|h| h.as_str()).is_some();
+                    Some((name.to_string(), remote || name.ends_with("-cloud")))
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -147,21 +157,32 @@ mod tests {
 
     /// A real `/api/tags`, trimmed to the keys that decide anything. `gemma4:31b-cloud` is
     /// the case this exists for: Ollama lists it beside the local models and answers for it
-    /// over the same OpenAI surface, but serves it from `ollama.com` — so offering it would
-    /// send every dictation off the machine under the heading "models you already have".
+    /// over the same OpenAI surface, but serves it from `ollama.com` — so it is kept apart
+    /// from "models you already have", and a hosted model whose name carries no `-cloud` tag
+    /// is still caught by `remote_host`.
     #[test]
-    fn cloud_models_are_included_in_the_catalogue() {
+    fn cloud_models_are_kept_apart_from_local_ones() {
         let body = r#"{"models":[
             {"name":"sendmeaiohyeah/whisper-large-v2:latest","model":"sendmeaiohyeah/whisper-large-v2:latest"},
             {"name":"gemma4:e2b","model":"gemma4:e2b"},
-            {"name":"gemma4:31b-cloud","model":"gemma4:31b","remote_host":"https://ollama.com"}
+            {"name":"gemma4:31b-cloud","model":"gemma4:31b","remote_host":"https://ollama.com"},
+            {"name":"kimi-k2:1t","model":"kimi-k2:1t","remote_host":"https://ollama.com"}
         ]}"#;
         let m = classify(&names_in(body));
         assert_eq!(
             m.unusable_speech,
             ["sendmeaiohyeah/whisper-large-v2:latest"]
         );
-        assert_eq!(m.text, ["gemma4:31b-cloud", "gemma4:e2b"], "cloud models are offered alongside local ones");
+        assert_eq!(
+            m.text,
+            ["gemma4:e2b"],
+            "only what runs here is \"installed\""
+        );
+        assert_eq!(
+            m.cloud,
+            ["gemma4:31b-cloud", "kimi-k2:1t"],
+            "remote_host marks a hosted model, tag or no tag"
+        );
     }
 
     #[test]

@@ -149,7 +149,7 @@ const DEFAULT_KEY_FILE: &str = "~/.config/byovox/env";
 /// deliberately not a thing, because there is no answer it could invent for `stt.base_url`.
 const NO_TERMINAL: &str = "setup needs a terminal — run `byovox config --init` and edit the file";
 
-const ABORTED: &str = "aborted";
+const ABORTED: &str = "aborted — nothing was written";
 
 /// One question, one line of input: the wizard's whole input surface, so the flow can be
 /// walked in a test with scripted answers instead of a keyboard.
@@ -579,18 +579,35 @@ fn partial_config(a: &Answers) -> Result<Config> {
     toml::from_str(&render(a)?).context("the file the wizard produced is not valid TOML")
 }
 
-/// Pick one name out of `models`, by number. One candidate is not a question — there is
-/// nothing to choose between — so it is announced and taken.
-fn choose_model(p: &mut dyn Prompter, what: &str, models: &[String]) -> Result<String> {
-    if let [only] = models {
+/// Pick one model by number: the local ones first, then the hosted ones, each of those
+/// marked as such on its line. One local candidate and nothing hosted is not a question —
+/// there is nothing to choose between — so it is announced and taken. The `bool` says
+/// whether the pick is hosted, so the caller can ask the question that deserves.
+fn choose_model(
+    p: &mut dyn Prompter,
+    what: &str,
+    local: &[String],
+    cloud: &[String],
+) -> Result<(String, bool)> {
+    if let ([only], []) = (local, cloud) {
         println!("  using the only {what} model installed: {only}");
-        return Ok(only.clone());
+        return Ok((only.clone(), false));
     }
-    println!("  {what} models installed:");
-    for (i, m) in models.iter().enumerate() {
-        println!("    {}) {m}", i + 1);
+    println!("  {what} models Ollama can serve:");
+    let entries: Vec<(&String, bool)> = local
+        .iter()
+        .map(|m| (m, false))
+        .chain(cloud.iter().map(|m| (m, true)))
+        .collect();
+    for (i, (m, hosted)) in entries.iter().enumerate() {
+        let note = if *hosted {
+            "  (hosted by ollama.com — your text leaves this machine)"
+        } else {
+            ""
+        };
+        println!("    {}) {m}{note}", i + 1);
     }
-    let n = models.len();
+    let n = entries.len();
     let picked = ask(p, &format!("  which one? [1-{n}]"), move |s| {
         s.trim()
             .parse::<usize>()
@@ -598,32 +615,43 @@ fn choose_model(p: &mut dyn Prompter, what: &str, models: &[String]) -> Result<S
             .filter(|i| (1..=n).contains(i))
             .ok_or_else(|| format!("answer a number from 1 to {n}"))
     })?;
-    Ok(models[picked - 1].clone())
+    let (m, hosted) = entries[picked - 1];
+    Ok((m.clone(), hosted))
 }
 
-/// Offer the local Ollama for a stage, and return the base URL and model chosen there.
-/// `None` means "ask the ordinary questions instead" — Ollama is not running, has no model
-/// this stage could use, or the user said no.
+/// Offer the local Ollama for a stage, and return the base URL and model chosen there, plus
+/// whether that model is hosted rather than local. `None` means "ask the ordinary questions
+/// instead" — Ollama is not running, has no model this stage could use, or the user said no.
 fn offer_ollama(
     p: &mut dyn Prompter,
     what: &str,
-    models: &[String],
-) -> Result<Option<(String, String)>> {
-    if models.is_empty() {
+    local: &[String],
+    cloud: &[String],
+) -> Result<Option<(String, String, bool)>> {
+    if local.is_empty() && cloud.is_empty() {
         return Ok(None);
     }
+    let hosted = if cloud.is_empty() {
+        String::new()
+    } else {
+        format!(" and {} hosted by ollama.com", cloud.len())
+    };
     println!(
-        "  Ollama is running at {} with {} {what} model(s).",
+        "  Ollama is running at {} with {} local {what} model(s){hosted}.",
         ollama::DEFAULT_HOST,
-        models.len()
+        local.len()
     );
     if !ask(p, &format!("  Use Ollama for {what}? [Y/n]"), |s| {
         parse_yes_no(s, true)
     })? {
         return Ok(None);
     }
-    let model = choose_model(p, what, models)?;
-    Ok(Some((ollama::base_url(ollama::DEFAULT_HOST), model)))
+    let (model, is_cloud) = choose_model(p, what, local, cloud)?;
+    Ok(Some((
+        ollama::base_url(ollama::DEFAULT_HOST),
+        model,
+        is_cloud,
+    )))
 }
 
 fn ask_stt(p: &mut dyn Prompter, probe: &mut dyn Probe, a: &mut Answers) -> Result<()> {
@@ -677,13 +705,15 @@ fn ask_polish(p: &mut dyn Prompter, probe: &mut dyn Probe, a: &mut Answers) -> R
     }
     let local = probe.ollama().unwrap_or_default();
     loop {
-        match offer_ollama(p, "text", &local.text)? {
-            Some((url, model)) => {
-                if model.ends_with("-cloud") {
-                    println!("  ⚠️ This model is proxied through https://ollama.com — your");
-                    println!("     text goes to their server. Only the transcript text is sent;");
-                    println!("     audio is transcribed locally. Continue? [Y/n]");
-                    if !ask(p, "", |s| parse_yes_no(s, true))? {
+        match offer_ollama(p, "text", &local.text, &local.cloud)? {
+            Some((url, model, is_cloud)) => {
+                if is_cloud {
+                    println!("  {model} is served by ollama.com, not by this machine: every");
+                    println!("  dictation's text will be sent there (audio never is — speech is");
+                    println!("  transcribed by your own server).");
+                    if !ask(p, "  Send your text to ollama.com? [y/N]", |s| {
+                        parse_yes_no(s, false)
+                    })? {
                         continue;
                     }
                 }
@@ -845,16 +875,16 @@ fn write_config(p: &mut dyn Prompter, path: &Path, text: &str, granted: bool) ->
 /// the daemon, or by a tray item that has no business ending the process.
 pub fn run(path: &Path) -> Result<bool> {
     println!("byovox setup — a few questions, each answer probed as you give it.");
-    println!("Enter takes the default in brackets. Stop at any point and what you have");
-    println!("answered so far is still written; Ctrl+C writes nothing.");
+    println!("Enter takes the default in brackets; Ctrl+C stops without writing anything.");
     println!("Config file: {}", path.display());
     let mut p = Console;
     let granted = confirm_overwrite(&mut p, path)?;
-    // Answers accumulate here rather than inside `interview`, so a run that ends early still
-    // has everything answered up to that point to write down. Losing eight good answers to a
-    // ninth question is the one failure a wizard must not have.
-    let mut answers = Answers::default();
-    let ended = interview_into(&mut p, &mut Stages, &mut answers);
+    // Nothing is written unless every question was answered: a run that ends early leaves
+    // an existing config exactly as it was, and a fresh machine with none. (`interview_into`
+    // keeps the answers given so far, for a wizard that can one day skip or resume — but a
+    // partial file written behind an overwrite the user granted for the finished one is not
+    // that.)
+    let answers = interview(&mut p, &mut Stages)?;
     let text = render(&answers)?;
     // Parsed before it is written, so a wizard that produced junk says so instead of leaving
     // the junk on disk. `load` below is the one that validates.
@@ -865,11 +895,6 @@ pub fn run(path: &Path) -> Result<bool> {
     // inform — the file is written either way — so saying it twice is only noise.
     write_config(&mut p, path, &text, granted)?;
     println!("wrote {}\n", path.display());
-    if let Err(e) = ended {
-        println!("setup ended early ({e}) — what you answered is saved.");
-        println!("Edit {} or run `byovox setup` again.", path.display());
-        return Ok(false);
-    }
     let cfg = config::load(path)?;
     Ok(check::run(&cfg, path))
 }
@@ -1257,11 +1282,12 @@ mod tests {
         }
 
         /// A machine with Ollama running: `speech` are whisper models it cannot actually
-        /// run, `text` the ones it can.
-        fn with_ollama(mut self, speech: &[&str], text: &[&str]) -> Verdicts {
+        /// run, `text` the ones it can, `cloud` the ones it answers for from ollama.com.
+        fn with_ollama(mut self, speech: &[&str], text: &[&str], cloud: &[&str]) -> Verdicts {
             self.installed = Some(ollama::Models {
                 unusable_speech: speech.iter().map(|s| s.to_string()).collect(),
                 text: text.iter().map(|s| s.to_string()).collect(),
+                cloud: cloud.iter().map(|s| s.to_string()).collect(),
             });
             self
         }
@@ -1296,7 +1322,8 @@ mod tests {
             "",                         // by_layout
             "",                         // capture log
         ]);
-        let mut probes = Verdicts::new(&[true], &[true]).with_ollama(&[], &["llama3.2", "qwen2.5"]);
+        let mut probes =
+            Verdicts::new(&[true], &[true]).with_ollama(&[], &["llama3.2", "qwen2.5"], &[]);
         let a = interview(&mut p, &mut probes).unwrap();
         assert!(p.answers.is_empty(), "the script covered every question");
         assert_eq!(a.polish_base_url, ollama::base_url(ollama::DEFAULT_HOST));
@@ -1320,7 +1347,7 @@ mod tests {
             "",                         // capture log
         ]);
         let mut probes =
-            Verdicts::new(&[true], &[]).with_ollama(&["whisper-large-v3"], &["llama3.2"]);
+            Verdicts::new(&[true], &[]).with_ollama(&["whisper-large-v3"], &["llama3.2"], &[]);
         let a = interview(&mut p, &mut probes).unwrap();
         assert!(p.answers.is_empty(), "the script covered every question");
         assert_eq!(a.stt_base_url, "http://127.0.0.1:8770/v1");
@@ -1345,7 +1372,7 @@ mod tests {
             "", // by_layout
             "", // capture log
         ]);
-        let mut probes = Verdicts::new(&[true], &[true]).with_ollama(&[], &["llama3.2"]);
+        let mut probes = Verdicts::new(&[true], &[true]).with_ollama(&[], &["llama3.2"], &[]);
         let a = interview(&mut p, &mut probes).unwrap();
         assert!(p.answers.is_empty(), "the script covered every question");
         assert_eq!(a.polish_model, "llama3.2");
@@ -1354,6 +1381,61 @@ mod tests {
             "{:?}",
             p.asked
         );
+    }
+
+    /// A hosted model is listed after the local ones, marked, and is written only after a
+    /// question whose default is no: the text of every dictation would leave the machine.
+    #[test]
+    fn a_hosted_model_is_offered_apart_and_needs_a_yes() {
+        let mut p = Script::new(&[
+            "http://127.0.0.1:8770/v1",
+            "",  // no token
+            "",  // polish? yes
+            "",  // use Ollama for text? yes
+            "2", // the hosted one, listed after the local one
+            "y", // send text to ollama.com: an explicit yes
+            "",  // hotkey
+            "",  // candidates
+            "",  // by_layout
+            "",  // capture log
+        ]);
+        let mut probes = Verdicts::new(&[true], &[true]).with_ollama(
+            &[],
+            &["gemma4:e2b"],
+            &["gemma4:31b-cloud"],
+        );
+        let a = interview(&mut p, &mut probes).unwrap();
+        assert!(p.answers.is_empty(), "the script covered every question");
+        assert_eq!(a.polish_model, "gemma4:31b-cloud");
+        assert!(
+            p.asked.iter().any(|q| q.contains("ollama.com")),
+            "the hosted pick was named as such: {:?}",
+            p.asked
+        );
+
+        // Declining the hosted model re-offers, and a local pick then needs no such question.
+        let mut p = Script::new(&[
+            "http://127.0.0.1:8770/v1",
+            "",
+            "",
+            "",
+            "2",
+            "",  // send text to ollama.com? default no
+            "",  // use Ollama again? yes
+            "1", // the local one
+            "",
+            "",
+            "",
+            "",
+        ]);
+        let mut probes = Verdicts::new(&[true], &[true]).with_ollama(
+            &[],
+            &["gemma4:e2b"],
+            &["gemma4:31b-cloud"],
+        );
+        let a = interview(&mut p, &mut probes).unwrap();
+        assert!(p.answers.is_empty(), "the script covered every question");
+        assert_eq!(a.polish_model, "gemma4:e2b");
     }
 
     /// The failure this wizard must not have: eight good answers lost to a ninth question.
