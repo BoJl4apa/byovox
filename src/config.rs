@@ -176,6 +176,9 @@ pub struct InjectConfig {
     /// auto | type | paste | clipboard-only
     pub mode: String,
     pub trailing_space: bool,
+    /// Pop exactly one terminal `.` before typing (#19). On by default because a dictation
+    /// usually lands mid-sentence; `false` types the endpoint's period as it came.
+    pub strip_terminal_period: bool,
     /// Longest transcript, in characters, that may be typed; `0` lifts the limit. A reply
     /// over it is held for `byovox last`, never truncated.
     pub max_chars: usize,
@@ -185,6 +188,7 @@ impl Default for InjectConfig {
         Self {
             mode: "auto".into(),
             trailing_space: false,
+            strip_terminal_period: true,
             max_chars: 20_000,
         }
     }
