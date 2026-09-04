@@ -7,9 +7,8 @@
 **Hold a key. Talk. Let go. Your words get typed into whatever window you're in.**
 
 Bring your own servers. Speech, and the optional clean-up, each run wherever you point
-them — this machine, a box on your network, or a hosted service. `byovox setup` asks which
-of the three you want for each stage, and says what leaves your machine before you answer.
-Windows only, for now.
+them — a server you run, or a hosted service. `byovox setup` asks which, for each stage, and
+says what leaves your machine before you answer. Windows only, for now.
 
 ## Get going in 4 steps
 
@@ -17,7 +16,7 @@ Windows only, for now.
 
 byovox needs a Whisper server — this step builds one you run. If you would rather use a
 hosted transcription API, skip to step 4 and pick *a hosted service* there; the wizard asks
-for its URL and key, and tells you your audio will be sent to it.
+for its URL, a model name and a key, and tells you your audio will be sent to it.
 
 Get [whisper.cpp](https://github.com/ggml-org/whisper.cpp),
 download a model from
@@ -52,7 +51,7 @@ slow? Ollama's hosted models are faster — but your transcripts leave your mach
 one into the config ([details](docs/platform-windows.md#3-text-clean-up-optional)).
 
 A dictation usually lands mid-sentence, so neither the capital the clean-up adds to the first
-word nor the period it puts at the end is usually wanted. Two settings frame it:
+word nor the period the transcript ends with is usually wanted. Two settings frame it:
 `polish.capitalize_first_word = false` leaves the first word as you said it — except where it
 would carry a capital anywhere, like a name, an acronym or "I" — and
 `inject.strip_terminal_period = false` keeps the final period byovox drops by default.
@@ -60,7 +59,8 @@ would carry a capital anywhere, like a name, an acronym or "I" — and
 ### 3. Install byovox
 
 Download the Windows zip from [Releases](https://github.com/BoJl4apa/byovox/releases) and unzip
-it — keep both `.exe` files together. Verify it first; both files are published beside the zip:
+it — keep both `.exe` files together. Verify it first; `SHA256SUMS` is published beside the
+zip, and the attestation is fetched from GitHub:
 
 ```sh
 sha256sum -c SHA256SUMS                                              # Git Bash or WSL; PowerShell: Get-FileHash
@@ -87,9 +87,9 @@ byovox setup
 For each stage it asks where the endpoint lives — a server you run, a local Ollama (clean-up
 only), or a hosted service — and a hosted pick says what byovox will send there before it
 asks for the URL. Press Enter to take a default; Ctrl+C stops without writing anything.
-The answers without a default are the ones byovox cannot start without: the speech URL, the
-clean-up URL and model while clean-up is on, and — on a hosted pick only — that stage's model
-name.
+Three answers have no default and byovox will not start without them: the speech URL, and the
+clean-up URL and model while clean-up is on. A hosted pick also insists on that stage's model
+name — the wizard will not move on without one, though the config itself has a default.
 
 ```sh
 byovox
@@ -150,8 +150,9 @@ byovox hotkey --set F13                # bind it
 byovox hotkey --set ControlLeft+ShiftLeft+Z --mode toggle
 ```
 
-It refuses a key another app already owns, so you find out now instead of wondering why
-something else keeps opening. `--mode toggle` means press once to start, once to send, instead
+It refuses a key another application has registered system-wide, so you find out now instead
+of wondering why something else keeps opening — though a bare modifier, and an app that grabs
+keys with a hook rather than registering them, are both invisible to that probe. `--mode toggle` means press once to start, once to send, instead
 of holding.
 
 ## Speak more than one language?
