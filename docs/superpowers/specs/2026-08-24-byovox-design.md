@@ -400,9 +400,16 @@ protocol parsing; capture-log row shape.
 polish stage is text to text, so scoring a prompt change needs no audio, only the endpoint.
 
 **Gates on every push** (`.github/workflows/ci.yml`): `cargo fmt --check`, `cargo clippy
---all-targets --locked -D warnings` and `cargo test --locked` on a windows/ubuntu/macos matrix,
-a `cargo check` against the declared MSRV so `rust-version` is a checked promise, and
-`cargo audit` + `cargo deny check`. All on the locked dependency versions.
+--all-targets --locked -D warnings`, `cargo test --locked` and `bench/polish_bench.py
+--self-test` on a windows/ubuntu/macos matrix, a `cargo check` against the declared MSRV so
+`rust-version` is a checked promise, and `cargo audit` + `cargo deny check`. All on the locked
+dependency versions.
+
+The bench self-test is there because the couplings it checks are the ones a Rust-only suite
+cannot see: the bench reads `BUILT_IN_PROMPT` and the two rule-1 constants *out of the source*,
+so a reshaped literal or a renumbered rule desyncs it silently. When #28 renumbered the
+glossary rule across four sites, `cargo test` covered three of them and the bench's own
+extraction regex was the fourth.
 
 **Manual checklist** (`docs/testing.md`), run against the release build before a tag:
 hold/release/tap/cancel; layout switch → language; injection into an editor, a browser field, a
