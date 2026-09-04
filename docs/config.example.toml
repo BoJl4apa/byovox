@@ -129,7 +129,7 @@ min_words = 0
 # Capitalise the first word of a dictation. A dictation usually lands mid-sentence, so the
 # capital is often unwanted — but it cannot simply be lowered afterwards, because the first
 # word may be a name, an acronym or "I". So this is a prompt-level setting: `false` swaps
-# rule 1 of the built-in prompt for one that leaves the first word as spoken unless it would
+# rule 1 of the built-in prompt for one that lower-cases the first word unless it would
 # carry a capital anywhere in a sentence. A `prompt_file` below owns its own rule 1 and is
 # never rewritten, and the raw fallback (polish down) keeps whisper's capital either way.
 capitalize_first_word = true

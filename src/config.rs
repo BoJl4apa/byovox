@@ -140,7 +140,7 @@ pub struct PolishConfig {
     pub min_words: usize,
     pub prompt_file: String,
     /// Capitalise the first word of a dictation. On by default; `false` swaps rule 1 of the
-    /// built-in prompt for one that leaves the first word as spoken unless it would carry a
+    /// built-in prompt for one that lower-cases the first word unless it would carry a
     /// capital anywhere in a sentence. A `prompt_file` owns its own rule 1 and is never
     /// rewritten, and the raw fallback keeps whisper's capital either way.
     pub capitalize_first_word: bool,
