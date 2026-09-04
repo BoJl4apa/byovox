@@ -24,6 +24,9 @@ pub struct PipelineConfig {
     pub polish_min_words: usize,
     pub prompt: Option<String>,
     pub trailing_space: bool,
+    /// `inject.strip_terminal_period`. Gates the one-terminal-period pop in `finish`; the
+    /// ellipsis guard and the whitespace truncate live inside the gate with it.
+    pub strip_terminal_period: bool,
     /// Play the warning cue when a kept transcript's `no_speech_prob` is above this;
     /// `0.0` never warns (#26).
     pub no_speech_warn: f32,
@@ -447,8 +450,9 @@ impl Pipeline {
         let mut text = sanitized.trim().to_string();
         // The endpoint punctuates — whisper on its own, the polish prompt by rule — but a
         // dictation usually lands mid-sentence, so exactly one terminal `.` goes. An ellipsis
-        // stays (the `..` guard), and `?`/`!` were asked for by tone (#19).
-        if text.ends_with('.') && !text.ends_with("..") {
+        // stays (the `..` guard), and `?`/`!` were asked for by tone (#19). A user who wants
+        // the period keeps it with `inject.strip_terminal_period = false` (#36).
+        if self.cfg.strip_terminal_period && text.ends_with('.') && !text.ends_with("..") {
             text.pop();
             // the pop can expose whitespace ("Hello .") — never type a stray trailing space
             text.truncate(text.trim_end().len());
@@ -495,7 +499,7 @@ impl Pipeline {
                 IndicatorState::Idle
             };
             self.set_state(State::Idle, final_state);
-            tracing::info!(lang = %language.label(), stt_ms, dropped, "empty transcript after sanitising and the period strip");
+            tracing::info!(lang = %language.label(), stt_ms, dropped, strip_terminal_period = self.cfg.strip_terminal_period, "empty transcript after sanitising");
             return Outcome::Empty;
         }
         if self.cfg.trailing_space {
@@ -670,6 +674,7 @@ mod tests {
             polish_min_words: 0,
             prompt: Some("Glossary: Acme".into()),
             trailing_space: false,
+            strip_terminal_period: true,
             polish_model: "cleanup-1".into(),
             max_chars: 20_000,
             no_speech_threshold: 0.6,
@@ -1086,6 +1091,26 @@ mod tests {
         );
     }
 
+    /// The pop is the default, not the law: `inject.strip_terminal_period = false` types the
+    /// period the endpoint sent. The `Wait...` row documents that an ellipsis survives here
+    /// too, but it is the `Hello.` row that pins the gate — with the flag off the condition
+    /// short-circuits before the `..` guard is ever consulted, so the ellipsis is held by
+    /// `the_trailing_period_is_stripped_before_typing` on the default, not by this test.
+    #[test]
+    fn the_terminal_period_survives_when_the_strip_is_off() {
+        for (served, typed) in [("Hello.", "Hello."), ("Wait...", "Wait...")] {
+            let mut r = rig(
+                FakeTranscriber::ok("spoken words"),
+                Some(FakePolisher::ok(served)),
+                false,
+                false,
+            );
+            r.p.cfg.strip_terminal_period = false;
+            dictate(&mut r, Duration::from_secs(1));
+            assert_eq!(r.rung1.texts.lock().unwrap().as_slice(), [typed]);
+        }
+    }
+
     #[test]
     fn trailing_space_is_appended_when_configured() {
         let mut r = rig(FakeTranscriber::ok("hi"), None, false, false);
@@ -1337,6 +1362,7 @@ mod tests {
                 polish_min_words: 0,
                 prompt: None,
                 trailing_space: false,
+                strip_terminal_period: true,
                 polish_model: String::new(),
                 max_chars: 20_000,
                 no_speech_threshold: 0.6,
