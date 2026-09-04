@@ -19,6 +19,25 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+      # The polish bench is the gate on every prompt change — "measured, not eyeballed" —
+      # and until now nothing ran it. Scoring items needs the live model, but `--self-test`
+      # does not: it checks offline that the bench can still read `BUILT_IN_PROMPT` and the
+      # two rule-1 constants out of src/polish.rs, that the glossary rule's number matches
+      # the prompt's numbering, that the two halves of the item set stay disjoint, and that
+      # `typed()` still reproduces the pipeline's tail. Those are exactly the couplings a
+      # Rust-only suite cannot see: #28 renumbered the glossary rule across four sites, and
+      # three were caught by `cargo test` while the bench's own extraction regex was not.
+      #
+      # In the matrix rather than a job of its own, for two reasons. A new job would not be
+      # one of the ruleset's required checks, so it could fail without blocking a merge. And
+      # the bench has real per-OS behaviour to exercise — it reconfigures stdout because a
+      # Windows console's default code page cannot print the Hebrew and Cyrillic items.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          # The minimum the bench declares (it needs `tomllib`), checked at that minimum for
+          # the same reason the msrv job pins 1.88: a floor nothing runs against is a guess.
+          python-version: '3.11'
+      - run: python bench/polish_bench.py --self-test
 
   # The MSRV in Cargo.toml is a promise to anyone installing byovox, and the matrix above
   # runs on `stable`, so nothing ever built against it: a change using a feature newer than
