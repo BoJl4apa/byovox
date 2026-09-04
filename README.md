@@ -56,7 +56,7 @@ one into the config ([details](docs/platform-windows.md#3-text-clean-up-optional
 
 A dictation usually lands mid-sentence, so neither the capital the clean-up adds to the first
 word nor the period the transcript ends with is usually wanted. Two settings frame it:
-`polish.capitalize_first_word = false` leaves the first word as you said it — except where it
+`polish.capitalize_first_word = false` leaves the first word lowercase — except where it
 would carry a capital anywhere, like a name, an acronym or "I" — and
 `inject.strip_terminal_period = false` keeps the final period byovox drops by default.
 

@@ -34,25 +34,40 @@ pub trait Polisher: Send {
 /// which is worse than doing nothing. This wording describes that input instead of printing it.
 ///
 /// Known limits, measured rather than assumed:
-/// - **A join whose two words also read as an ordinary noun phrase is not converted**, and it
-///   is not a wording problem, so no wording fixes it. "training period strip" and "warmup
-///   period strip" come back with the words intact, or half-converted (`training.period file`),
-///   while `backup`, `tokenizer`, `config`, `readme` and `handler` in the same sentence shape
-///   convert 3/3 — and so does "training dot strip". What separates them is that "training
-///   period" and "warmup period" are English noun phrases, so such a sentence carries the same
-///   evidence as the `t-jurassic` trap this rule is *required* to leave alone. Only the speaker
-///   knows which was meant. Measured on a healthy endpoint 2026-09-04 (#55, 5 runs); the older
-///   reading — that "period" itself does not convert — came from one bench item that happened
-///   to be a collocation, scored against an endpoint that had fallen back to CPU.
+/// - **A join whose two words also read as an ordinary noun phrase is not converted.**
+///   "training period strip", "grace period expire" and "warmup period flush" come back with
+///   the words intact or half-converted (`training period.strip`), while `backup` and
+///   `tokenizer` in the same sentence shape convert 3/3, and so does "training dot strip" —
+///   the joiner word is what decides, not the identifier. Such a sentence carries much the
+///   same evidence as the `t-jurassic` trap this rule is *required* to leave alone, which is
+///   why it is left as the residue. Measured on a healthy endpoint 2026-09-04 (#55, 5 runs);
+///   the older reading — that "period" itself does not convert — came from one bench item that
+///   happened to be a collocation, scored against an endpoint that had fallen back to CPU.
+///
+///   It is **not** undecidable, and the review of #55 disproved the claim that it was: one
+///   added sentence ("a join is still a join when the two words on either side also read as an
+///   ordinary English phrase", with the training example spelled out) converts all three
+///   collocations **5/5** with `t-jurassic` and "a long period of silence" still 5/5. It is not
+///   taken because it costs more than it buys: `c-filler-en` falls to **0/5** ("um so I think"
+///   → "So I think", the leading filler kept), and the same sentence carrying a different
+///   example regresses the collocations into `training.period.strip`. A leading "um so" is a
+///   commoner dictation than a dotted identifier — 1 in 431 of the capture corpus — so the
+///   trade is refused, and recorded here so it is not re-run blind. Reopening it means finding
+///   a wording that holds `c-filler-en`; #57.
 /// - **The pre-dotted form is one shape of that same residue**, not a separate limit. Whisper
 ///   dots the ambiguous join and keeps the word, so "training period strip" arrives as
 ///   `training.period.strip` and is typed as it came. #48 closed NOT PLANNED: it is 1 dictation
 ///   in 428 of the owner's corpus, and the deterministic transform it proposed would turn
 ///   `numpy.dot` into `numpy`. What stayed, in one narrowed sentence, is the guard against
-///   *emitting* that shape: dropping it entirely was measured and `p-spoken-en` fell 3/3 → 0/3.
-///   The sentence used to read "no identifier you type ever contains one of these names as a
-///   segment", which is false (`numpy.dot`, `torch.dot`) and would have licensed mangling
-///   those; it now forbids only writing such a segment, which is what the model had to be told.
+///   *emitting* that shape. Its "`p-spoken-en` fell 3/3 → 0/3 without it" was a
+///   degraded-endpoint number (#46) and is withdrawn: re-measured healthy (#55), removing the
+///   sentence leaves every item in the file at 5/5, 17/17. What it still does is only visible
+///   on the collocation case the file no longer contains — there, without it, "training period
+///   strip" comes back `training period.strip` in 3 runs of 5 against 1 of 5 with it. So it is
+///   kept for the shape, not for a score, and `rule_nine_converts_a_spoken_punctuation_name…`
+///   pins it, since no bench item can. The sentence used to read "no identifier you type ever
+///   contains one of these names as a segment", which is false (`numpy.dot`, `torch.dot`) and
+///   would have licensed mangling those; it now forbids only writing such a segment.
 /// - The raw-fallback path — polish down, transcript typed as whisper wrote it — types the
 ///   literal words, because no rule runs at all there.
 /// - An explicitly spoken *terminal* "period" becomes `.` and is then popped by the strip in
@@ -82,7 +97,7 @@ pub const CAPITALISE_FIRST_RULE: &str =
     r#"1. Add punctuation and capitalisation where the speech pauses or clauses end."#;
 
 /// Rule 1 as it reads when `polish.capitalize_first_word` is false: punctuation and
-/// mid-sentence capitals as before, but the first word left as spoken.
+/// mid-sentence capitals as before, but the first word lower-cased.
 ///
 /// A dictation usually lands mid-sentence, so the leading capital is as unwanted there as the
 /// terminal period (#36) — and unlike the period it cannot be undone by a text transform,
@@ -105,7 +120,7 @@ pub const CAPITALISE_FIRST_RULE: &str =
 pub const LOWERCASE_FIRST_RULE: &str = r#"1. Add punctuation where the speech pauses or clauses end, and capitalisation inside the sentence. The English pronoun "I" is always written I, alone or in "I'm", "I've", "I'll" — never i, in any position, including the very first word. Every other first word is lower-cased, even where the transcript capitalises it: a dictation usually lands mid-sentence, so "They can wait until Monday" comes back as "they can wait until Monday". A proper noun, a personal name and an acronym keep their capital: "Anna is on her way", "IEEE approved the draft", "Москва подождёт"."#;
 
 /// The base prompt for a run that uses the built-in one: `BUILT_IN_PROMPT`, or the same with
-/// rule 1 swapped when the user asked for the first word to be left as spoken.
+/// rule 1 swapped when the user asked for the first word not to be capitalised.
 ///
 /// The swap happens where the base prompt is *chosen*, so a `polish.prompt_file` is never
 /// rewritten: a replacement prompt owns its own rule 1, and byovox editing someone else's file
@@ -427,6 +442,10 @@ mod tests {
         }
         // And the trap half: a name the sentence is about stays a word.
         assert!(rule9.contains("a long period of silence"));
+        // The guard against *emitting* the pre-dotted shape. Pinned here because no bench item
+        // reaches it: removing the sentence leaves the whole file at 17/17, and its effect
+        // shows only on the collocation case, which no item can hold green (#55).
+        assert!(rule9.contains("into an identifier as a segment of its own"));
         // "New line" is not in the set — `sanitize` flattens every newline to a space (#11),
         // so converting one would be a no-op.
         assert!(!BUILT_IN_PROMPT.contains("new line"));
