@@ -220,11 +220,16 @@ pub struct Answers {
     pub stt_model: String,
     pub stt_api_key_env: String,
     pub stt_api_key_file: String,
+    /// Written to `stt.hosted`: the user picked a hosted service for speech.
+    pub stt_hosted: bool,
     pub polish_enabled: bool,
     pub polish_base_url: String,
     pub polish_model: String,
     pub polish_api_key_env: String,
     pub polish_api_key_file: String,
+    /// Written to `polish.hosted`. Also true for an Ollama model served by ollama.com
+    /// rather than by the local daemon — that is a hosted service too.
+    pub polish_hosted: bool,
     pub hotkey_key: String,
     pub candidates: Vec<String>,
     pub by_layout: Vec<(String, String)>,
@@ -241,11 +246,13 @@ impl Default for Answers {
             stt_model: String::new(),
             stt_api_key_env: String::new(),
             stt_api_key_file: String::new(),
+            stt_hosted: false,
             polish_enabled: true,
             polish_base_url: String::new(),
             polish_model: String::new(),
             polish_api_key_env: String::new(),
             polish_api_key_file: String::new(),
+            polish_hosted: false,
             hotkey_key: "ControlRight".into(),
             candidates: Vec::new(),
             by_layout: Vec::new(),
@@ -262,6 +269,7 @@ fn edits(a: &Answers) -> Vec<(&'static str, &'static str, String)> {
         ("stt", "base_url", toml_string(&a.stt_base_url)),
         ("stt", "api_key_env", toml_string(&a.stt_api_key_env)),
         ("stt", "api_key_file", toml_string(&a.stt_api_key_file)),
+        ("stt", "hosted", a.stt_hosted.to_string()),
         ("language", "candidates", toml_list(&a.candidates)),
         ("polish", "enabled", a.polish_enabled.to_string()),
         ("hotkey", "key", toml_string(&a.hotkey_key)),
@@ -284,6 +292,7 @@ fn edits(a: &Answers) -> Vec<(&'static str, &'static str, String)> {
                 "api_key_file",
                 toml_string(&a.polish_api_key_file),
             ),
+            ("polish", "hosted", a.polish_hosted.to_string()),
         ]);
     }
     v
@@ -619,39 +628,88 @@ fn choose_model(
     Ok((m.clone(), hosted))
 }
 
-/// Offer the local Ollama for a stage, and return the base URL and model chosen there, plus
-/// whether that model is hosted rather than local. `None` means "ask the ordinary questions
-/// instead" — Ollama is not running, has no model this stage could use, or the user said no.
-fn offer_ollama(
-    p: &mut dyn Prompter,
-    what: &str,
-    local: &[String],
-    cloud: &[String],
-) -> Result<Option<(String, String, bool)>> {
+/// Where a stage's endpoint lives. Asked before the questions that differ between the three,
+/// because every one of them ends in a `base_url` and only the user knows which kind it is:
+/// a hosted service cannot be told from a server you run by looking at the URL (#41).
+#[derive(Clone, Copy, PartialEq)]
+enum Source {
+    /// A server the user runs — their own machine, or one on their network.
+    Own,
+    /// The local Ollama the probe found. Polish only: Ollama's runner refuses whisper models.
+    Ollama,
+    /// Somebody else's service, reached with a key. The only branch that says out loud what
+    /// leaves the machine, and the one that writes `hosted = true`.
+    Hosted,
+}
+
+/// The menu line for the local Ollama, or `None` when there is nothing there this stage could
+/// use — which is also what makes the pick a two-way question instead of a three-way one.
+fn ollama_option(what: &str, local: &[String], cloud: &[String]) -> Option<String> {
     if local.is_empty() && cloud.is_empty() {
-        return Ok(None);
+        return None;
     }
     let hosted = if cloud.is_empty() {
         String::new()
     } else {
         format!(" and {} hosted by ollama.com", cloud.len())
     };
-    println!(
-        "  Ollama is running at {} with {} local {what} model(s){hosted}.",
+    Some(format!(
+        "the local Ollama at {} — {} local {what} model(s){hosted}",
         ollama::DEFAULT_HOST,
         local.len()
-    );
-    if !ask(p, &format!("  Use Ollama for {what}? [Y/n]"), |s| {
-        parse_yes_no(s, true)
-    })? {
-        return Ok(None);
-    }
-    let (model, is_cloud) = choose_model(p, what, local, cloud)?;
-    Ok(Some((
-        ollama::base_url(ollama::DEFAULT_HOST),
-        model,
-        is_cloud,
-    )))
+    ))
+}
+
+/// The stage's endpoint pick. Replaces the `Use Ollama? [Y/n]` gate: that question could only
+/// ever offer one alternative, and a hosted service is a legitimate third answer for either
+/// stage — byovox is bring-your-own, and the config has carried a bearer token by name all
+/// along. Names no provider, deliberately: the choice is the user's and the wording stays
+/// generic.
+fn ask_source(p: &mut dyn Prompter, ollama: Option<String>) -> Result<Source> {
+    println!("    1) a server you run — this machine, or one on your network");
+    let n = match &ollama {
+        Some(line) => {
+            println!("    2) {line}");
+            println!("    3) a hosted service you have an API key for");
+            3
+        }
+        None => {
+            println!("    2) a hosted service you have an API key for");
+            2
+        }
+    };
+    // Not "which one?": `choose_model` asks exactly that, and both a test and a user reading
+    // the transcript afterwards need to tell the endpoint pick from the model pick.
+    let picked = ask(p, &format!("  choose [1-{n}]"), move |s| {
+        s.trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|i| (1..=n).contains(i))
+            .ok_or_else(|| format!("answer a number from 1 to {n}"))
+    })?;
+    Ok(match (picked, ollama.is_some()) {
+        (1, _) => Source::Own,
+        (2, true) => Source::Ollama,
+        _ => Source::Hosted,
+    })
+}
+
+/// What a hosted pick says before it asks for the URL: what this stage will send, and that
+/// byovox sends nothing anywhere else. Speech sends your audio, polish every dictation's text.
+///
+/// Returned as the head of the base-URL question rather than printed before it, for two
+/// reasons: it cannot drift out of order with the answer it exists to inform, and a scripted
+/// interview can assert it was there — `Prompter` records questions, not `println!`.
+///
+/// Names no provider. Which hosted service this is stays the user's business; byovox is
+/// bring-your-own and says only what leaving the machine means.
+fn hosted_notice(what_leaves: &str) -> String {
+    let mut out =
+        format!("  A hosted service runs on someone else's machine: {what_leaves} will be sent");
+    out.push_str("\n  there, and you are trusting it the way you trust your own keyboard.");
+    out.push_str("\n  byovox sends nothing anywhere else - no telemetry, and no endpoint");
+    out.push_str("\n  you did not name.\n");
+    out
 }
 
 fn ask_stt(p: &mut dyn Prompter, probe: &mut dyn Probe, a: &mut Answers) -> Result<()> {
@@ -672,11 +730,29 @@ fn ask_stt(p: &mut dyn Prompter, probe: &mut dyn Probe, a: &mut Answers) -> Resu
                  -l auto --inference-path /v1/audio/transcriptions"
             );
         }
-        a.stt_base_url = ask(
-            p,
-            "  OpenAI-compatible base URL, e.g. http://127.0.0.1:8770/v1 (required)",
-            parse_base_url,
-        )?;
+        // Ollama is `None` here for the same reason the note above exists, so speech is a
+        // two-way pick: a server you run, or a hosted service.
+        a.stt_hosted = ask_source(p, None)? == Source::Hosted;
+        let url_q = if a.stt_hosted {
+            format!(
+                "{}  OpenAI-compatible base URL, e.g. https://api.example.com/v1 (required)",
+                hosted_notice("your audio")
+            )
+        } else {
+            "  OpenAI-compatible base URL, e.g. http://127.0.0.1:8770/v1 (required)".to_string()
+        };
+        a.stt_base_url = ask(p, &url_q, parse_base_url)?;
+        if a.stt_hosted {
+            // Only the hosted branch asks: whisper.cpp ignores the field, and the example
+            // file's `whisper-1` is already the name the hosted APIs use for it.
+            a.stt_model = ask(p, "  Model name (required, e.g. whisper-1)", parse_required)?;
+        } else {
+            // Cleared, not merely left unset: a failed probe re-asks this whole group, so a
+            // run that answered the hosted branch first would otherwise carry that model name
+            // into a "server you run" answer nobody asked one for. `edits` writes `stt.model`
+            // whenever it is non-empty, so the stale name would reach the file.
+            a.stt_model.clear();
+        }
         let (env, file) = ask_token(p)?;
         a.stt_api_key_env = env;
         a.stt_api_key_file = file;
@@ -705,8 +781,13 @@ fn ask_polish(p: &mut dyn Prompter, probe: &mut dyn Probe, a: &mut Answers) -> R
     }
     let local = probe.ollama().unwrap_or_default();
     loop {
-        match offer_ollama(p, "text", &local.text, &local.cloud)? {
-            Some((url, model, is_cloud)) => {
+        println!(
+            "
+Where does the clean-up model run?"
+        );
+        match ask_source(p, ollama_option("text", &local.text, &local.cloud))? {
+            Source::Ollama => {
+                let (model, is_cloud) = choose_model(p, "text", &local.text, &local.cloud)?;
                 if is_cloud {
                     println!("  {model} is served by ollama.com, not by this machine: every");
                     println!("  dictation's text will be sent there (audio never is — speech is");
@@ -717,17 +798,26 @@ fn ask_polish(p: &mut dyn Prompter, probe: &mut dyn Probe, a: &mut Answers) -> R
                         continue;
                     }
                 }
-                a.polish_base_url = url;
+                a.polish_base_url = ollama::base_url(ollama::DEFAULT_HOST);
                 a.polish_model = model;
                 a.polish_api_key_env = String::new();
                 a.polish_api_key_file = String::new();
+                // An ollama.com model is a hosted service reached through the local daemon:
+                // the URL is loopback and the text still leaves the machine.
+                a.polish_hosted = is_cloud;
             }
-            None => {
-                a.polish_base_url = ask(
-                    p,
-                    "  Chat-completions base URL, e.g. http://127.0.0.1:4000/v1 (required)",
-                    parse_base_url,
-                )?;
+            source => {
+                a.polish_hosted = source == Source::Hosted;
+                let url_q = if a.polish_hosted {
+                    format!(
+                        "{}  Chat-completions base URL, e.g. https://api.example.com/v1 (required)",
+                        hosted_notice("every dictation's text")
+                    )
+                } else {
+                    "  Chat-completions base URL, e.g. http://127.0.0.1:4000/v1 (required)"
+                        .to_string()
+                };
+                a.polish_base_url = ask(p, &url_q, parse_base_url)?;
                 a.polish_model = ask(
                     p,
                     "  Model name, or the alias your gateway serves (required)",
@@ -1213,6 +1303,7 @@ mod tests {
 
         // The run survives it: the next answer is taken and the interview finishes.
         let mut p = Script::new(&[
+            "1",                     // speech: a server you run
             "http://h:8770/v\u{b}1", // re-asked
             "http://127.0.0.1:8770/v1",
             "",  // no token
@@ -1312,10 +1403,11 @@ mod tests {
     #[test]
     fn a_local_ollama_is_offered_for_polish_and_the_pick_is_written() {
         let mut p = Script::new(&[
+            "1",                        // speech: a server you run
             "http://127.0.0.1:8770/v1", // stt is still a server of its own
             "",                         // no token
             "",                         // polish? default yes
-            "",                         // use Ollama for text? default yes
+            "2",                        // polish: the local Ollama
             "2",                        // the second text model
             "",                         // hotkey
             "",                         // candidates
@@ -1338,6 +1430,7 @@ mod tests {
     #[test]
     fn a_whisper_model_in_ollama_is_never_offered_for_speech() {
         let mut p = Script::new(&[
+            "1",                        // speech: a server you run, never an Ollama
             "http://127.0.0.1:8770/v1", // the URL question is asked, not skipped
             "",                         // no token
             "n",                        // polish off
@@ -1363,14 +1456,15 @@ mod tests {
     #[test]
     fn one_text_model_is_taken_without_asking_which() {
         let mut p = Script::new(&[
+            "1", // speech: a server you run
             "http://127.0.0.1:8770/v1",
-            "", // no token
-            "", // polish? yes
-            "", // use Ollama for text? yes — and there is only one
-            "", // hotkey
-            "", // candidates
-            "", // by_layout
-            "", // capture log
+            "",  // no token
+            "",  // polish? yes
+            "2", // polish: the local Ollama — and it has only one model
+            "",  // hotkey
+            "",  // candidates
+            "",  // by_layout
+            "",  // capture log
         ]);
         let mut probes = Verdicts::new(&[true], &[true]).with_ollama(&[], &["llama3.2"], &[]);
         let a = interview(&mut p, &mut probes).unwrap();
@@ -1388,10 +1482,11 @@ mod tests {
     #[test]
     fn a_hosted_model_is_offered_apart_and_needs_a_yes() {
         let mut p = Script::new(&[
+            "1", // speech: a server you run
             "http://127.0.0.1:8770/v1",
             "",  // no token
             "",  // polish? yes
-            "",  // use Ollama for text? yes
+            "2", // polish: the local Ollama
             "2", // the hosted one, listed after the local one
             "y", // send text to ollama.com: an explicit yes
             "",  // hotkey
@@ -1415,13 +1510,14 @@ mod tests {
 
         // Declining the hosted model re-offers, and a local pick then needs no such question.
         let mut p = Script::new(&[
+            "1", // speech: a server you run
             "http://127.0.0.1:8770/v1",
             "",
             "",
-            "",
+            "2", // polish: the local Ollama
             "2",
             "",  // send text to ollama.com? default no
-            "",  // use Ollama again? yes
+            "2", // the pick is asked again: Ollama
             "1", // the local one
             "",
             "",
@@ -1438,12 +1534,163 @@ mod tests {
         assert_eq!(a.polish_model, "gemma4:e2b");
     }
 
+    /// The hosted branch, for both stages: the questions it adds, the key it writes, and the
+    /// sentence that has to reach the user *before* the URL question rather than after it.
+    #[test]
+    fn a_hosted_pick_says_what_leaves_the_machine_and_is_recorded() {
+        let mut p = Script::new(&[
+            "2",                          // speech: a hosted service (no Ollama option here)
+            "https://api.example.com/v1", // its base URL
+            "not-whisper-1",              // its model. Not "whisper-1": that is the
+            // example file's own default, so it could not tell "the wizard wrote it"
+            // from "nobody was asked and the default stood".
+            "",  // no token
+            "",  // polish? default yes
+            "2", // polish: a hosted service (no Ollama running)
+            "https://api.example.com/v1",
+            "some-chat-model",
+            "OPENAI_COMPATIBLE_TOKEN", // an unset variable
+            "",                        // key file: the default
+            "",                        // hotkey
+            "",                        // candidates
+            "",                        // by_layout
+            "",                        // capture log
+        ]);
+        let a = interview(&mut p, &mut Verdicts::new(&[true], &[true])).unwrap();
+        assert!(p.answers.is_empty(), "the script covered every question");
+        assert!(a.stt_hosted && a.polish_hosted);
+        assert_eq!(a.stt_model, "not-whisper-1");
+        assert_eq!(a.polish_base_url, "https://api.example.com/v1");
+        assert_eq!(a.polish_model, "some-chat-model");
+        assert_eq!(a.polish_api_key_env, "OPENAI_COMPATIBLE_TOKEN");
+
+        // The notice is part of the URL question, so "before it" is structural, not a race.
+        let stt_q = p
+            .asked
+            .iter()
+            .find(|q| q.contains("OpenAI-compatible"))
+            .expect("the speech URL was asked");
+        assert!(stt_q.contains("your audio will be sent"), "{stt_q}");
+        assert!(
+            stt_q.find("your audio").unwrap() < stt_q.find("OpenAI-compatible").unwrap(),
+            "the notice comes before the question: {stt_q}"
+        );
+        let polish_q = p
+            .asked
+            .iter()
+            .find(|q| q.contains("Chat-completions"))
+            .expect("the polish URL was asked");
+        assert!(
+            polish_q.contains("every dictation's text will be sent"),
+            "{polish_q}"
+        );
+        // Generic: byovox names no provider in the question it asks.
+        for q in [stt_q, polish_q] {
+            assert!(!q.to_lowercase().contains("openai."), "{q}");
+            assert!(!q.to_lowercase().contains("ollama"), "{q}");
+        }
+
+        // And it reaches the file, where `check` reads it.
+        let cfg: Config = toml::from_str(&render(&a).unwrap()).unwrap();
+        assert!(cfg.stt.hosted && cfg.polish.hosted);
+        assert_eq!(
+            cfg.stt.model, "not-whisper-1",
+            "the hosted answer reached the file, not the example default"
+        );
+    }
+
+    /// The other half of the same promise: picking a server you run writes `hosted = false`,
+    /// asks no model question for speech, and prints nothing about anything leaving.
+    #[test]
+    fn a_server_you_run_is_recorded_as_not_hosted() {
+        let mut p = Script::new(HAPPY);
+        let a = interview(&mut p, &mut Verdicts::new(&[true], &[true])).unwrap();
+        assert!(!a.stt_hosted && !a.polish_hosted);
+        assert!(
+            !p.asked.iter().any(|q| q.contains("will be sent")),
+            "{:?}",
+            p.asked
+        );
+        assert!(
+            !p.asked
+                .iter()
+                .any(|q| q.contains("Model name (required, e.g. whisper-1)")),
+            "speech asks for a model only on the hosted branch: {:?}",
+            p.asked
+        );
+        let cfg: Config = toml::from_str(&render(&a).unwrap()).unwrap();
+        assert!(!cfg.stt.hosted && !cfg.polish.hosted);
+        assert_eq!(cfg.stt.model, "whisper-1", "the example's own value stands");
+    }
+
+    /// An ollama.com model is reached through the loopback daemon, so no URL could ever say
+    /// so — but the text does leave the machine, and `polish.hosted` is what records it.
+    #[test]
+    fn an_ollama_com_model_is_recorded_as_hosted_though_its_url_is_loopback() {
+        let mut p = Script::new(&[
+            "1", // speech: a server you run
+            "http://127.0.0.1:8770/v1",
+            "",  // no token
+            "",  // polish? yes
+            "2", // polish: the local Ollama
+            "2", // the ollama.com model, listed after the local one
+            "y", // yes, send text there
+            "",
+            "",
+            "",
+            "",
+        ]);
+        let mut probes = Verdicts::new(&[true], &[true]).with_ollama(
+            &[],
+            &["gemma4:e2b"],
+            &["gemma4:31b-cloud"],
+        );
+        let a = interview(&mut p, &mut probes).unwrap();
+        assert!(p.answers.is_empty(), "the script covered every question");
+        assert_eq!(a.polish_base_url, ollama::base_url(ollama::DEFAULT_HOST));
+        assert!(a.polish_hosted, "loopback URL, somebody else's machine");
+        assert!(!a.stt_hosted);
+        let cfg: Config = toml::from_str(&render(&a).unwrap()).unwrap();
+        assert!(cfg.polish.hosted);
+    }
+
+    /// A retry must not carry an abandoned answer into the branch chosen instead: the hosted
+    /// branch is the only one that asks for a speech model, so picking it, failing the probe
+    /// and retrying with "a server you run" used to leave that model name in the file under a
+    /// stage that was never asked for one.
+    #[test]
+    fn a_retry_does_not_keep_the_abandoned_branch_answer() {
+        let mut p = Script::new(&[
+            "2",                          // speech: a hosted service
+            "https://api.example.com/v1", // its URL
+            "not-whisper-1",              // its model, distinguishable from the default
+            "",                           // no token
+            "r",                          // the probe fails: retry the whole group
+            "1",                          // this time, a server you run
+            "http://127.0.0.1:8770/v1",
+            "",  // no token
+            "n", // polish off
+            "",
+            "",
+            "",
+            "",
+        ]);
+        let a = interview(&mut p, &mut Verdicts::new(&[false, true], &[])).unwrap();
+        assert!(p.answers.is_empty(), "the script covered every question");
+        assert!(!a.stt_hosted, "the second pick is the one that counts");
+        assert_eq!(a.stt_base_url, "http://127.0.0.1:8770/v1");
+        assert_eq!(a.stt_model, "", "the hosted attempt's model name is gone");
+        let cfg: Config = toml::from_str(&render(&a).unwrap()).unwrap();
+        assert!(!cfg.stt.hosted);
+        assert_eq!(cfg.stt.model, "whisper-1", "the example's own value stands");
+    }
+
     /// The failure this wizard must not have: eight good answers lost to a ninth question.
     /// What was answered before the abort is still in the caller's hands, and what was not
     /// holds the default the example file documents — so the render loads.
     #[test]
     fn answers_given_before_an_abort_survive_it() {
-        let mut p = Script::new(&["http://127.0.0.1:8770/v1", "", "a"]);
+        let mut p = Script::new(&["1", "http://127.0.0.1:8770/v1", "", "a"]);
         let mut a = Answers::default();
         let e = interview_into(&mut p, &mut Verdicts::new(&[false], &[]), &mut a).unwrap_err();
         assert_eq!(e.to_string(), ABORTED);
@@ -1456,9 +1703,11 @@ mod tests {
 
     /// Every answer of a full run, in order: the script below reads as the transcript does.
     const HAPPY: &[&str] = &[
+        "1",                        // speech: a server you run
         "http://127.0.0.1:8770/v1", // stt.base_url
         "",                         // stt token variable: none
         "",                         // polish? default yes
+        "1",                        // polish: a server you run
         "http://127.0.0.1:4000/v1", // polish.base_url
         "dictate",                  // polish.model
         "",                         // polish token variable: none
@@ -1554,7 +1803,7 @@ mod tests {
     /// `validate` has nothing to refuse.
     #[test]
     fn declining_polish_asks_no_gateway_questions() {
-        let mut p = Script::new(&["http://127.0.0.1:8770/v1", "", "n", "", "", "", ""]);
+        let mut p = Script::new(&["1", "http://127.0.0.1:8770/v1", "", "n", "", "", "", ""]);
         let mut probes = Verdicts::new(&[true], &[]);
         let a = interview(&mut p, &mut probes).unwrap();
         assert!(!a.polish_enabled);
@@ -1574,9 +1823,11 @@ mod tests {
     #[test]
     fn a_failed_probe_can_be_retried_kept_or_aborted() {
         let mut p = Script::new(&[
+            "1",
             "http://wrong:8770/v1",
             "",
-            "r", // retry
+            "r", // retry — the whole group is asked again, the pick included
+            "1",
             "http://right:8770/v1",
             "",
             "n", // polish off
@@ -1591,13 +1842,13 @@ mod tests {
         assert_eq!(probes.stt_seen.len(), 2);
 
         // Keep anyway: a server that is merely not running yet is still the right answer.
-        let mut p = Script::new(&["http://later:8770/v1", "", "k", "n", "", "", "", ""]);
+        let mut p = Script::new(&["1", "http://later:8770/v1", "", "k", "n", "", "", "", ""]);
         let mut probes = Verdicts::new(&[false], &[]);
         let a = interview(&mut p, &mut probes).unwrap();
         assert_eq!(a.stt_base_url, "http://later:8770/v1");
 
         // Abort: the interview stops, and `run` writes down what was answered before it.
-        let mut p = Script::new(&["http://nope:8770/v1", "", "a"]);
+        let mut p = Script::new(&["1", "http://nope:8770/v1", "", "a"]);
         let mut probes = Verdicts::new(&[false], &[]);
         let e = interview(&mut p, &mut probes).unwrap_err();
         assert_eq!(e.to_string(), ABORTED);
@@ -1607,6 +1858,7 @@ mod tests {
     #[test]
     fn an_answer_that_does_not_parse_re_asks_the_same_question() {
         let mut p = Script::new(&[
+            "1",
             "not-a-url",
             "http://127.0.0.1:8770/v1",
             "",
@@ -1636,6 +1888,7 @@ mod tests {
         assert_eq!(key_qs, 3, "asked again after each bad key name");
         // A chord is accepted where a bare letter is not.
         let mut p = Script::new(&[
+            "1",
             "http://127.0.0.1:8770/v1",
             "",
             "n",
@@ -1653,6 +1906,7 @@ mod tests {
     #[test]
     fn an_unset_token_variable_offers_the_key_file() {
         let mut p = Script::new(&[
+            "1",
             "http://127.0.0.1:8770/v1",
             "BYOVOX_SETUP_NO_SUCH_TOKEN",
             "", // key file: take the default
@@ -1676,6 +1930,7 @@ mod tests {
         // calls wrap is internally synchronised on Windows.
         unsafe { std::env::set_var("BYOVOX_SETUP_TEST_TOKEN", "not-a-real-token") };
         let mut p = Script::new(&[
+            "1",
             "http://127.0.0.1:8770/v1",
             "BYOVOX_SETUP_TEST_TOKEN",
             "n",
