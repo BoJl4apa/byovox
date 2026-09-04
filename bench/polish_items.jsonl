@@ -22,3 +22,10 @@
 {"id": "k-ru-plain", "stratum": "capitalization", "raw": "Мы обсудим это завтра.", "expected": "мы обсудим это завтра"}
 {"id": "k-ru-name", "stratum": "capitalization", "raw": "Катя приедет завтра вечером.", "expected": "Катя приедет завтра вечером"}
 {"id": "k-he-nocase", "stratum": "capitalization", "raw": "אנחנו נדבר על זה מחר.", "expected": "אנחנו נדבר על זה מחר"}
+{"id": "c-enum-en", "stratum": "cleanup", "raw": "first foo, second bar", "expected": "1. foo, 2. bar"}
+{"id": "c-profanity-en", "stratum": "cleanup", "raw": "this fucking build is broken again", "expected": "This fucking build is broken again"}
+{"id": "c-profanity-ru", "stratum": "cleanup", "raw": "какого хера этот билд опять сломался", "expected": "Какого хера этот билд опять сломался?"}
+{"id": "c-profanity-he", "stratum": "cleanup", "raw": "איזה חרא של באג זה היה", "expected": "איזה חרא של באג זה היה"}
+{"id": "c-profanity-filler", "stratum": "cleanup", "raw": "um the damn thing crashed again uh right after the deploy", "expected": "The damn thing crashed again right after the deploy"}
+{"id": "t-grace-period", "stratum": "trap", "raw": "The grace period expires on Friday.", "expected": "The grace period expires on Friday"}
+{"id": "t-training-period", "stratum": "trap", "raw": "She is still in her training period at the new job.", "expected": "She is still in her training period at the new job"}
