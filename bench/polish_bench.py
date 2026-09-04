@@ -34,6 +34,7 @@ import json
 import os
 import re
 import sys
+import time
 import unicodedata
 
 try:
@@ -172,6 +173,58 @@ def system_prompt_for(
         # numbers it: the bench reproduces what the daemon would send, it does not renumber.
         base = base.rstrip() + "\n" + candidate.strip() + "\n"
     return compose(base, fold_glossary(cfg.get("stt", {})), glossary_rule(src))
+
+
+# ---------------------------------------------------------------- the endpoint's own speed
+
+# Healthy, this stack generates ~63 tok/s; the two degraded states measured on it sat at
+# 1.7-2.6 (llama.cpp evicted to CPU, and the same model starved while both GPUs ran at 100%).
+# A floor an order of magnitude clear of both separates them without judging ordinary jitter.
+MIN_TOK_S = 20.0
+
+
+def speed_verdict(tok_s: float | None, floor: float) -> str | None:
+    """The refusal message for a too-slow endpoint, or `None` to go ahead. Pure, so the
+    self-test covers the decision without a network."""
+    if tok_s is None or tok_s >= floor:
+        return None
+    return (
+        f"endpoint generates {tok_s:.1f} tok/s, below the {floor:.0f} tok/s floor. Scores from a "
+        "degraded endpoint are not comparable with scores from a healthy one — a model evicted "
+        "to CPU produces different text, not merely slower text. Fix the endpoint (on this "
+        "stack: `docker restart dictate`, and check nothing else is saturating the GPU), or "
+        "pass --allow-slow-endpoint to score anyway and label the result."
+    )
+
+
+def endpoint_speed(url: str, model: str, token: str | None, timeout: float) -> float | None:
+    """Generation tok/s from one short completion. `None` when the endpoint reports no usage,
+    which is not a failure — it just means this check cannot run here."""
+    body = json.dumps(
+        {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "Answer with the words only, nothing else."},
+                {"role": "user", "content": "Count from one to ten in words."},
+            ],
+            "temperature": 0,
+            "max_tokens": 40,
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    start = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            reply = json.load(resp)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError) as e:
+        setup_error(f"endpoint preflight: {e}")
+    elapsed = time.monotonic() - start
+    tokens = (reply.get("usage") or {}).get("completion_tokens")
+    if not isinstance(tokens, int) or tokens < 1 or elapsed <= 0:
+        return None
+    return tokens / elapsed
 
 
 # ---------------------------------------------------------------- one request, as PolishClient sends it
@@ -387,6 +440,12 @@ def self_test() -> None:
     assert {it["stratum"] for it in off} == {CAPITALIZATION}, "the flag scores its own stratum"
     assert not [it for it in on if it in off], "the two sets are disjoint"
     assert {it["stratum"] for it in on + off} == set(STRATA), "every stratum has items"
+    assert speed_verdict(63.3, MIN_TOK_S) is None, "a healthy endpoint is not refused"
+    assert speed_verdict(None, MIN_TOK_S) is None, "an endpoint that reports no usage is not refused"
+    assert speed_verdict(MIN_TOK_S, MIN_TOK_S) is None, "the floor itself passes"
+    for degraded in (2.57, 1.89):
+        msg = speed_verdict(degraded, MIN_TOK_S)
+        assert msg and "not comparable" in msg, f"{degraded} tok/s must be refused"
     items = on + off
     assert all(typed(it["expected"]) == it["expected"] for it in items), "expected text is written as typed"
     print(f"self-test ok: prompt extracted, {len(items)} items parsed")
@@ -399,6 +458,9 @@ def main() -> int:
     # Items are Hebrew and Cyrillic; a Windows console defaults to a code page that cannot
     # print them and would kill the run on the first such item.
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    # stderr too: `setup_error` writes there, and its messages carry the same em dashes and
+    # item text stdout was reconfigured for.
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", type=Path, default=default_config(), help="byovox config.toml (default: the daemon's)")
     ap.add_argument("--items", type=Path, default=HERE / "polish_items.jsonl")
@@ -414,6 +476,17 @@ def main() -> int:
         action="store_true",
         help="compose the prompt the daemon sends with polish.capitalize_first_word = false (#37); "
         "scores the `capitalization` stratum, which is skipped otherwise",
+    )
+    ap.add_argument(
+        "--min-tok-s",
+        type=float,
+        default=MIN_TOK_S,
+        help=f"refuse to score when the endpoint generates below this (default {MIN_TOK_S:.0f})",
+    )
+    ap.add_argument(
+        "--allow-slow-endpoint",
+        action="store_true",
+        help="score anyway when the preflight says the endpoint is degraded",
     )
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
@@ -479,6 +552,20 @@ def main() -> int:
         print(f"items: {e}", file=sys.stderr)
         return 2
     print(f"polish {polish_cfg['model']} at {polish_cfg['base_url']}; config {a.config}")
+    # Before anything is scored: is this endpoint the one the numbers will be compared against?
+    # The bench used to be silent about it, and produced hours of confident numbers from a
+    # model that had fallen back to CPU. The rate is printed on every run so a result carries
+    # the backend it was taken on.
+    tok_s = endpoint_speed(url, polish_cfg["model"], token, timeout)
+    if tok_s is None:
+        print("endpoint speed: not reported by this server; the preflight cannot run here")
+    else:
+        print(f"endpoint speed: {tok_s:.1f} tok/s generated")
+        refusal = speed_verdict(tok_s, a.min_tok_s)
+        if refusal and not a.allow_slow_endpoint:
+            setup_error(refusal)
+        if refusal:
+            print("  --allow-slow-endpoint given; scoring a degraded endpoint anyway")
     verdict = True
     for label, system in prompts:
         ask = lambda raw, s=system: polish(url, polish_cfg["model"], token, s, raw, timeout)  # noqa: E731
