@@ -29,6 +29,12 @@
 base_url = ""
 # Sent as the `model` field. Self-hosted whisper.cpp ignores it; hosted APIs need a real name.
 model = "whisper-1"
+# Says that base_url above is a service somebody else runs, so `byovox check` can print a
+# `note hosted` row naming it. It changes no request and is not a security setting — it is
+# the record of a choice, because no URL can be read for this: https:// to your own tailnet
+# is not hosted, and a hosted API behind a local gateway alias does not look hosted. A
+# hosted speech endpoint receives your audio. `byovox setup` writes this key for you.
+hosted = false
 # Name of an environment variable holding a bearer token. Empty = no Authorization header
 # (right for a server that authenticates by network identity).
 api_key_env = ""
@@ -107,6 +113,9 @@ enabled = true
 base_url = ""
 # The model name (or gateway alias) to send. Required while enabled = true.
 model = ""
+# As `stt.hosted`, for the stage that sees every dictation's text: set it when base_url above
+# is a service somebody else runs, and `byovox check` says so in a `note hosted` row.
+hosted = false
 # Environment variable holding the bearer token for the gateway.
 api_key_env = ""
 # Optional KEY=VALUE file consulted for that variable name when it is unset in the
@@ -162,6 +171,10 @@ cancel_key = "Escape"
 mode = "auto"
 # Append a space after the inserted text.
 trailing_space = false
+# Drop exactly one period from the end of the text before typing. Whisper and the cleanup
+# model both end a sentence with one, but a dictation usually lands mid-sentence; `false`
+# types the period as it came. An ellipsis is never touched either way.
+strip_terminal_period = true
 # Longest transcript, in characters, that byovox will type. A reply over this is NOT
 # truncated — it is held for `byovox last` with the error cue, the same as a dictation no
 # injection method could place, so nothing you said is ever lost. The point is a runaway or
