@@ -599,8 +599,8 @@ mod tests {
 
     use super::{
         Audio, HotkeyConfig, PREFIX_CHARS, QUIET_DBFS, SAMPLE_RATE, cleartext_endpoints,
-        enough_audio, hosted_endpoints, hotkey_error, hotkey_row, is_hands_free,
-        no_speech_row, prefix, prompt_text, stage_token, strip_body,
+        enough_audio, hosted_endpoints, hotkey_error, hotkey_row, is_hands_free, no_speech_row,
+        prefix, prompt_text, stage_token, strip_body,
     };
 
     /// Recording through a headset's hands-free endpoint drags it out of stereo for the whole
