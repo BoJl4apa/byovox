@@ -44,16 +44,25 @@ pub trait Polisher: Send {
 ///   the older reading — that "period" itself does not convert — came from one bench item that
 ///   happened to be a collocation, scored against an endpoint that had fallen back to CPU.
 ///
-///   It is **not** undecidable, and the review of #55 disproved the claim that it was: one
-///   added sentence ("a join is still a join when the two words on either side also read as an
-///   ordinary English phrase", with the training example spelled out) converts all three
-///   collocations **5/5** with `t-jurassic` and "a long period of silence" still 5/5. It is not
-///   taken because it costs more than it buys: `c-filler-en` falls to **0/5** ("um so I think"
-///   → "So I think", the leading filler kept), and the same sentence carrying a different
-///   example regresses the collocations into `training.period.strip`. A leading "um so" is a
-///   commoner dictation than a dotted identifier — 1 in 431 of the capture corpus — so the
-///   trade is refused, and recorded here so it is not re-run blind. Reopening it means finding
-///   a wording that holds `c-filler-en`; #57.
+///   **Do not try to fix this with wording. Six were measured (#57, closed as a documented
+///   limit) and every one that converts the join also converts it inside an ordinary
+///   sentence** — turning prose the speaker said into an identifier they did not. Validated on
+///   held-out items, 3/3 stable each: "She is still in her training period at the new job"
+///   came back "…her training.strip at the new job" (the word `strip` lifted out of the
+///   prompt's own example), and "The grace period expires on Friday" came back "The
+///   grace.expire on Friday". A seventh wording is not a new idea; it is the same instruction
+///   at a different strength, and the strength that converts is the strength that corrupts.
+///   The shipped rule scores 0/4 on those joins and 4/4 on the same held-out traps: its
+///   failure mode is that the speaker's own words are typed unchanged.
+///
+///   The earlier note here blamed `c-filler-en` (0/5 under one candidate) and said reopening
+///   meant finding a wording that held it. That was the wrong bar and it is withdrawn — the
+///   candidate it described was only ever scored against `t-jurassic` and "a long period of
+///   silence", neither of which contains a collocation the wording names, which is why it
+///   looked clean. What is left, if anyone wants it, is a *non-prompt* discriminator: every
+///   true positive here was a short imperative ("rename it to …") and no trap was. That is a
+///   text transform with its own false-positive surface, and #48 already refused one for the
+///   neighbouring case.
 /// - **The pre-dotted form is one shape of that same residue**, not a separate limit. Whisper
 ///   dots the ambiguous join and keeps the word, so "training period strip" arrives as
 ///   `training.period.strip` and is typed as it came. #48 closed NOT PLANNED: it is 1 dictation
@@ -72,6 +81,24 @@ pub trait Polisher: Send {
 ///   literal words, because no rule runs at all there.
 /// - An explicitly spoken *terminal* "period" becomes `.` and is then popped by the strip in
 ///   `Pipeline::finish` (landed by #23; becoming a setting in #36). Accepted 2026-09-03.
+///
+/// Rule 3's "on one line" is inert for its stated purpose and stays anyway — #58 proposed
+/// deleting it and the measurement refused. A three-item list comes back multi-line 6/6 both
+/// with the clause and without it, and `pipeline::sanitize` maps every newline to a space
+/// regardless, so the property is guaranteed downstream either way. But removing those four
+/// words costs an unrelated item: `c-filler-en` goes 25/25 → 22/25 ("um so I think" → "So I
+/// think", the leading filler kept). Deleting inert prose from this prompt is not free; the
+/// words are load-bearing for something other than what they say. Neither effect is visible to
+/// the bench's own view of rule 3, since `polish_bench.typed()` mirrors that same flattening —
+/// which is why the clause went unchallenged for so long. Note the capture log stores the
+/// *pre-sanitise* reply, so multi-line lists appear in the corpus while no user ever sees one.
+/// Rule 3 is gated in English only (`c-enum-en`, `1. foo, 2. bar` 5/5); its Hebrew half is
+/// broken and tracked separately, not pinned here.
+///
+/// Rule 6 was never gated until #58 and turns out to have been correct all along — profanity
+/// survives 5/5 in all three languages. The items pin it now so it stays that way; the Russian
+/// one carries a `?` because the model reads it as a question, and the bench does not normalise
+/// punctuation away.
 ///
 /// The name set is period/dot/comma plus точка/запятая and נקודה/פסיק — the three dictation
 /// languages. "New line" is deliberately absent: `pipeline::sanitize` maps every newline to

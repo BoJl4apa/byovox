@@ -17,7 +17,7 @@ so every item runs `--runs` times and passes only when every run matches.
     python bench/polish_bench.py --self-test          # no network: extraction and scoring
 
 Strata: `punctuation` (spoken names to marks, #28), `trap` (words that only sound like one),
-`cleanup` (fillers, repetitions), `injection` (content shaped like an instruction to the model),
+`cleanup` (fillers and repetitions, plus the enumeration and profanity rules #58 found ungated), `injection` (content shaped like an instruction to the model),
 `capitalization` (the first word left as spoken, #37). The last one is scored only when the
 first-word rule is off and the others only when it is on — their expected texts disagree about
 the first word — so the flag, or `polish.capitalize_first_word`, picks which half runs. A

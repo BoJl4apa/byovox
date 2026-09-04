@@ -69,8 +69,9 @@ succeeds, and the done cue means *the text is on the clipboard, press Ctrl+V*.
 
 No rung ever presses Enter: a newline in the text becomes a space before it is typed or
 pasted, so a dictation into a chat box that sends on Enter stays one unsent message, and one
-into a terminal stays one unexecuted line. The built-in cleanup prompt formats a spoken
-enumeration as a numbered list on one line for the same reason.
+into a terminal stays one unexecuted line. That sanitising pass is also what keeps a spoken
+enumeration on one line: the cleanup prompt often numbers it across several lines, and the
+newlines become spaces before anything is typed.
 
 ## Language routing
 
