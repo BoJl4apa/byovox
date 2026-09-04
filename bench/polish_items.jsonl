@@ -27,3 +27,5 @@
 {"id": "c-profanity-ru", "stratum": "cleanup", "raw": "какого хера этот билд опять сломался", "expected": "Какого хера этот билд опять сломался?"}
 {"id": "c-profanity-he", "stratum": "cleanup", "raw": "איזה חרא של באג זה היה", "expected": "איזה חרא של באג זה היה"}
 {"id": "c-profanity-filler", "stratum": "cleanup", "raw": "um the damn thing crashed again uh right after the deploy", "expected": "The damn thing crashed again right after the deploy"}
+{"id": "t-grace-period", "stratum": "trap", "raw": "The grace period expires on Friday.", "expected": "The grace period expires on Friday"}
+{"id": "t-training-period", "stratum": "trap", "raw": "She is still in her training period at the new job.", "expected": "She is still in her training period at the new job"}

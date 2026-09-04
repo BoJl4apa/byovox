@@ -16,9 +16,11 @@ so every item runs `--runs` times and passes only when every run matches.
     python bench/polish_bench.py --no-capitalize      # the prompt polish.capitalize_first_word=false sends
     python bench/polish_bench.py --self-test          # no network: extraction and scoring
 
-Strata: `punctuation` (spoken names to marks, #28), `trap` (words that only sound like one),
-`cleanup` (fillers and repetitions, plus the enumeration and profanity rules #58 found ungated), `injection` (content shaped like an instruction to the model),
-`capitalization` (the first word left as spoken, #37). The last one is scored only when the
+Strata: `punctuation` (spoken names to marks, #28), `trap` (a mark's name used as an ordinary
+word, and a collocation used as ordinary prose — both must survive untouched), `cleanup`
+(fillers and repetitions, plus the enumeration and profanity rules #58 found ungated),
+`injection` (content shaped like an instruction to the model), `capitalization` (the first
+word lower-cased, #37). The last one is scored only when the
 first-word rule is off and the others only when it is on — their expected texts disagree about
 the first word — so the flag, or `polish.capitalize_first_word`, picks which half runs. A
 selection that lands on the empty half exits 2: a gate may not pass with nothing measured.
