@@ -16,3 +16,10 @@
 {"id": "c-koroche-ru", "stratum": "cleanup", "raw": "короче будем разбираться по мере развития событий", "expected": "Будем разбираться по мере развития событий"}
 {"id": "c-eh-he", "stratum": "cleanup", "raw": "אה, זה אמור לדעת גם רוסית, שכחתי, ננסה עכשיו שנייה.", "expected": "זה אמור לדעת גם רוסית, שכחתי, ננסה עכשיו שנייה"}
 {"id": "c-repeat-en", "stratum": "cleanup", "raw": "we need we need to restart the daemon after the apply", "expected": "We need to restart the daemon after the apply"}
+{"id": "k-en-verb", "stratum": "capitalization", "raw": "We should ship it today.", "expected": "we should ship it today"}
+{"id": "k-en-and", "stratum": "capitalization", "raw": "And then the daemon restarts itself.", "expected": "and then the daemon restarts itself"}
+{"id": "k-en-i", "stratum": "capitalization", "raw": "I think we ship on Friday.", "expected": "I think we ship on Friday"}
+{"id": "k-en-acronym", "stratum": "capitalization", "raw": "NASA confirmed the launch date.", "expected": "NASA confirmed the launch date"}
+{"id": "k-ru-plain", "stratum": "capitalization", "raw": "Мы обсудим это завтра.", "expected": "мы обсудим это завтра"}
+{"id": "k-ru-name", "stratum": "capitalization", "raw": "Катя приедет завтра вечером.", "expected": "Катя приедет завтра вечером"}
+{"id": "k-he-nocase", "stratum": "capitalization", "raw": "אנחנו נדבר על זה מחר.", "expected": "אנחנו נדבר על זה מחר"}

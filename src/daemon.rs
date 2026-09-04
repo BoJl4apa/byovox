@@ -185,7 +185,7 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
     }
     let polisher: Option<Box<dyn polish::Polisher>> = if cfg.polish.enabled {
         let base = if cfg.polish.prompt_file.is_empty() {
-            polish::BUILT_IN_PROMPT.to_string()
+            polish::built_in(cfg.polish.capitalize_first_word)
         } else {
             // Named in the error: `read_to_string` carries no path, so a typo would
             // otherwise never reveal what `~/…` expanded to.

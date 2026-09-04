@@ -13,10 +13,15 @@ so every item runs `--runs` times and passes only when every run matches.
     python bench/polish_bench.py --candidate rule.txt # the same, with a rule appended to the base
     python bench/polish_bench.py --prompt-file p.txt  # a copy of the prompt living elsewhere (voxdroid)
     python bench/polish_bench.py --capture <dictations.jsonl>  # byovox's capture log as the baseline
+    python bench/polish_bench.py --no-capitalize      # the prompt polish.capitalize_first_word=false sends
     python bench/polish_bench.py --self-test          # no network: extraction and scoring
 
 Strata: `punctuation` (spoken names to marks, #28), `trap` (words that only sound like one),
-`cleanup` (fillers, repetitions), `injection` (content shaped like an instruction to the model).
+`cleanup` (fillers, repetitions), `injection` (content shaped like an instruction to the model),
+`capitalization` (the first word left as spoken, #37). The last one is scored only when the
+first-word rule is off and the others only when it is on — their expected texts disagree about
+the first word — so the flag, or `polish.capitalize_first_word`, picks which half runs. A
+selection that lands on the empty half exits 2: a gate may not pass with nothing measured.
 Scoring compares punctuation like any other character — never stripped or normalised away —
 because a punctuation rule is what this bench exists for.
 Exit status is 0 when every selected stratum passes, 1 otherwise, 2 on a setup error. The
@@ -44,7 +49,15 @@ from typing import NoReturn
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 # `injection` is content shaped like an instruction to the model; rule 7 says it is content.
-STRATA = ("punctuation", "trap", "cleanup", "injection")
+STRATA = ("punctuation", "trap", "cleanup", "injection", "capitalization")
+
+# The first-word rule (#37) splits the items into two sets that can never be scored in one
+# run. `capitalization` expects a lowercase first word, which is right only with the rule off;
+# every other stratum's expected text carries the leading capital the default produces, so it
+# is not a valid expectation with the rule off either. So `--no-capitalize` scores exactly the
+# `capitalization` stratum and a default run scores exactly the rest. Neither set is ever
+# marked wrong for the prompt obeying the rule it was given.
+CAPITALIZATION = "capitalization"
 
 
 def setup_error(msg: str) -> NoReturn:
@@ -57,13 +70,29 @@ def setup_error(msg: str) -> NoReturn:
 # ---------------------------------------------------------------- the prompt, as the daemon sends it
 
 
-def built_in_prompt(src: str) -> str:
-    """`BUILT_IN_PROMPT` out of src/polish.rs, byte for byte."""
+def built_in_prompt(src: str, capitalize: bool = True) -> str:
+    """`BUILT_IN_PROMPT` out of src/polish.rs, byte for byte — or with rule 1 swapped, exactly
+    as `polish::built_in` does it when `polish.capitalize_first_word` is false (#37)."""
     m = re.search(r'pub const BUILT_IN_PROMPT: &str = r#"(.*?)"#;', src, re.S)
     if not m:
         setup_error("polish.rs: BUILT_IN_PROMPT not found where the bench expects it")
-    return m.group(1)
+    base = m.group(1)
+    if capitalize:
+        return base
+    old, new = rule_one(src, "CAPITALISE_FIRST_RULE"), rule_one(src, "LOWERCASE_FIRST_RULE")
+    if old not in base:
+        setup_error("polish.rs: CAPITALISE_FIRST_RULE is not the rule 1 BUILT_IN_PROMPT carries")
+    return base.replace(old, new, 1)
 
+
+def rule_one(src: str, name: str) -> str:
+    """One of the two rule-1 constants. Both are raw Rust literals of the same shape as
+    BUILT_IN_PROMPT, so the bench reads them the way it reads that one; it has to, because it
+    mirrors `polish::built_in`."""
+    m = re.search(name + r': &str =\s*r#"(.*?)"#;', src, re.S)
+    if not m:
+        setup_error("polish.rs: " + name + " is not where the bench expects it")
+    return m.group(1)
 
 def glossary_rule(src: str) -> str:
     """The format string `system_prompt` appends when a glossary is configured, with Rust
@@ -125,7 +154,9 @@ def default_config() -> Path:
     return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "byovox" / "config.toml"
 
 
-def system_prompt_for(cfg: dict, candidate: str | None, prompt_file: Path | None = None) -> str:
+def system_prompt_for(
+    cfg: dict, candidate: str | None, prompt_file: Path | None = None, capitalize: bool = True
+) -> str:
     """`--prompt-file` wins over the config's `polish.prompt_file`, which wins over the
     built-in: the glossary rule is composed on top of whichever base, as the daemon does."""
     polish = cfg.get("polish", {})
@@ -135,7 +166,7 @@ def system_prompt_for(cfg: dict, candidate: str | None, prompt_file: Path | None
     elif polish.get("prompt_file"):
         base = expand_home(polish["prompt_file"]).read_text(encoding="utf-8")
     else:
-        base = built_in_prompt(src)
+        base = built_in_prompt(src, capitalize)
     if candidate:
         # Appended to the base, before the glossary rule, numbered as the candidate file
         # numbers it: the bench reproduces what the daemon would send, it does not renumber.
@@ -220,7 +251,7 @@ def edit_rate(out: str, expected: str) -> float:
 # ---------------------------------------------------------------- items
 
 
-def load_items(path: Path, only: str | None) -> list[dict]:
+def load_items(path: Path, only: str | None, capitalize: bool = True) -> list[dict]:
     items = []
     seen = set()
     for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
@@ -235,6 +266,9 @@ def load_items(path: Path, only: str | None) -> list[dict]:
         if it["id"] in seen:
             setup_error(f"{path}:{n}: duplicate id {it['id']!r}")
         seen.add(it["id"])
+        # See CAPITALIZATION: the flag selects which set of expectations is in force.
+        if (it["stratum"] == CAPITALIZATION) == capitalize:
+            continue
         if only is None or it["stratum"] == only:
             items.append(it)
     return items
@@ -342,8 +376,18 @@ def self_test() -> None:
     assert levenshtein("kitten", "sitting") == 3 and levenshtein("", "ab") == 2
     assert edit_rate("Hello world.", "Hello world") == 0.0
     assert abs(edit_rate("Hello there", "Hello world") - 5 / 11) < 1e-9
-    items = load_items(HERE / "polish_items.jsonl", None)
-    assert {it["stratum"] for it in items} == set(STRATA), "every stratum has items"
+    lowered = built_in_prompt(src, False)
+    assert lowered != base and rule_one(src, "LOWERCASE_FIRST_RULE") in lowered, "rule 1 swaps"
+    assert rule_one(src, "CAPITALISE_FIRST_RULE") not in lowered
+    assert lowered.replace(rule_one(src, "LOWERCASE_FIRST_RULE"), rule_one(src, "CAPITALISE_FIRST_RULE"), 1) == base, "only rule 1 moved"
+
+    on = load_items(HERE / "polish_items.jsonl", None)
+    off = load_items(HERE / "polish_items.jsonl", None, capitalize=False)
+    assert {it["stratum"] for it in on} == set(STRATA) - {CAPITALIZATION}, "the default scores the rest"
+    assert {it["stratum"] for it in off} == {CAPITALIZATION}, "the flag scores its own stratum"
+    assert not [it for it in on if it in off], "the two sets are disjoint"
+    assert {it["stratum"] for it in on + off} == set(STRATA), "every stratum has items"
+    items = on + off
     assert all(typed(it["expected"]) == it["expected"] for it in items), "expected text is written as typed"
     print(f"self-test ok: prompt extracted, {len(items)} items parsed")
 
@@ -365,6 +409,12 @@ def main() -> int:
     ap.add_argument("--only", choices=STRATA)
     ap.add_argument("--show-prompt", action="store_true", help="print the composed system prompt(s) and exit")
     ap.add_argument("--verbose", action="store_true", help="print every output, and capture rows that disagree")
+    ap.add_argument(
+        "--no-capitalize",
+        action="store_true",
+        help="compose the prompt the daemon sends with polish.capitalize_first_word = false (#37); "
+        "scores the `capitalization` stratum, which is skipped otherwise",
+    )
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
 
@@ -383,14 +433,27 @@ def main() -> int:
     url = polish_cfg["base_url"].rstrip("/") + "/chat/completions"
     token = resolve_token(polish_cfg.get("api_key_env", ""), polish_cfg.get("api_key_file", ""))
     timeout = float(polish_cfg.get("timeout_s", 20))  # PolishConfig's default
+    # The flag, or the config's own key, exactly as the daemon resolves it.
+    capitalize = polish_cfg.get("capitalize_first_word", True) and not a.no_capitalize
+    # A replacement prompt owns its own rule 1 and `polish::built_in` never rewrites it, so
+    # the first-word rule cannot be swapped into one — the items would switch while the prompt
+    # did not, scoring lowercase expectations against a prompt never told to lower anything.
+    if not capitalize and (a.prompt_file or polish_cfg.get("prompt_file")):
+        setup_error(
+            "the first-word rule is off, but the base prompt is a file, and a prompt file is "
+            "never rewritten (polish::built_in) — its own rule 1 decides the first word. "
+            "Drop --no-capitalize / polish.capitalize_first_word, or drop the prompt file."
+        )
     if a.runs < 1:
         print("--runs must be at least 1", file=sys.stderr)
         return 2
     try:
         candidate = a.candidate.read_text(encoding="utf-8") if a.candidate else None
-        prompts = [("baseline", system_prompt_for(cfg, None, a.prompt_file))]
+        prompts = [("baseline", system_prompt_for(cfg, None, a.prompt_file, capitalize))]
         if candidate:
-            prompts.append(("candidate", system_prompt_for(cfg, candidate, a.prompt_file)))
+            prompts.append(
+                ("candidate", system_prompt_for(cfg, candidate, a.prompt_file, capitalize))
+            )
     except OSError as e:
         print(f"prompt: {e}", file=sys.stderr)
         return 2
@@ -400,7 +463,17 @@ def main() -> int:
         return 0
 
     try:
-        items = load_items(a.items, a.only)
+        items = load_items(a.items, a.only, capitalize)
+        if not items and not a.capture:
+            # Silent green is the one thing a gate may never be. `--only` is applied after the
+            # first-word partition, so five of the ten combinations select nothing at all, and
+            # `run_items` is skipped entirely — the run used to print a header and exit 0.
+            which = f"--only {a.only}" if a.only else "the items file"
+            setup_error(
+                f"{which} selects no items with capitalize_first_word={capitalize}. "
+                f"The `{CAPITALIZATION}` stratum is scored only with the rule off, every other "
+                "stratum only with it on; nothing was measured, so this is not a pass."
+            )
         rows = load_capture(a.capture) if a.capture else []
     except OSError as e:
         print(f"items: {e}", file=sys.stderr)
