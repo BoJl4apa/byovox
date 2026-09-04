@@ -159,7 +159,7 @@ item does not write back to it.
 
 ## Setup, start to finish
 
-Five steps. Only the first two are required — byovox needs a speech server and nothing else.
+Four steps. Only the first two are required — byovox needs a speech server and nothing else.
 
 ### 1. Whisper server
 
@@ -230,7 +230,12 @@ question whose default is no. Or say so deliberately in the config:
 [polish]
 base_url = "http://127.0.0.1:11434/v1"
 model    = "gemma4:31b-cloud"          # proxied by Ollama to ollama.com
+hosted   = true                        # the URL is loopback; the text still leaves the machine
 ```
+
+`hosted` is what `byovox check` reads to print its `note hosted` row. The wizard sets it for
+you on this pick; set it by hand here or the check stays silent about a stage that is not
+local.
 
 Only the transcript is sent, never audio, and only when polish is enabled. If that is not a
 trade you want, keep a small local model or set `polish.enabled = false`.
