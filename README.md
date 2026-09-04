@@ -6,13 +6,20 @@
 
 **Hold a key. Talk. Let go. Your words get typed into whatever window you're in.**
 
-The speech model runs on your machine, not someone else's cloud. Windows only, for now.
+Bring your own servers. Speech, and the optional clean-up, each run wherever you point
+them — this machine, a box on your network, or a hosted service. `byovox setup` asks which
+of the three you want for each stage, and says what leaves your machine before you answer.
+Windows only, for now.
 
 ## Get going in 4 steps
 
 ### 1. Install a speech server
 
-byovox needs a Whisper server. Get [whisper.cpp](https://github.com/ggml-org/whisper.cpp),
+byovox needs a Whisper server — this step builds one you run. If you would rather use a
+hosted transcription API, skip to step 4 and pick *a hosted service* there; the wizard asks
+for its URL and key, and tells you your audio will be sent to it.
+
+Get [whisper.cpp](https://github.com/ggml-org/whisper.cpp),
 download a model from
 [huggingface.co/ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp/tree/main),
 and run:
@@ -44,9 +51,11 @@ slow? Ollama's hosted models are faster — but your transcripts leave your mach
 `byovox setup` lists them apart from the local ones and asks you, default no, before it writes
 one into the config ([details](docs/platform-windows.md#3-text-clean-up-optional)).
 
-A dictation usually lands mid-sentence, so the capital the clean-up adds to the first word is
-often unwanted. `polish.capitalize_first_word = false` leaves it as you said it — except where
-it would carry a capital anywhere, like a name, an acronym or "I".
+A dictation usually lands mid-sentence, so neither the capital the clean-up adds to the first
+word nor the period it puts at the end is usually wanted. Two settings frame it:
+`polish.capitalize_first_word = false` leaves the first word as you said it — except where it
+would carry a capital anywhere, like a name, an acronym or "I" — and
+`inject.strip_terminal_period = false` keeps the final period byovox drops by default.
 
 ### 3. Install byovox
 
@@ -75,8 +84,12 @@ cargo install --git https://github.com/BoJl4apa/byovox --locked
 byovox setup
 ```
 
-It asks for your Whisper server, then finds Ollama and offers your models for the clean-up
-step. Press Enter to take a default; Ctrl+C stops without writing anything.
+For each stage it asks where the endpoint lives — a server you run, a local Ollama (clean-up
+only), or a hosted service — and a hosted pick says what byovox will send there before it
+asks for the URL. Press Enter to take a default; Ctrl+C stops without writing anything.
+The answers without a default are the ones byovox cannot start without: the speech URL, the
+clean-up URL and model while clean-up is on, and — on a hosted pick only — that stage's model
+name.
 
 ```sh
 byovox
@@ -159,7 +172,8 @@ he = "he"                   # Hebrew layout → dictate in Hebrew
 ## Things to know
 
 - **Your speech server can type into your windows.** Whatever it returns becomes keystrokes, so
-  point byovox at servers you run.
+  point byovox at servers you run, or at a hosted service you chose knowing it sees your
+  audio or your text. `byovox check` prints a `note hosted` row for each stage you marked and will actually call.
 - **Nothing is recorded by default.** No key logging, no saved audio, no telemetry. Turn on
   `capture_log` yourself if you want copies.
 - **No secrets in the config file.** It holds the *name* of an environment variable, never a

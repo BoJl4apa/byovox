@@ -43,6 +43,12 @@ pub struct SttConfig {
     /// `0.0` never warns. Measured bands: real speech scores ≤ 0.08, silent holds 0.54+ —
     /// the gray zone between is where whisper mishears and hallucinates (#26).
     pub no_speech_warn: f64,
+    /// The record that `base_url` names a service somebody else runs, written by
+    /// `byovox setup`'s hosted branch and settable by hand. It changes no request: it is
+    /// what `byovox check` reads to print its `note hosted` row, because no URL tells you
+    /// this — an `https://` host on your own tailnet is not hosted, and a hosted API behind
+    /// a local gateway alias does not look it.
+    pub hosted: bool,
     /// Per-language endpoints keyed by ISO 639-1 code: a dictation the layout routing
     /// resolved to that language goes to the lane's `base_url` instead of `base_url`.
     /// Token, timeout and `no_speech_threshold` come from here; `model` and `prompt`
@@ -62,6 +68,7 @@ impl Default for SttConfig {
             timeout_s: 30,
             no_speech_threshold: 0.3,
             no_speech_warn: 0.08,
+            hosted: false,
             by_language: Default::default(),
         }
     }
@@ -95,6 +102,9 @@ impl SttConfig {
                 lane.prompt.clone()
             },
             by_language: Default::default(),
+            // `hosted` rides along with everything else here and nothing reads it off a lane
+            // config — `check` reads `cfg.stt.hosted` directly. A lane cannot be marked hosted
+            // on its own yet; when it can, this inheritance is the line to revisit.
             ..self.clone()
         }
     }
@@ -135,6 +145,8 @@ pub struct PolishConfig {
     /// rewritten, and the raw fallback keeps whisper's capital either way.
     pub capitalize_first_word: bool,
     pub timeout_s: u64,
+    /// As `SttConfig::hosted`, for the stage that sees every dictation's text.
+    pub hosted: bool,
 }
 impl Default for PolishConfig {
     fn default() -> Self {
@@ -150,6 +162,7 @@ impl Default for PolishConfig {
             prompt_file: String::new(),
             capitalize_first_word: true,
             timeout_s: 20,
+            hosted: false,
         }
     }
 }
@@ -182,6 +195,9 @@ pub struct InjectConfig {
     /// auto | type | paste | clipboard-only
     pub mode: String,
     pub trailing_space: bool,
+    /// Pop exactly one terminal `.` before typing (#19). On by default because a dictation
+    /// usually lands mid-sentence; `false` types the endpoint's period as it came.
+    pub strip_terminal_period: bool,
     /// Longest transcript, in characters, that may be typed; `0` lifts the limit. A reply
     /// over it is held for `byovox last`, never truncated.
     pub max_chars: usize,
@@ -191,6 +207,7 @@ impl Default for InjectConfig {
         Self {
             mode: "auto".into(),
             trailing_space: false,
+            strip_terminal_period: true,
             max_chars: 20_000,
         }
     }
@@ -364,6 +381,21 @@ pub fn redact_userinfo(url: &str) -> String {
     }
 }
 
+/// The host an endpoint names, for a report row that has to say *where* without reprinting
+/// the whole URL: `https://user:pw@api.example.com:8443/v1` → `api.example.com:8443`. The
+/// port is kept — two stages on one host and different ports are two different services —
+/// and userinfo is dropped, because these rows get pasted into bug reports. A string that is
+/// not a URL is not handled specially and does not come back whole — `api.example.com/v1`
+/// yields `api.example.com` and `https://` yields the empty string. That is deliberate: this
+/// only ever labels a report row, `parse_base_url` refused such answers at the wizard, and
+/// `validate` refuses an empty `base_url` before `check::run` is reached.
+pub fn host_of(base_url: &str) -> &str {
+    let url = base_url.trim();
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    authority.rsplit('@').next().unwrap_or_default()
+}
+
 /// `~/x` → home-relative; anything else unchanged.
 pub fn expand_home(p: &str) -> PathBuf {
     if let Some(rest) = p.strip_prefix("~/").or_else(|| p.strip_prefix("~\\"))
@@ -524,6 +556,28 @@ mod tests {
     fn unknown_key_is_an_error() {
         let err = toml::from_str::<Config>("[stt]\nbase_ur = \"typo\"\n").unwrap_err();
         assert!(err.to_string().contains("base_ur"), "{err}");
+    }
+
+    /// `hosted` is a new key in two sections, so the gate that catches a misspelling has to
+    /// cover it: a typo must fail the load rather than silently leaving the stage unmarked,
+    /// which is the one failure mode a record-of-a-choice key has.
+    #[test]
+    fn a_misspelled_hosted_key_is_refused_in_both_sections() {
+        for (text, typo) in [
+            ("[stt]\nhoste = true\n", "hoste"),
+            ("[stt]\nHosted = true\n", "Hosted"),
+            ("[polish]\nhosted_ = true\n", "hosted_"),
+        ] {
+            let err = toml::from_str::<Config>(text).unwrap_err().to_string();
+            // The typo itself, not just the word "host": serde's expected-key list already
+            // contains `hosted`, so `err.contains("host")` is satisfied by any unknown key.
+            assert!(err.contains(&format!("unknown field `{typo}`")), "{err}");
+        }
+        // And the key itself loads, in both sections, defaulting to false when absent.
+        let cfg: Config =
+            toml::from_str("[stt]\nhosted = true\n[polish]\nhosted = true\n").unwrap();
+        assert!(cfg.stt.hosted && cfg.polish.hosted);
+        assert!(!Config::default().stt.hosted && !Config::default().polish.hosted);
     }
 
     /// A lane inherits everything it does not set — and never its own `by_language`.

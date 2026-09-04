@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use crate::audio::{Audio, SAMPLE_RATE};
 use crate::capture::{Capture, CpalCapture, DeviceInfo, describe_device, input_names};
 use crate::config::{
-    CLEARTEXT_WARNING, Config, HotkeyConfig, PolishConfig, SttConfig, expand_home,
+    CLEARTEXT_WARNING, Config, HotkeyConfig, PolishConfig, SttConfig, expand_home, host_of,
     is_cleartext_remote, redact_userinfo, resolve_token,
 };
 use crate::hotkey::{HotkeyMode, parse_chord, validate_key_name};
@@ -44,6 +44,13 @@ fn line(stage: &str, ok: Option<bool>, detail: &str) {
 /// "byovox can dictate", or a script that gates on it starts lying.
 fn warn_line(stage: &str, detail: &str) {
     println!("warn {stage:<9} {detail}");
+}
+
+/// A row that reports a choice the user made knowingly. Not a `warn`: nothing is wrong, and
+/// a hosted endpoint is a legitimate answer byovox exists to allow — it is reported because
+/// `check` is where you go to find out what your configuration actually does.
+fn note_line(stage: &str, detail: &str) {
+    println!("note {stage:<9} {detail}");
 }
 
 /// Every configured endpoint that would put its traffic on the wire in clear. Polish is
@@ -180,6 +187,43 @@ pub fn warn_cleartext(cfg: &Config) {
     }
 }
 
+/// Every stage whose `hosted` key is set: its config key, its `base_url`, and what that
+/// stage sends there. Split out from the printing the way `cleartext_endpoints` is, so the
+/// decision can be tested without capturing stdout.
+///
+/// Driven by the key, never by the URL: a heuristic on the scheme would call an `https://`
+/// endpoint on your own tailnet hosted and would miss a hosted API reached through a local
+/// gateway alias. The key is written by `byovox setup`'s hosted branch, or by hand.
+fn hosted_endpoints(cfg: &Config) -> Vec<(&'static str, &str, &'static str)> {
+    let mut out = Vec::new();
+    if cfg.stt.hosted {
+        out.push(("stt.base_url", cfg.stt.base_url.as_str(), "your audio"));
+    }
+    // Same skip as the cleartext rows: a disabled polish stage is never called, so saying
+    // where its URL points is noise.
+    if cfg.polish.enabled && cfg.polish.hosted {
+        out.push((
+            "polish.base_url",
+            cfg.polish.base_url.as_str(),
+            "every dictation's text",
+        ));
+    }
+    out
+}
+
+/// The `note hosted` row for every stage the user pointed at somebody else's service, naming
+/// the host and what byovox sends it. A `note`, not a `warn`: this is a choice byovox exists
+/// to allow, made knowingly at the wizard, and `check` reports it because `check` is where you
+/// go to find out what your configuration actually does.
+pub fn note_hosted(cfg: &Config) {
+    for (key, url, what) in hosted_endpoints(cfg) {
+        note_line(
+            "hosted",
+            &format!("{key} {} — {what} is sent to it", host_of(url)),
+        );
+    }
+}
+
 /// A second of digital silence: what `byovox setup` probes an STT endpoint with. The wizard
 /// asks its questions one at a time and has not reached the microphone, so it cannot offer a
 /// real capture — and whether the endpoint answers at all is the whole question at that point.
@@ -241,6 +285,7 @@ pub fn run(cfg: &Config, config_path: &Path) -> bool {
     // Near the top, where the endpoints are still the subject: by the time the stt row has
     // printed a happy round trip, "and by the way it was unencrypted" reads as an aside.
     warn_cleartext(cfg);
+    note_hosted(cfg);
 
     let policy = match LanguagePolicy::from_config(&cfg.language) {
         Ok(p) => p,
@@ -554,8 +599,8 @@ mod tests {
 
     use super::{
         Audio, HotkeyConfig, PREFIX_CHARS, QUIET_DBFS, SAMPLE_RATE, cleartext_endpoints,
-        enough_audio, hotkey_error, hotkey_row, is_hands_free, no_speech_row, prefix, prompt_text,
-        stage_token, strip_body,
+        enough_audio, hosted_endpoints, hotkey_error, hotkey_row, is_hands_free,
+        no_speech_row, prefix, prompt_text, stage_token, strip_body,
     };
 
     /// Recording through a headset's hands-free endpoint drags it out of stereo for the whole
@@ -817,6 +862,86 @@ mod tests {
         // The setup byovox recommends produces no rows at all.
         assert!(cleartext_endpoints(&remote("http://127.0.0.1:8770/v1")).is_empty());
         assert!(cleartext_endpoints(&remote("https://api.example.com/v1")).is_empty());
+    }
+
+    /// A hosted endpoint is a `note`, and it comes from the key the wizard wrote — never from
+    /// the URL. The two rows are independent: cleartext is about the wire, hosted is about
+    /// whose machine is on the other end, and a configuration can earn either, both or none.
+    #[test]
+    fn a_hosted_stage_gets_a_note_row_from_its_key_not_its_url() {
+        use crate::config::{Config, PolishConfig, SttConfig};
+
+        let cfg = |stt_url: &str, stt_hosted: bool, polish_url: &str, polish_hosted: bool| Config {
+            stt: SttConfig {
+                base_url: stt_url.into(),
+                hosted: stt_hosted,
+                ..Default::default()
+            },
+            polish: PolishConfig {
+                base_url: polish_url.into(),
+                hosted: polish_hosted,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // Polish hosted, speech not: one row, and it names polish.
+        let one = cfg(
+            "http://127.0.0.1:8770/v1",
+            false,
+            "https://api.example.com/v1",
+            true,
+        );
+        assert_eq!(
+            hosted_endpoints(&one)
+                .iter()
+                .map(|(k, _, _)| *k)
+                .collect::<Vec<_>>(),
+            ["polish.base_url"]
+        );
+        assert_eq!(hosted_endpoints(&one)[0].1, "https://api.example.com/v1");
+        assert_eq!(hosted_endpoints(&one)[0].2, "every dictation's text");
+
+        // Speech hosted says what leaves for *that* stage.
+        let speech = cfg(
+            "https://api.example.com/v1",
+            true,
+            "http://127.0.0.1:4000/v1",
+            false,
+        );
+        assert_eq!(hosted_endpoints(&speech).len(), 1);
+        assert_eq!(hosted_endpoints(&speech)[0].2, "your audio");
+
+        // An https:// endpoint with the key unset earns neither row — the tailnet case the
+        // ruling turned on: encrypted, remote, and still nobody else's machine.
+        let own = cfg(
+            "https://whisper.tail1234.ts.net/v1",
+            false,
+            "https://llm.tail1234.ts.net/v1",
+            false,
+        );
+        assert!(hosted_endpoints(&own).is_empty());
+        assert!(cleartext_endpoints(&own).is_empty());
+
+        // And the two rows are orthogonal: plain http to a hosted service earns both.
+        let both = cfg(
+            "http://10.0.0.5:8770/v1",
+            true,
+            "http://127.0.0.1:4000/v1",
+            false,
+        );
+        assert_eq!(hosted_endpoints(&both).len(), 1);
+        assert_eq!(cleartext_endpoints(&both).len(), 1);
+
+        // Polish off: its URL is never contacted, so it must not be reported hosted either.
+        let mut off = cfg(
+            "http://127.0.0.1:8770/v1",
+            false,
+            "https://api.example.com/v1",
+            true,
+        );
+        off.polish.enabled = false;
+        assert!(hosted_endpoints(&off).is_empty());
     }
 
     /// `detect` rejects these key names one row later; the hotkey row must not print them

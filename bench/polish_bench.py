@@ -97,7 +97,7 @@ def rule_one(src: str, name: str) -> str:
 def glossary_rule(src: str) -> str:
     """The format string `system_prompt` appends when a glossary is configured, with Rust
     escapes resolved: `{}` is the base, `{g}` the glossary."""
-    m = re.search(r'format!\(\s*"(\{\}\\n\\n9\. .*?\\n\{g\})",', src, re.S)
+    m = re.search(r'format!\(\s*"(\{\}\\n\\n10\. .*?\\n\{g\})",', src, re.S)
     if not m:
         setup_error("polish.rs: the glossary rule format string is not where the bench expects it")
     return m.group(1).replace("\\n", "\n")
@@ -355,12 +355,12 @@ def self_test() -> None:
     src = (REPO / "src" / "polish.rs").read_text(encoding="utf-8")
     base = built_in_prompt(src)
     assert base.startswith("You turn a raw speech transcript"), base[:40]
-    assert "\n8. " in base and "\n9. " not in base, "the built-in prompt no longer stops at 8"
+    assert "\n9. " in base and "\n10. " not in base, "the built-in prompt no longer stops at 9"
     rule = glossary_rule(src)
-    assert rule.startswith("{}\n\n9. Technical terms") and rule.endswith("\n{g}"), rule[:60]
+    assert rule.startswith("{}\n\n10. Technical terms") and rule.endswith("\n{g}"), rule[:60]
     assert compose(base, "  ", rule) == base
     with_g = compose(base, " Glossary: X ", rule)
-    assert with_g.startswith(base.rstrip() + "\n\n9. ") and with_g.endswith("\nGlossary: X"), with_g[-40:]
+    assert with_g.startswith(base.rstrip() + "\n\n10. ") and with_g.endswith("\nGlossary: X"), with_g[-40:]
     assert fold_glossary({"prompt": " A ", "by_language": {"he": {"prompt": "B"}, "ru": {"prompt": ""}}}) == "A\nB"
     assert fold_glossary({}) == ""
     assert typed("  Hello, world. ") == "Hello, world"
