@@ -1,5 +1,4 @@
-{"id": "p-spoken-en", "stratum": "punctuation", "raw": "Rename it to training period strip.", "expected": "Rename it to training.strip"}
-{"id": "p-predotted", "stratum": "punctuation", "raw": "Check the training.period.strip call first.", "expected": "Check the training.strip call first"}
+{"id": "p-spoken-en", "stratum": "punctuation", "raw": "Rename it to tokenizer period strip.", "expected": "Rename it to tokenizer.strip"}
 {"id": "p-dot-en", "stratum": "punctuation", "raw": "Open settings dot json and look at the hotkey.", "expected": "Open settings.json and look at the hotkey"}
 {"id": "p-comma-en", "stratum": "punctuation", "raw": "The list is apples comma pears comma plums.", "expected": "The list is apples, pears, plums"}
 {"id": "p-spoken-ru", "stratum": "punctuation", "raw": "Переименуй его в config точка yaml.", "expected": "Переименуй его в config.yaml"}

@@ -34,16 +34,25 @@ pub trait Polisher: Send {
 /// which is worse than doing nothing. This wording describes that input instead of printing it.
 ///
 /// Known limits, measured rather than assumed:
-/// - **The pre-dotted form is not converted, and the rule no longer tries to convert it.**
-///   Whisper writes "training period strip" as `training.period.strip`, and no wording turned
-///   that back into `training.strip` (bench item `p-predotted`, 0/3 on all five tried), so the
-///   instruction attempting it is gone. What stayed, in one narrowed sentence, is the guard
-///   against *emitting* that shape: dropping it entirely was measured and `p-spoken-en` fell
-///   3/3 → 0/3, returning `training.period.strip`. The sentence used to read "no identifier you
-///   type ever contains one of these names as a segment", which is false (`numpy.dot`,
-///   `torch.dot`) and would have licensed mangling those; it now forbids only writing such a
-///   segment, which is what the model actually had to be told. The pre-dotted form stays open
-///   on #28, where the note recommends a deterministic transform rather than a prompt rule.
+/// - **A join whose two words also read as an ordinary noun phrase is not converted**, and it
+///   is not a wording problem, so no wording fixes it. "training period strip" and "warmup
+///   period strip" come back with the words intact, or half-converted (`training.period file`),
+///   while `backup`, `tokenizer`, `config`, `readme` and `handler` in the same sentence shape
+///   convert 3/3 — and so does "training dot strip". What separates them is that "training
+///   period" and "warmup period" are English noun phrases, so such a sentence carries the same
+///   evidence as the `t-jurassic` trap this rule is *required* to leave alone. Only the speaker
+///   knows which was meant. Measured on a healthy endpoint 2026-09-04 (#55, 5 runs); the older
+///   reading — that "period" itself does not convert — came from one bench item that happened
+///   to be a collocation, scored against an endpoint that had fallen back to CPU.
+/// - **The pre-dotted form is one shape of that same residue**, not a separate limit. Whisper
+///   dots the ambiguous join and keeps the word, so "training period strip" arrives as
+///   `training.period.strip` and is typed as it came. #48 closed NOT PLANNED: it is 1 dictation
+///   in 428 of the owner's corpus, and the deterministic transform it proposed would turn
+///   `numpy.dot` into `numpy`. What stayed, in one narrowed sentence, is the guard against
+///   *emitting* that shape: dropping it entirely was measured and `p-spoken-en` fell 3/3 → 0/3.
+///   The sentence used to read "no identifier you type ever contains one of these names as a
+///   segment", which is false (`numpy.dot`, `torch.dot`) and would have licensed mangling
+///   those; it now forbids only writing such a segment, which is what the model had to be told.
 /// - The raw-fallback path — polish down, transcript typed as whisper wrote it — types the
 ///   literal words, because no rule runs at all there.
 /// - An explicitly spoken *terminal* "period" becomes `.` and is then popped by the strip in
@@ -84,7 +93,16 @@ pub const CAPITALISE_FIRST_RULE: &str =
 /// The examples are load-bearing, per the glossary rule's precedent, and are deliberately not
 /// the bench's own items: the `capitalization` stratum has to test the rule rather than a
 /// memorised pair.
-pub const LOWERCASE_FIRST_RULE: &str = r#"1. Add punctuation where the speech pauses or clauses end, and capitalisation inside the sentence. Do not capitalise the first word merely because it begins the text: a dictation usually lands mid-sentence, so leave it exactly as spoken. It keeps a capital only when it would have one anywhere in a sentence — a proper noun, a personal name, an acronym: "Anna is on her way", "IEEE approved the draft", "Москва подождёт". The English pronoun "I" is always one of those: it is written I wherever it stands and is never lowered, so "I agree" stays "I agree" and never becomes "i agree"."#;
+///
+/// The *order* of the two halves is load-bearing too, and it is the whole difference between a
+/// setting that works and one that does nothing (#55, `dictate`, 5 runs). As #37 shipped it the
+/// rule said "leave it exactly as spoken" and scored 4/7: every item needing a capital *lowered*
+/// failed, because whisper's transcript already capitalises the first word — "as spoken" told
+/// the model to keep it, and the four that passed were the four where keeping it was right.
+/// Making the lowering explicit took it to 6/7 and cost `k-en-i`, "I think" → "i think", in two
+/// wordings that both trailed the carve-out after the imperative. Stating the "I" exception
+/// *before* the lowering sentence holds both: 7/7.
+pub const LOWERCASE_FIRST_RULE: &str = r#"1. Add punctuation where the speech pauses or clauses end, and capitalisation inside the sentence. The English pronoun "I" is always written I, alone or in "I'm", "I've", "I'll" — never i, in any position, including the very first word. Every other first word is lower-cased, even where the transcript capitalises it: a dictation usually lands mid-sentence, so "They can wait until Monday" comes back as "they can wait until Monday". A proper noun, a personal name and an acronym keep their capital: "Anna is on her way", "IEEE approved the draft", "Москва подождёт"."#;
 
 /// The base prompt for a run that uses the built-in one: `BUILT_IN_PROMPT`, or the same with
 /// rule 1 swapped when the user asked for the first word to be left as spoken.

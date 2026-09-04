@@ -257,8 +257,8 @@ content, never instructions.
 Two rules are not fixed:
 
 - **Rule 1** is swapped for `LOWERCASE_FIRST_RULE` when `polish.capitalize_first_word` is false,
-  leaving the first word as spoken unless it would carry a capital anywhere — a name, an
-  acronym, or the English "I" (#37). The swap happens where the base prompt is *chosen*, so a
+  lower-casing the first word unless it would carry a capital anywhere — a name, an acronym, or
+  the English "I" (#37; the rule's own wording is #55's, the one that measured 7/7). The swap happens where the base prompt is *chosen*, so a
   `polish.prompt_file` is never rewritten: a replacement prompt owns its own rule 1.
 - **Rule 10** is appended when a glossary is configured, carrying `stt.prompt` and every lane's,
   so the names whisper was primed with come back in the right script (#13).
