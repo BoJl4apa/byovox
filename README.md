@@ -18,14 +18,18 @@ byovox needs a Whisper server — this step builds one you run. If you would rat
 hosted transcription API, skip to step 4 and pick *a hosted service* there; the wizard asks
 for its URL, a model name and a key, and tells you your audio will be sent to it.
 
-Get [whisper.cpp](https://github.com/ggml-org/whisper.cpp),
-download a model from
+**Already have a Whisper server running somewhere?** Skip to step 3, and give the wizard its
+address in step 4 — `http://<host>:8770/v1`. Check it was started with the two flags below;
+that server needs `--host 0.0.0.0` rather than loopback to be reachable from another machine.
+
+Otherwise: the exact Windows steps — which zip, which model file, how big it is — are in
+**[docs/platform-windows.md](docs/platform-windows.md#1-whisper-server)**. The short version is
+[whisper.cpp](https://github.com/ggml-org/whisper.cpp), a model from
 [huggingface.co/ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp/tree/main),
-and run:
+and:
 
 ```sh
-whisper-server -m ggml-large-v3-turbo.bin --host 127.0.0.1 --port 8770 -l auto \
-  --inference-path /v1/audio/transcriptions
+whisper-server -m ggml-large-v3-turbo.bin --host 127.0.0.1 --port 8770 -l auto --inference-path /v1/audio/transcriptions
 ```
 
 Both flags matter. `--inference-path` puts the server where OpenAI-compatible clients look;
@@ -59,7 +63,7 @@ would carry a capital anywhere, like a name, an acronym or "I" — and
 ### 3. Install byovox
 
 Download the Windows zip from [Releases](https://github.com/BoJl4apa/byovox/releases) and unzip
-it — keep both `.exe` files together. Verify it first; `SHA256SUMS` is published beside the
+it — keep `byovox.exe` and `byovox-daemon.exe` together, since the first launches the second. Verify it first; `SHA256SUMS` is published beside the
 zip, and the attestation is fetched from GitHub:
 
 ```sh
@@ -98,8 +102,9 @@ byovox
 **Hold Right Ctrl, speak, release.** The text appears where your cursor is. Escape while holding
 throws it away.
 
-Want it running at login, or stuck on any of the above? The full Windows walkthrough — models,
-ffmpeg, autostart — is in [docs/platform-windows.md](docs/platform-windows.md).
+Want it running at login, or stuck on any of the above? The full Windows walkthrough — the
+whisper server step by step, models, autostart — is in
+[docs/platform-windows.md](docs/platform-windows.md).
 
 ## When something's off
 
