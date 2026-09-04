@@ -176,6 +176,36 @@ pub fn built_in(capitalize_first_word: bool) -> String {
 /// sentence writes אריה, and the lion at the zoo (the corpus's trap item) stays a lion. The
 /// examples in the rule are load-bearing: the same rule stated abstractly was measured to
 /// Latinise both the names and the lion (gemma-4-12b, dictation corpus items 21/26/28).
+///
+/// **The names half barely fires, and that is accepted (#59, ruled 2026-09-04: not worth
+/// building).** "Stay in the sentence's own script" is a no-op, and for the same reason #55
+/// found in rule 1's "leave it exactly as spoken": whisper is primed with the glossary, so it
+/// writes the name in *Latin* whatever the language, and a name told to "stay" stays Latin. It
+/// converts for exactly one input — `Alisa` in a Hebrew sentence — and not even for
+/// `Katya → Катя in Russian`, which the rule also spells out. Measured healthy, 5 runs each.
+///
+/// Do not reach for a stronger wording; the space was searched and each end of it is worse:
+/// - Conditional phrasings ("where the transcript spells such a name in Latin, write it in the
+///   script of the sentence instead") convert **0/5** — the same as shipping nothing. The
+///   effect is a threshold, not a dial.
+/// - The bare imperative ("rewrite them into the script of the sentence") converts `Katya` in
+///   both scripts and `Alisa` in Russian **5/5**, and under `capitalize_first_word = true` costs nothing
+///   measurable. But with the flag off — where rule 1 is itself a rewrite instruction — the two
+///   compete and both lose: "I think we ship on Friday" → "i think" (5/5 → 0/5), and worse,
+///   `Катя` is Latinised **back** to `Katya` (5/5 → 1/5), the one thing the rule forbids. The
+///   bench gates that half, so nothing here is landable.
+///
+/// And the case that prompted it is not a wording problem at all: a **less common name
+/// mid-sentence** is not converted. Under the imperative wording above `Arya` converts 3/3
+/// where it opens the sentence and 0/5 anywhere else ("Вчера Arya ответила…", "Мне кажется,
+/// Arya не совсем поняла…" — the dictation #59 was opened about), while `Katya` converts in
+/// either position; the shipped wording converts neither. Position is the whole difference,
+/// under every wording tried. Marking the people in the glossary (`People: Alisa, Arya, Katya.`)
+/// was measured and changed nothing, so it is not the flat list — the model reads a rarer token
+/// as a name only where the initial capital is unambiguous. Fixing it needs a config-declared
+/// name→script lookup (it cannot be transliteration: `Arya` gives `Ария` as readily as the
+/// `Арья` that was wanted), which is a text transform over the user's dictation in the #11 /
+/// #19 / #23 / #36 line and was ruled not worth its false-positive surface.
 pub fn system_prompt(base: &str, glossary: Option<&str>) -> String {
     match glossary.map(str::trim).filter(|g| !g.is_empty()) {
         None => base.to_string(),
