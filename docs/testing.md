@@ -2,7 +2,8 @@
 
 Run this against the release build (`cargo build --release`) before a tag is pushed — that
 binary is what the release workflow publishes, and nothing else here is exercised by CI.
-Run `byovox check` first; every line below assumes it passed.
+Run `byovox check` first; every line below assumes it passed. The boxes stay unticked — this
+is the template for each release run, not a record of one.
 
 ## Hotkey
 - [ ] hold → release: text inserted; the pill showed recording then working
@@ -63,26 +64,6 @@ and an unmapped layout routes to `language.default`, so every row below would lo
 - [ ] unknown key in config: exit 2 naming the key, from the bare `byovox` as well as from `byovox run` — and no daemon left behind
 - [ ] `byovox setup` on a fresh config: probes pass, file written with comments intact, `check` passes
 - [ ] `byovox setup` picking *a hosted service* for a stage: the line naming what leaves the machine is shown before the URL question, the file gets `hosted = true` under that section, and `check` then prints a `note hosted <host>` row for it and none for the other stage; setting `hosted` by hand does the same, and an `https://` endpoint with `hosted = false` prints neither that row nor `warn network`
-- [ ] `python bench/polish_bench.py` (`python3` on Linux and macOS): the `trap`, `cleanup` and `injection` strata pass on every run; `punctuation` fails on `p-predotted` alone — whisper's pre-dotted identifier form, the known limit #28 closed with — each naming its items — a rule change is scored here (`--candidate <file>`, `--prompt-file <file>` for a copy), never eyeballed. The first-word rule (#37) picks which half of the items is scored: with it **on** — the shipped default, or a run without `--no-capitalize` — the four strata above are scored and `capitalization` is skipped; with it **off**, via `--no-capitalize` or `polish.capitalize_first_word = false` in the config, only `capitalization` is. The two sets of expected texts differ in the first word, so they are never scored together, and a selection that comes up empty (`--only` crossed with the wrong half) exits 2 rather than passing with nothing measured
+- [ ] `python bench/polish_bench.py` (`python3` on Linux and macOS): `trap`, `cleanup` and `injection` pass on every run; `punctuation` fails on `p-predotted` alone, the pre-dotted identifier form #28 closed as a known limit. A rule change is scored here (`--candidate <file>`, `--prompt-file <file>` for a copy), never eyeballed
+- [ ] `python bench/polish_bench.py --no-capitalize`: scores `capitalization` and nothing else — its expected texts start lowercase, so they are never scored beside the four above. `k-ru-plain` is marginal (#37). A selection that lands on the empty half (`--only` crossed with the wrong one) exits 2 rather than passing with nothing measured
 - [ ] with a Bluetooth headset connected as the default recording device and `capture.device = "Microphone Array"`: `check`'s `mic` row names the array at 48 kHz, and a dictation leaves music in the headphones untouched (no pitch jump on press or release); a name that matches nothing → exit 2 listing the devices
-
-## Last run
-
-2026-08-25, Windows, release build. Rows an unattended run can exercise were run; the rest
-need a human at the keyboard. The boxes above stay unticked — they are the template for each
-release run.
-
-Exercised by automation:
-
-- Operations — second `byovox` → "already running"
-- Operations — `byovox status` / `byovox last`, both before any dictation and after one
-- Operations — `capture_log.enabled = true`: WAV + JSONL row, no transcript text in the INFO log
-- Operations — unknown key in config: exit 2 naming the key
-- Hotkey — `byovox toggle` twice from a terminal: one dictation
-- Insertion — polish endpoint down (wrong port): raw transcript inserted, WARN in log
-- `byovox check` against the real config, and `byovox config` / `config --init`
-
-Left for the maintainer: everything that needs a physical key press (the rest of Hotkey), all
-of Language routing, the three remaining Insertion rows, all of Indicator, and
-`byovox autostart --enable` with a sign-out/in. The pill and the tray icon have to be looked
-at, and layout switching has to happen on a real focused window.
