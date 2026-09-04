@@ -97,8 +97,20 @@ pub trait Polisher: Send {
 /// the rule's *own* printed example `(1. …, 2. …)` echoed back, not a choice the model makes:
 /// delete that one comma from the example and the output becomes `1. foo 2. bar`, 8/8 either
 /// way. So the item gates that rule 3 fires and is followed to the letter, which is worth
-/// having, but it is not evidence about separators. Its Hebrew half numbers only the first
-/// item — #60, not pinned here, because pinning it would pin the defect.
+/// having, but it is not evidence about separators.
+///
+/// Rule 3's residue is **a non-parallel second item**, in any language — not Hebrew, which is
+/// what #60 and this note first claimed. Where item 1 carries a finite or modal head and item 2
+/// is a bare infinitive, the model reads item 2 as a continuation and never numbers it:
+/// "ראשית צריך להפעיל מחדש את הדמון שנית לבדוק את הלוג" keeps one number 5/5. Restore the
+/// parallelism, or add a third item, and it is 5/5 correct — `ראשית … שנית … שלישית …` numbers
+/// all three. `דבר ראשון … דבר שני …` and short items ("ראשית קפה שנית תה" → `1. קפה 2. תה`)
+/// are 5/5 too, so the Hebrew half works in every construction tried but one. The cue word
+/// surviving inside item 1 is not Hebrew either: the shape-matched English "first we need to
+/// restart the daemon second check the log" comes back "1. First we need to restart the daemon,
+/// 2. second check the log" 5/5, and both real English enumerations in the capture corpus keep
+/// their cue as well. Not pinned: 442 captured dictations contain zero Hebrew enumerations, so
+/// there is no measured shape to gate. #60.
 ///
 /// Rule 6 was never gated until #58 and turns out to have been correct all along — profanity
 /// survives 5/5 in all three languages. The items pin it now so it stays that way; the Russian
