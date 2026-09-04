@@ -61,7 +61,7 @@ and an unmapped layout routes to `language.default`, so every row below would lo
 - [ ] unknown key in config: exit 2 naming the key, from the bare `byovox` as well as from `byovox run` — and no daemon left behind
 - [ ] `byovox setup` on a fresh config: probes pass, file written with comments intact, `check` passes
 - [ ] `byovox setup` picking *a hosted service* for a stage: the line naming what leaves the machine is shown before the URL question, the file gets `hosted = true` under that section, and `check` then prints a `note hosted <host>` row for it and none for the other stage; setting `hosted` by hand does the same, and an `https://` endpoint with `hosted = false` prints neither that row nor `warn network`
-- [ ] `python bench/polish_bench.py` (`python3` on Linux and macOS): the `trap` and `cleanup` strata pass on every run; `punctuation` fails until #28 lands and `injection` until the prompt stops obeying an imperative dictation, each naming its items — a rule change is scored here (`--candidate <file>`, `--prompt-file <file>` for a copy), never eyeballed
+- [ ] `python bench/polish_bench.py` (`python3` on Linux and macOS): the `trap`, `cleanup` and `injection` strata pass on every run; `punctuation` fails until #28 lands, naming its items — a rule change is scored here (`--candidate <file>`, `--prompt-file <file>` for a copy), never eyeballed
 - [ ] with a Bluetooth headset connected as the default recording device and `capture.device = "Microphone Array"`: `check`'s `mic` row names the array at 48 kHz, and a dictation leaves music in the headphones untouched (no pitch jump on press or release); a name that matches nothing → exit 2 listing the devices
 
 ## Last run
