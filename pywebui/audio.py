@@ -226,7 +226,16 @@ def extract_speech_parts(
             filters.append(f"[{part_index}:a]asetpts=PTS-STARTPTS[a{part_index}]")
             labels.append(f"[a{part_index}]")
         filter_graph = ";".join(filters) + ";" + "".join(labels)
-        filter_graph += f"concat=n={len(batch)}:v=0:a=1[out]"
+        # Concatenate all parts, then apply voice enhancement filters:
+        # - highpass: remove low-frequency rumble, hum, wind noise (80 Hz cutoff)
+        # - lowpass: remove high-frequency hiss, noise (8 kHz cutoff)
+        # - compand: compress dynamic range (boost weak voices, reduce loud peaks)
+        # - anormalizer: normalize overall levels while preserving dynamic balance
+        filter_graph += f"concat=n={len(batch)}:v=0:a=1[concat];" \
+                        "[concat]highpass=f=80:poles=1[hp];" \
+                        "[hp]lowpass=f=8000:poles=1[lp];" \
+                        "[lp]compand=attacks=0.005:decays=0.1:points=-80/-80|-4.5/-2|-1/-1|0/0:soft-knee=6:gain=4[comp];" \
+                        "[comp]anormalizer=s=0.1[out]"
         args.extend(
             [
                 "-filter_complex",
@@ -256,17 +265,31 @@ def extract_speech_parts(
 def convert_and_chunk(
     input_path: Path, out_dir: Path, chunk_seconds: int = CHUNK_SECONDS, ffmpeg_path: str = ""
 ) -> list[Chunk]:
-    """Converts to 16 kHz mono PCM WAV, split into `chunk_seconds`-long pieces. ffmpeg's own
-    segment muxer does the splitting so no chunk boundary falls mid-sample."""
+    """Converts to 16 kHz mono PCM WAV with voice enhancement, split into `chunk_seconds`-long pieces.
+    
+    Applies audio filters to enhance speech quality:
+    - High-pass filter: removes low-frequency rumble and hum
+    - Low-pass filter: removes high-frequency hiss
+    - Compressor: boosts weak voices and reduces dynamic range
+    - Normalizer: optimizes overall levels
+    """
     ffmpeg, _ = resolve_ffmpeg(ffmpeg_path)
     out_dir.mkdir(parents=True, exist_ok=True)
     pattern = out_dir / "chunk-%04d.wav"
+    voice_enhancement_filter = (
+        "highpass=f=80:poles=1,"
+        "lowpass=f=8000:poles=1,"
+        "compand=attacks=0.005:decays=0.1:points=-80/-80|-4.5/-2|-1/-1|0/0:soft-knee=6:gain=4,"
+        "anormalizer=s=0.1"
+    )
     _run_with_moov_recovery(
         [
             str(ffmpeg),
             "-y",
             "-i",
             str(input_path),
+            "-af",
+            voice_enhancement_filter,
             "-ar",
             "16000",
             "-ac",
