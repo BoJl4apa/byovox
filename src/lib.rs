@@ -26,6 +26,7 @@ pub mod stt;
 #[cfg(test)]
 pub mod testutil;
 pub mod ui;
+pub mod webui;
 
 /// What `--version` prints and the daemon logs: `0.1.0 (8169c85)`.
 ///

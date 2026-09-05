@@ -23,6 +23,7 @@ pub struct Config {
     pub capture: CaptureConfig,
     pub capture_log: CaptureLogConfig,
     pub logging: LoggingConfig,
+    pub webui: WebuiConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -271,6 +272,71 @@ impl Default for LoggingConfig {
     }
 }
 
+/// The upload-and-process web app: a separate subsystem from the dictation pipeline above,
+/// off by default. When `enabled`, the daemon spawns a Python process serving this on the
+/// LAN with no authentication — a phone on the same network reaches it, uploads a recording,
+/// and gets a transcript and summaries back. Reuses `[stt]` and `[polish]` for its own HTTP
+/// calls rather than naming a second server.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WebuiConfig {
+    pub enabled: bool,
+    /// "0.0.0.0" reaches every interface, which is the point — a phone on the same Wi-Fi
+    /// needs to open this from outside the machine. There is no login: anyone on the network
+    /// this reaches can upload a file and read every transcript.
+    pub host: String,
+    pub port: u16,
+    /// OpenAI-compatible Whisper endpoint for long recordings. Empty = reuse `stt.base_url`.
+    pub stt_base_url: String,
+    /// Silence detector threshold in dBFS for web recordings.
+    pub silence_threshold_db: f64,
+    /// Silence must last at least this many seconds before it is removed from processing;
+    /// shorter pauses remain attached to the surrounding speech.
+    pub silence_min_s: f64,
+    /// Delete an uploaded recording's original audio after this many days; the transcript,
+    /// SRT, chunks and summaries it produced are never deleted by this. 0 keeps the audio.
+    pub audio_retention_days: u32,
+    /// Interpreter to launch: a bare name is looked up on PATH, a path is used as given.
+    /// Empty = try `python3` then `python`.
+    pub python: String,
+    /// Directory holding the `pywebui` package. Empty = `pywebui` next to the executable,
+    /// falling back to the repository's `pywebui` during `cargo run`.
+    pub app_dir: String,
+    /// Where `pywebui` finds ffmpeg/ffprobe: empty = look on PATH. Otherwise the directory
+    /// containing the two executables, a directory whose `bin` subfolder does (the layout
+    /// most ffmpeg builds for Windows ship as), or the full path to the `ffmpeg` executable
+    /// itself with `ffprobe` expected alongside it. Read by `pywebui`, not by this binary —
+    /// declared here only so the schema stays one file and a typo is still refused.
+    pub ffmpeg_path: String,
+    /// Timeout, in seconds, for one chunk's `/audio/transcriptions` request. A live dictation
+    /// is a few seconds of audio and `stt.timeout_s` (30s) is plenty; a chunk here is up to
+    /// ~10 minutes of audio, which whisper can take minutes to transcribe on CPU — this is
+    /// the timeout used instead of `stt.timeout_s` for every request this feature sends.
+    pub stt_timeout_s: u64,
+    /// As `stt_timeout_s`, for `/chat/completions` requests: cleanup, topic-splitting and
+    /// summarizing all send far more text per call than a single dictation's `polish.timeout_s`
+    /// (20s) allows for.
+    pub llm_timeout_s: u64,
+}
+impl Default for WebuiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: "0.0.0.0".into(),
+            port: 8787,
+            stt_base_url: String::new(),
+            silence_threshold_db: -35.0,
+            silence_min_s: 10.0,
+            audio_retention_days: 7,
+            python: String::new(),
+            app_dir: String::new(),
+            ffmpeg_path: String::new(),
+            stt_timeout_s: 600,
+            llm_timeout_s: 300,
+        }
+    }
+}
+
 /// Platform config dir + `config.toml`.
 pub fn default_path() -> PathBuf {
     directories::ProjectDirs::from("", "", "byovox")
@@ -489,6 +555,9 @@ fn validate(cfg: &Config) -> Result<()> {
         bail!(
             "stt.no_speech_warn is {w} but no_speech_threshold is 0.0, which turns whisper scoring off: set no_speech_warn = 0.0 with it, or raise no_speech_threshold"
         );
+    }
+    if cfg.webui.enabled && cfg.webui.port == 0 {
+        bail!("webui.port is 0: name a port for the upload web app to listen on");
     }
     Ok(())
 }

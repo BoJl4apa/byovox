@@ -152,6 +152,34 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
     let backends = platform::detect(&cfg)?;
     tracing::info!(hotkey = backends.names.hotkey, layout = backends.names.layout, rungs = ?backends.names.rungs, "backends");
 
+    // The upload-and-process web app: a separate subsystem, off by default. A failure to
+    // start it is loud but not fatal to dictation — the one feature this daemon must never
+    // lose is the one the tray icon promises.
+    let webui_child = if cfg.webui.enabled {
+        match crate::webui::spawn(
+            &cfg.webui,
+            &std::env::current_exe().unwrap_or_default(),
+            &path,
+            &config::data_dir(),
+            &log_dir(),
+        ) {
+            Ok(child) => {
+                tracing::info!(
+                    host = %cfg.webui.host,
+                    port = cfg.webui.port,
+                    "webui started"
+                );
+                Some(child)
+            }
+            Err(e) => {
+                tracing::error!(error = format!("{e:#}"), "webui failed to start");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let stt_token = config::resolve_token(&cfg.stt.api_key_env, &cfg.stt.api_key_file);
     let stt_timeout = Duration::from_secs(cfg.stt.timeout_s);
     let stt_scored = cfg.stt.no_speech_threshold > 0.0;
@@ -311,7 +339,7 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
             let _ = pipeline_proxy.send_event(ui::UserEvent::Quit);
         })?;
 
-    ui::run(
+    let result = ui::run(
         event_loop,
         ui::UiOptions {
             pill: cfg.indicator.pill,
@@ -322,7 +350,16 @@ fn start(cfg: Config, path: PathBuf) -> Result<()> {
         ui_tx,
         path,
         log_dir(),
-    )
+    );
+    // Killed here rather than left for the OS: a child that outlives this process would
+    // hold the port across a `byovox` / `byovox quit` / `byovox` restart and every daemon
+    // start after the first would find webui already "running" on someone else's process.
+    if let Some(mut child) = webui_child {
+        tracing::info!(pid = child.id(), "stopping webui");
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    result
 }
 
 /// Whether to forward a `toggle` into the pipeline, and the reply to send back.
