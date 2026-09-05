@@ -200,6 +200,65 @@ topic files and summaries are kept. See [pywebui/README.md](pywebui/README.md) f
 works and [docs/config.example.toml](docs/config.example.toml)'s `[webui]` section for every
 setting.
 
+### Web UI workflow
+
+The web UI is designed for long phone recordings and is separate from push-to-talk dictation:
+
+1. Open the page from a phone or desktop browser and use the compact `Upload +` control. The
+   file picker and upload action appear in a dialog; processing continues in the background.
+2. Silence detection identifies speech ranges while preserving the original timeline. Speech
+   ranges are merged into larger seeked ffmpeg chunks, so a long recording is not decoded from
+   the beginning for every chunk.
+3. Each chunk is sent to the processing Whisper endpoint with timestamp information. The raw
+   result is checkpointed as `transcript.raw.srt` and can be resumed after a restart.
+4. Repeated short phrases that look like pocket impacts, ambient noise, or transcription
+   hallucinations are kept with timestamps in a collapsed Noise section but excluded from
+   polished notes, topics, summaries, and the conversation map.
+5. The transcript is polished in numbered windows. Topic and summary analysis uses overlapping
+   windows so a conversation crossing a context boundary can retain continuity. The overlap and
+   analysis window size are configurable in `[webui]`.
+6. The finished recording receives a summary-derived display name, topic nodes, summaries,
+   completeness and quality scores, and an incremental conversation-map entry.
+
+### Reviewing and recovering work
+
+- The home page defaults to a date-first view and also offers an upload-oriented view.
+- Recordings and topic nodes can be sorted chronologically, by completeness, or by quality.
+- Each node shows its local start time, end time, duration, quality, and completeness.
+- `Node actions` opens a centered dialog containing archive, clone/version, speaker mapping, and
+  summary regeneration controls. Speaker mapping accepts several lines, for example
+  `Speaker 1 = David` and `Speaker 2 = Alex`.
+- Archived nodes leave active summaries and graph matching but remain restorable in the archived
+  section.
+- `Recalculate weights` reuses the completed raw transcript and reruns polish, topic splitting,
+  summaries, scores, and graph relationships without sending the audio to Whisper again.
+- Generated WAV chunks are removed after transcription. The original upload remains for the
+  configured retention period, seven days by default.
+- Processing logs are collapsed below the results and use readable stage descriptions. Technical
+  request details remain available in the central JSONL interaction log.
+- The theme control is a persistent light/dark toggle. Timestamps are rendered in the viewer's
+  browser timezone.
+
+### Prompts and configuration
+
+The active system prompts can be inspected locally at the `/prompts` development route. Runtime
+overrides are configured in TOML under `[webui.prompts]`; omitted keys keep the built-in defaults.
+Supported prompt keys are `polish`, `split`, `summary`, `refine`, `noise`, and `relationship`.
+For long analysis, `analysis_max_chars` and `analysis_overlap_ratio` control the window budget and
+repeated context band.
+
+### Conversation map
+
+After processing, topic titles and summaries are compared incrementally with existing active
+nodes. Lexical overlap selects candidates; the configured relationship prompt can score those
+candidates, with lexical scoring as a fallback if the LLM is unavailable. Archived, ambient, weak,
+and low-information nodes are excluded from the active map.
+
+The map shows only relationships at or above the significance threshold, groups connected
+conversations by importance, and colors repeated normalized titles consistently. Each node is a
+clickable link to the exact topic in its source recording. The machine-readable map is available
+at `/api/graph` for diagnostics.
+
 ## Things to know
 
 - **Your speech server can type into your windows.** Whatever it returns becomes keystrokes, so
