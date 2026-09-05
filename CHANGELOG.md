@@ -6,6 +6,50 @@ but not implemented, so no artefact is published for them (see `.github/workflow
 Each release is a tag; the zip, its `SHA256SUMS` and a build-provenance attestation are
 published from it. Written retroactively at 0.2.0, from the git history.
 
+## Unreleased — 2026-09-05
+
+Added
+- Optional long-recording web UI, spawned by the Rust daemon when `[webui] enabled = true`.
+- Mobile-friendly M4A/MP3 upload workflow with background processing and date-first browsing,
+  plus an upload-oriented view for browsing recordings.
+- Separate processing Whisper endpoint support through `webui.stt_base_url`.
+- ffmpeg silence detection, source-timestamp preservation, seek-based speech extraction, merged
+  Whisper chunks, and checkpointed raw SRT transcription.
+- Automatic cleanup of generated WAV chunks while retaining original audio for the configured
+  retention period (seven days by default).
+- Repeated-phrase noise preservation: likely ambient or impact hallucinations are excluded from
+  polished notes and summaries but remain reviewable with source offsets in a collapsed Noise
+  section.
+- Windowed transcript polish, topic splitting, and summarization with overlapping analysis
+  windows for context continuity.
+- TOML prompt overrides for polish, split, summary, refinement, noise, and relationship stages.
+- Per-node completeness and quality scores with explainable factors and sorting by date,
+  completeness, or quality.
+- Topic-node archive/restore, version creation, summary regeneration, and per-node speaker
+  remapping with user-supplied names.
+- Recalculation from the completed raw transcript without repeating Whisper processing.
+- Incremental conversation graph storage, lexical candidate selection, optional LLM relationship
+  scoring, significance filtering, connected conversation groups, title-consistent colors, and
+  clickable links back to source nodes.
+- Browser-local timestamp rendering, persistent light/dark theme control, and readable collapsed
+  processing logs.
+
+Changed
+- Long-recording extraction seeks directly to speech ranges instead of rescanning the full source
+  for every merged chunk.
+- Generated conversation titles are normalized and limited to 72 characters so node headers stay
+  usable beside timing and score controls.
+- The web UI uses compact labeled controls, centered node-action dialogs, transcript.txt downloads,
+  and a denser review layout for long notes.
+- The relationship map filters by significance and ranks connected groups instead of using an
+  arbitrary result-count cap.
+
+Operational notes
+- The web UI has no authentication and is intended for a trusted LAN only.
+- Raw transcripts, polished transcripts, summaries, node metadata, noise records, and graph data
+  are stored under `<data_dir>/webui/`; original audio follows the configured retention policy.
+- Existing recordings can be recalculated from `transcript.raw.srt` when original audio is gone.
+
 ## 0.2.0 — 2026-09-04
 
 Added

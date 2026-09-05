@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>byovox — recordings</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260905b">
+</head>
+<body>
+  <header>
+    <div class="frame-header"><h1>byovox</h1><div class="top-actions"><button type="button" class="action-button" data-upload-open title="Upload recording">Upload <span aria-hidden="true">+</span></button><a class="action-button" href="/graph" title="Conversation map">Map <span aria-hidden="true">&#9673;</span></a></div></div>
+    <p class="subtitle">Upload a recording, browse the transcript and summaries later.</p>
+  </header>
+
+  <dialog class="upload-dialog" data-upload-dialog>
+    <form class="card" action="/upload" method="post" enctype="multipart/form-data">
+    <div class="frame-header"><h2>Upload recording</h2><button type="button" class="icon-button" data-upload-close aria-label="Close">&times;</button></div>
+    <div class="upload-form">
+      <input type="file" name="file" accept=".m4a,.mp3" required>
+      <button type="submit" class="primary">Upload</button>
+    </div>
+    <p class="hint">Accepts .m4a and .mp3. Processing runs in the background — you can leave
+      and check back later.</p>
+    </form>
+  </dialog>
+
+  <section>
+    <div class="frame-header">
+      <h2>Past recordings</h2>
+      <form method="get" class="sort-form">
+        <input type="hidden" name="view" value="{{ view }}">
+        <label for="recording-sort">Sort</label>
+        <select id="recording-sort" name="sort" onchange="this.form.submit()">
+          <option value="date" {% if sort == "date" %}selected{% endif %}>Newest first</option>
+          <option value="quality" {% if sort == "quality" %}selected{% endif %}>Best node quality</option>
+          <option value="completeness" {% if sort == "completeness" %}selected{% endif %}>Most complete node</option>
+        </select>
+      </form>
+    </div>
+    <p class="view-switch"><a class="button" href="/?view=dates&sort={{ sort }}">Browse by dates</a><a class="button" href="/?view=uploads&sort={{ sort }}">Browse uploads</a></p>
+    {% if not recordings %}
+      <p class="hint">Nothing uploaded yet.</p>
+    {% endif %}
+    {% if view == "dates" %}
+    {% for date, items in date_groups.items() %}
+    <h3 class="date-heading">{{ date }}</h3>
+    <ul class="recordings">
+      {% for r in items %}
+      {% include "recording_row.html" %}
+      {% endfor %}
+    </ul>
+    {% endfor %}
+    {% else %}
+    <ul class="recordings">
+      {% for r in recordings %}
+      {% include "recording_row.html" %}
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+  <button type="button" class="theme-toggle icon-button theme-fab" data-theme-toggle title="Switch theme" aria-label="Switch theme"></button>
+  <script src="/static/app.js?v=20260905b" defer></script>
+</body>
+</html>

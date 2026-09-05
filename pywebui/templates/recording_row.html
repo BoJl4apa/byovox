@@ -1,0 +1,23 @@
+<li class="card recording-row">
+  <div class="recording-info">
+    <strong class="recording-title">{{ r.display_name or r.original_filename }}</strong>
+    {% if r.display_name %}<div class="hint">{{ r.original_filename }}</div>{% endif %}
+    <div class="meta-line">
+      <span class="badge badge-{{ r.status }}">{{ r.status }}</span>
+      <time class="hint local-time" datetime="{{ r.created_at }}">{{ r.created_at }}</time>
+      {% if r.chunks %}<span class="score-line hint">Quality {{ r.chunks | map(attribute='quality') | max }}/100 · complete {{ r.chunks | map(attribute='completeness') | max }}/100</span>{% endif %}
+    </div>
+    {% if r.error %}<p class="error-text">{{ r.error }}</p>{% endif %}
+  </div>
+  <div class="actions">
+    <a class="button" href="/recordings/{{ r.id }}">Open</a>
+    {% if r.status == "done" %}
+    <a class="button" href="/recordings/{{ r.id }}/download">Download transcript.txt</a>
+    {% endif %}
+    {% if r.status == "error" %}
+    <form action="/recordings/{{ r.id }}/retry" method="post">
+      <button type="submit" class="button retry">Retry</button>
+    </form>
+    {% endif %}
+  </div>
+</li>
