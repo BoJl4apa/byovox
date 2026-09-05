@@ -239,3 +239,65 @@ level = "info"
 # matches nothing is a startup error naming this key and listing those names — never a silent
 # fallback to the default.
 device = ""
+
+[webui]
+# The upload-and-process web app: a different feature from the push-to-talk pipeline above.
+# Off by default. When on, the daemon spawns a local Python process (see pywebui/README.md)
+# serving a mobile-first page for uploading a long recording (M4A/MP3), and getting back a
+# timestamped transcript plus topic/story summaries you can browse or download as .txt. It
+# reuses [stt] and [polish] above unless stt_base_url names a second processing server.
+# Requires Python 3.11+ and ffmpeg on PATH; the daemon logs why it did not start otherwise.
+enabled = false
+# "0.0.0.0" listens on every interface, which is the point: a phone on the same Wi-Fi opens
+# this from outside the machine. There is NO login — anyone who can reach host:port can
+# upload a file and read every transcript this has ever produced. Only enable this on a
+# network you trust every device on.
+host = "0.0.0.0"
+port = 8787
+# OpenAI-compatible Whisper endpoint for long recordings. Empty = reuse stt.base_url.
+# Set this to the second whisper-server, for example "http://127.0.0.1:8771/v1".
+stt_base_url = ""
+# Stage 1 silence removal for web recordings. Audio below this level for at least
+# silence_min_s seconds is excluded from Whisper processing. Original timestamps are kept
+# in speech-ranges.json and added back to every transcript segment.
+silence_threshold_db = -35.0
+silence_min_s = 10.0
+# Delete an uploaded recording's original audio after this many days; the transcript, SRT,
+# topic chunks and summaries it produced are kept regardless. 0 keeps the audio too.
+audio_retention_days = 7
+# Interpreter to launch: a bare name is looked up on PATH, a path is used as given.
+# Empty = try `python3`, then `python`.
+python = ""
+# Directory holding the `pywebui` package. Empty = `pywebui` next to the byovox executable,
+# falling back to the repository's `pywebui` when run from a checkout (`cargo run`).
+app_dir = ""
+# Where pywebui finds ffmpeg/ffprobe: empty = look on PATH. Otherwise a directory
+# containing the two executables, a directory whose `bin` subfolder does (the layout most
+# ffmpeg builds for Windows ship as, e.g. "C:\ffmpeg" for "C:\ffmpeg\bin\ffmpeg.exe"), or the
+# full path to the ffmpeg executable itself, with ffprobe expected alongside it.
+ffmpeg_path = ""
+# Timeout, in seconds, for one chunk's /audio/transcriptions request. A live dictation is a
+# few seconds of audio and stt.timeout_s (30s) is plenty; a chunk here is up to ~10 minutes
+# of audio, which whisper can take minutes to transcribe on CPU — this timeout is used
+# instead of stt.timeout_s for every request this feature sends.
+stt_timeout_s = 600
+# As stt_timeout_s, for /chat/completions requests: cleanup, topic-splitting and summarizing
+# all send far more text per call than a single dictation's polish.timeout_s (20s) allows for.
+llm_timeout_s = 300
+# Maximum characters per topic/summary analysis window and the repeated context fraction.
+analysis_max_chars = 8000
+analysis_overlap_ratio = 0.1
+# End of the web UI defaults.
+#
+
+# Optional prompt overrides for the web UI. Each value replaces the built-in system prompt
+# for that stage; leaving a key out keeps the built-in default. The user transcript is sent
+# separately by the application, so custom prompts should describe expected input/output.
+[webui.prompts]
+# polish = "Return only cleaned numbered lines in the same order."
+# split = "Return JSON topic ranges covering every input line exactly once."
+# summary = "Summarize the supplied text with decisions and action items only."
+# refine = "Revise the supplied text according to the instruction; return only the result."
+# noise = "Identify repeated short phrases likely caused by recording noise."
+# relationship = "Compare two topic summaries and return a relationship strength."
+

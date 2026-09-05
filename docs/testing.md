@@ -67,3 +67,27 @@ and an unmapped layout routes to `language.default`, so every row below would lo
 - [ ] `python bench/polish_bench.py` (`python3` on Linux and macOS): every stratum passes on every run. The run prints the endpoint's generation rate first and refuses below 20 tok/s (#54, `--allow-slow-endpoint` to override): a model that has fallen back to CPU answers with *different text*, not merely slower text, and scoring it silently is what #55 had to be re-measured for. A rule change is scored here (`--candidate <file>`, `--prompt-file <file>` for a copy), never eyeballed
 - [ ] `python bench/polish_bench.py --no-capitalize`: scores `capitalization` and nothing else — its expected texts start lowercase, so they are never scored beside the four above. All seven pass — the wording #37 shipped was inert on this model and #55 replaced it. A selection that lands on the empty half (`--only` crossed with the wrong one) exits 2 rather than passing with nothing measured
 - [ ] with a Bluetooth headset connected as the default recording device and `capture.device = "Microphone Array"`: `check`'s `mic` row names the array at 48 kHz, and a dictation leaves music in the headphones untouched (no pitch jump on press or release); a name that matches nothing → exit 2 listing the devices
+
+## Upload web UI (`[webui]`)
+
+A separate feature from the hotkey path above; needs ffmpeg and Python 3.11+ on PATH.
+
+- [ ] `webui.enabled = true`, start `byovox`: log shows `webui started`, and
+      `http://127.0.0.1:<port>` loads the upload page with no login prompt
+- [ ] from a second device on the same LAN, `http://<this-pc-ip>:<port>` loads the same page
+- [ ] upload a short `.m4a`: status moves uploaded → transcribing → polishing → analyzing →
+      summarizing → done; refresh shows the same progression
+- [ ] open the finished recording: full transcript has `[hh:mm:ss]` per line, at least one
+      topic chunk with its own summary, and a whole-recording summary
+- [ ] "Download .txt" returns a single file containing the summary, every chunk and its
+      summary, and the full transcript
+- [ ] upload a `.wav` or other unsupported extension: rejected with a 400, nothing written to
+      `webui/recordings/`
+- [ ] `<data-dir>/webui/logs/interactions.jsonl` gains one JSON row per STT/LLM call made for
+      that recording, each with a stage, status and latency
+- [ ] stop `ffmpeg`/rename it off PATH, upload a file: that recording's status ends at `error`
+      with a message naming ffmpeg, and the daemon and dictation hotkey are unaffected
+- [ ] set an uploaded recording's `original.*` mtime older than `webui.audio_retention_days`
+      and wait for (or trigger) the housekeeping pass: the audio file is gone, `transcript.srt`
+      and every chunk/summary remain
+- [ ] `byovox quit`: the webui process exits with it (no orphaned Python process left running)

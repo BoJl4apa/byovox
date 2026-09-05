@@ -175,6 +175,31 @@ he = "he"                   # Hebrew layout → dictate in Hebrew
 `byovox config --init` writes the config file. Every option is explained in
 [docs/config.example.toml](docs/config.example.toml).
 
+## Upload & transcribe a long recording (web UI)
+
+A different feature from push-to-talk above: upload an existing recording — a full day
+captured on your phone, say — and get back a timestamped transcript plus topic summaries you
+can browse or download, no hotkey involved. Off by default; needs
+[ffmpeg](https://ffmpeg.org/download.html) and Python 3.11+ on PATH, and reuses the `[stt]`
+and `[polish]` servers above rather than naming new ones.
+
+```toml
+[webui]
+enabled = true
+```
+
+Start byovox as usual; it spawns the web app and logs the address. From a phone on the same
+Wi-Fi, open `http://<this-pc's-LAN-IP>:8787`. Upload an `.m4a` or `.mp3`, leave or wait — it
+transcribes, cleans up the transcript, splits it into topics/stories, and summarizes each one
+in the background. Come back to browse, copy, or download a `.txt`.
+
+**There is no login.** Anyone on the network `webui.host` reaches can upload a file and read
+every transcript this has produced — only enable it on a network you trust every device on.
+Uploaded audio is deleted after `webui.audio_retention_days` (7 by default); transcripts,
+topic files and summaries are kept. See [pywebui/README.md](pywebui/README.md) for how it
+works and [docs/config.example.toml](docs/config.example.toml)'s `[webui]` section for every
+setting.
+
 ## Things to know
 
 - **Your speech server can type into your windows.** Whatever it returns becomes keystrokes, so
@@ -184,6 +209,9 @@ he = "he"                   # Hebrew layout → dictate in Hebrew
   `capture_log` yourself if you want copies.
 - **No secrets in the config file.** It holds the *name* of an environment variable, never a
   token.
+- **The upload web UI has no login.** It is a separate opt-in feature (`[webui]`, off by
+  default) for processing files rather than dictating live — see the section above before
+  turning it on.
 
 Full threat model: [SECURITY.md](SECURITY.md). Windows specifics:
 [docs/platform-windows.md](docs/platform-windows.md). Why it exists:

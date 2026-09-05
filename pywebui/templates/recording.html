@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ meta.original_filename }} — byovox</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260905b">
+</head>
+<body>
+  <p class="back-link"><button type="button" class="button back-button" onclick="history.back()">&larr; Back</button></p>
+  <header>
+    <div class="frame-header"><div><h1>{{ meta.display_name or meta.original_filename }}</h1>
+    {% if meta.display_name %}<p class="hint">{{ meta.original_filename }}</p>{% endif %}
+    </div><button type="button" class="theme-toggle icon-button theme-fab" data-theme-toggle title="Switch theme" aria-label="Switch theme"></button></div>
+    <div class="meta-line">
+      <span class="badge badge-{{ meta.status }}">{{ meta.status }}</span>
+      <time class="hint local-time" datetime="{{ meta.created_at }}">{{ meta.created_at }}</time>
+    </div>
+    {% if meta.error %}<p class="error-text">{{ meta.error }}</p>{% endif %}
+  </header>
+
+  <p class="actions">
+    {% if meta.status == "done" %}
+    <a class="button primary" href="/recordings/{{ meta.id }}/download">Download transcript.txt</a>
+    {% endif %}
+    {% if has_raw_transcript %}<form action="/recordings/{{ meta.id }}/recalculate" method="post"><button type="submit" class="button">Recalculate weights</button></form>{% endif %}
+    {% if meta.status == "error" %}
+    <form action="/recordings/{{ meta.id }}/retry" method="post">
+      <button type="submit" class="button retry">Retry</button>
+    </form>
+    {% endif %}
+  </p>
+
+  <div class="frame-header node-sort-header">
+    <h2>Captured nodes</h2>
+    <form method="get" class="sort-form">
+      <label for="node-sort">Sort</label>
+      <select id="node-sort" name="sort" onchange="this.form.submit()">
+        <option value="date" {% if sort == "date" %}selected{% endif %}>Chronological</option>
+        <option value="quality" {% if sort == "quality" %}selected{% endif %}>Quality</option>
+        <option value="completeness" {% if sort == "completeness" %}selected{% endif %}>Completeness</option>
+      </select>
+    </form>
+  </div>
+
+  {% if summary %}
+  <section class="card">
+    <div class="frame-header"><h2>Whole-recording summary</h2>
+      <button type="button" class="copy-btn" data-target="summary-text">Copy</button></div>
+    <pre class="copyable" id="summary-text">{{ summary }}</pre>
+    <form class="refine-form" data-refine-form action="/recordings/{{ meta.id }}/refine" method="post">
+      <input type="hidden" name="target" value="summary">
+      <textarea name="text" hidden>{{ summary }}</textarea>
+      <input name="instruction" placeholder="Instruction for the LLM, e.g. list action items" required>
+      <button type="submit" class="regenerate-btn"><span>Regenerate</span></button>
+    </form>
+    <div class="refinement-history" data-history="summary">
+      {% for item in summary_history %}<details><summary>{{ item.instruction }}</summary><p class="history-label">Previous</p><pre>{{ item.original }}</pre><p class="history-label">Generated</p><pre>{{ item.revised }}</pre></details>{% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% for c in chunks %}
+  {% if not c.archived %}
+  <section class="card" id="node-{{ c.index }}">
+    <div class="node-header">
+      <h2>{{ c.title }}</h2>
+      <span class="node-time" data-start="{{ c.start_seconds }}" data-end="{{ c.end_seconds }}"></span>
+      <span class="score-badges"><span class="score quality-score">Quality {{ c.quality }}/100</span><span class="score completeness-score">Complete {{ c.completeness }}/100</span></span>
+      <button type="button" class="node-action-trigger button" data-node-actions-open="node-actions-{{ c.index }}">Node actions</button>
+      <dialog class="node-actions-dialog" id="node-actions-{{ c.index }}">
+      <div class="node-actions-dialog-header"><strong>Node actions</strong><button type="button" class="icon-button" data-node-actions-close="node-actions-{{ c.index }}" aria-label="Close">&times;</button></div>
+      <div class="node-actions">
+        <form action="/recordings/{{ meta.id }}/nodes/{{ c.index }}/archive" method="post"><button type="submit" class="button">Archive node</button></form>
+        <form action="/recordings/{{ meta.id }}/nodes/{{ c.index }}/version" method="post"><button type="submit" class="button">Create new version</button></form>
+        <form action="/recordings/{{ meta.id }}/nodes/{{ c.index }}/speakers" method="post"><label for="speakers-{{ c.index }}">Speaker names and roles</label><textarea id="speakers-{{ c.index }}" name="speakers" rows="5" placeholder="Speaker 1 = David&#10;Speaker 2 = Alex&#10;Speaker 3 = ..."></textarea><button type="submit" class="button">Map speakers</button></form>
+        {% if c.summary %}
+        <form class="refine-form node-refine-form" data-refine-form action="/recordings/{{ meta.id }}/refine" method="post">
+          <input type="hidden" name="target" value="chunk-summary-{{ c.index }}">
+          <textarea name="text" hidden>{{ c.summary }}</textarea>
+          <input name="instruction" placeholder="Instruction for this summary" required>
+          <button type="submit" class="regenerate-btn"><span>Regenerate summary</span></button>
+        </form>
+        {% endif %}
+      </div>
+      </dialog>
+    </div>
+    {% if c.summary %}
+    <div class="frame-header"><span class="hint">Summary</span>
+      <button type="button" class="copy-btn" data-target="chunk-{{ loop.index }}-summary">Copy</button></div>
+    <pre class="copyable" id="chunk-{{ loop.index }}-summary">{{ c.summary }}</pre>
+    <div class="refinement-history" data-history="chunk-summary-{{ c.index }}">
+      {% for item in c.summary_history %}<details><summary>{{ item.instruction }}</summary><p class="history-label">Previous</p><pre>{{ item.original }}</pre><p class="history-label">Generated</p><pre>{{ item.revised }}</pre></details>{% endfor %}
+    </div>
+    {% endif %}
+    <details>
+      <summary>Full text</summary>
+      <div class="frame-header"><span class="hint">Full text</span>
+        <button type="button" class="copy-btn" data-target="chunk-{{ loop.index }}-text">Copy</button></div>
+      <pre class="copyable" id="chunk-{{ loop.index }}-text">{{ c.text }}</pre>
+      <form class="refine-form" data-refine-form action="/recordings/{{ meta.id }}/refine" method="post">
+        <input type="hidden" name="target" value="chunk-text-{{ c.index }}">
+        <textarea name="text" hidden>{{ c.text }}</textarea>
+        <input name="instruction" placeholder="Instruction for this text" required>
+        <button type="submit" class="regenerate-btn"><span>Regenerate</span></button>
+      </form>
+      <div class="refinement-history" data-history="chunk-text-{{ c.index }}">
+        {% for item in c.text_history %}<details><summary>{{ item.instruction }}</summary><p class="history-label">Previous</p><pre>{{ item.original }}</pre><p class="history-label">Generated</p><pre>{{ item.revised }}</pre></details>{% endfor %}
+      </div>
+    </details>
+  </section>
+  {% endif %}
+  {% endfor %}
+
+  {% set archived_nodes = chunks | selectattr("archived") | list %}
+  {% if archived_nodes %}
+  <details class="card archived-card"><summary><strong>Archived nodes ({{ archived_nodes|length }})</strong></summary>
+    {% for c in archived_nodes %}<div class="frame-header"><p>{{ c.title }} <span class="hint">Quality {{ c.quality }}/100</span></p><form action="/recordings/{{ meta.id }}/nodes/{{ c.index }}/unarchive" method="post"><button type="submit" class="button">Restore</button></form></div>{% endfor %}
+  </details>
+  {% endif %}
+
+  {% if transcript %}
+  <section class="card">
+    <div class="frame-header"><h2>Full transcript</h2>
+      <button type="button" class="copy-btn" data-target="transcript-text">Copy</button></div>
+    <pre class="copyable" id="transcript-text">{{ transcript }}</pre>
+    <form class="refine-form" data-refine-form action="/recordings/{{ meta.id }}/refine" method="post">
+      <input type="hidden" name="target" value="transcript">
+      <textarea name="text" hidden>{{ transcript }}</textarea>
+      <input name="instruction" placeholder="Instruction for the full transcript" required>
+      <button type="submit" class="regenerate-btn"><span>Regenerate</span></button>
+    </form>
+    <div class="refinement-history" data-history="transcript">
+      {% for item in transcript_history %}<details><summary>{{ item.instruction }}</summary><p class="history-label">Previous</p><pre>{{ item.original }}</pre><p class="history-label">Generated</p><pre>{{ item.revised }}</pre></details>{% endfor %}
+    </div>
+  </section>
+  {% endif %}
+  {% if noise_items %}
+  <details class="card noise-card">
+    <summary><strong>Noise ({{ noise_items|length }} captured segments)</strong></summary>
+    <p class="hint">These repeated phrases were excluded from notes but kept here for review.</p>
+    {% for item in noise_items %}
+    <p>{{ item.start }}s - {{ item.end }}s: {{ item.text }}</p>
+    {% endfor %}
+  </details>
+  {% endif %}
+  <details class="card live-card" data-live-recording="{{ meta.id }}">
+    <summary><strong>Processing log</strong> <span class="hint" id="live-updated">connecting...</span></summary>
+    <pre class="live-log" id="live-log">Loading processing output...</pre>
+  </details>
+  <script src="/static/app.js?v=20260905b" defer></script>
+</body>
+</html>

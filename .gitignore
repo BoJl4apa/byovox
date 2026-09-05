@@ -2,3 +2,21 @@
 .superpowers/
 /target
 __pycache__/
+.pytest_cache/
+pywebui/.venv/
+
+# Web UI runtime data and local scratch files.
+/data/
+/runtime/
+/tmp/
+**/recordings/
+**/chunks/
+**/logs/
+*.m4a
+*.mp3
+*.wav
+*.srt
+*.summary.txt
+*.jsonl
+.env
+.env.*
