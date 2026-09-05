@@ -394,11 +394,14 @@ def create_app(cfg: Config, data_dir: Path) -> FastAPI:
             for index, group in enumerate(components, start=1)
         ) or "<li>No significant related conversations yet.</li>"
         return HTMLResponse(
-            "<!doctype html><meta name='viewport' content='width=device-width, initial-scale=1'>"
-            "<title>byovox conversation map</title><link rel='stylesheet' href='/static/style.css'>"
-            "<main><p><button class='button' onclick=\"history.back()\">&larr; Back</button></p><h1>Conversation map</h1>"
-            "<p class='hint'>Showing only the strongest continuing conversations.</p>"
-            f"<section class='graph-page'>{content}</section></main>"
+            "<!doctype html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'>"
+            "<title>byovox conversation map</title><link rel='stylesheet' href='/static/style.css?v=20260905b'>"
+            "</head><body><header><div class='frame-header'><div><a href='/' class='title-link'><h1>Conversation map</h1></a></div>"
+            "<button type='button' class='theme-toggle icon-button theme-fab' data-theme-toggle title='Switch theme' aria-label='Switch theme'></button></div>"
+            "<p class='subtitle'>Showing only the strongest continuing conversations.</p></header>"
+            f"<p><a class='button' href='/' title='Go to home'>⌂ Home</a></p>"
+            f"<main><section class='graph-page'>{content}</section></main>"
+            "<script src='/static/app.js?v=20260905b' defer></script></body></html>"
         )
 
     def _set_graph_node_archived(storage: Storage, node_id: str, archived: bool) -> None:

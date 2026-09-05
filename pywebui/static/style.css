@@ -27,6 +27,8 @@ h2 { font-size: 1.05rem; margin: 0 0 0.6rem; }
 .subtitle, .hint { font-size: 0.85rem; opacity: 0.7; margin: 0; }
 .back-link { margin-bottom: 0.5rem; }
 .back-link a { text-decoration: none; opacity: 0.8; }
+.title-link { text-decoration: none; color: inherit; }
+.title-link:hover h1 { color: var(--accent); }
 
 section { margin-bottom: 1.25rem; }
 .card {

@@ -7,9 +7,9 @@
   <link rel="stylesheet" href="/static/style.css?v=20260905b">
 </head>
 <body>
-  <p class="back-link"><button type="button" class="button back-button" onclick="history.back()">&larr; Back</button></p>
+  <p class="back-link"><a class="button back-button" href="/" title="Go to home">⌂ Home</a><button type="button" class="button back-button" onclick="history.back()">&larr; Back</button></p>
   <header>
-    <div class="frame-header"><div><h1>{{ meta.display_name or meta.original_filename }}</h1>
+    <div class="frame-header"><div><a href="/" class="title-link"><h1>{{ meta.display_name or meta.original_filename }}</h1></a>
     {% if meta.display_name %}<p class="hint">{{ meta.original_filename }}</p>{% endif %}
     </div><button type="button" class="theme-toggle icon-button theme-fab" data-theme-toggle title="Switch theme" aria-label="Switch theme"></button></div>
     <div class="meta-line">

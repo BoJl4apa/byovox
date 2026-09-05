@@ -201,24 +201,57 @@ def _process(cfg: Config, storage: Storage, rec: Recording) -> None:
 
     rec.set_status("summarizing")
     rec.update_progress(stage_detail="writing summaries", eta_s=None)
+    
+    # Build a map of noise line numbers (from polished_segments that were filtered as noise)
+    noise_data = []
+    if rec.noise_json.exists():
+        noise_data = json.loads(rec.noise_json.read_text(encoding="utf-8"))
+    
+    # Map noise times to line numbers
+    noise_line_ranges = set()
+    for segment_idx, seg in enumerate(polished_segments):
+        for noise_item in noise_data:
+            # Check if this segment overlaps with a noise item
+            if seg.start < noise_item.get("end", 0) and seg.end > noise_item.get("start", 0):
+                noise_line_ranges.add(segment_idx)
+                break
+    
     meta = rec.read_metadata()
     meta.duration_s = polished_segments[-1].end if polished_segments else 0.0
     chunk_records = []
-    for i, topic in enumerate(topics, start=1):
+    output_index = 1
+    for topic in topics:
         start_line = max(1, topic["start_line"])
         end_line = min(len(timestamped_lines), max(start_line, topic["end_line"]))
         body = "\n".join(timestamped_lines[start_line - 1 : end_line])
         slug = slugify(topic["title"])
-        rec.chunk_txt(i, slug).write_text(body, encoding="utf-8")
-        chunk_summary = llm.summarize(polish_cfg, body, log_path, recording_id)
-        rec.chunk_summary_txt(i, slug).write_text(chunk_summary, encoding="utf-8")
+        
         topic_segments = polished_segments[start_line - 1 : end_line]
         topic_start = topic_segments[0].start if topic_segments else None
         topic_end = topic_segments[-1].end if topic_segments else None
+        
+        chunk_summary = llm.summarize(polish_cfg, body, log_path, recording_id)
         scores = quality.score_node(topic["title"], body, chunk_summary, topic_start, topic_end)
+        
+        # Filter out chunks that are empty/low-quality/noise-based/hallucinations
+        if not body.strip() or not chunk_summary.strip():
+            continue  # Skip chunks with no content or summary
+        if quality.is_hallucination_or_noise(body, chunk_summary):
+            continue  # Skip hallucinations and highly repetitive noise
+        if scores["quality"] < 20 or scores["completeness"] < 20:
+            continue  # Skip chunks that don't meet minimum quality
+        # Skip chunks that are entirely or mostly based on noise segments
+        chunk_line_indices = set(range(start_line - 1, end_line))
+        if chunk_line_indices:
+            noise_overlap = len(chunk_line_indices & noise_line_ranges)
+            if noise_overlap > len(chunk_line_indices) * 0.6:  # > 60% is noise
+                continue  # Skip chunks that are mostly noise
+        
+        rec.chunk_txt(output_index, slug).write_text(body, encoding="utf-8")
+        rec.chunk_summary_txt(output_index, slug).write_text(chunk_summary, encoding="utf-8")
         chunk_records.append(
             Chunk(
-                index=i,
+                index=output_index,
                 title=topic["title"],
                 start=start_line,
                 end=end_line,
@@ -231,6 +264,8 @@ def _process(cfg: Config, storage: Storage, rec: Recording) -> None:
                 quality_factors=scores["quality_factors"],
             )
         )
+        output_index += 1
+    
     meta.chunks = chunk_records
     rec.write_metadata(meta)
 
@@ -241,6 +276,12 @@ def _process(cfg: Config, storage: Storage, rec: Recording) -> None:
     rec.write_metadata(meta)
     for chunk in chunk_records:
         chunk_summary = rec.chunk_summary_txt(chunk.index, chunk.slug).read_text(encoding="utf-8")
+        # Additional quality gate before adding to graph
+        chunk_text = rec.chunk_txt(chunk.index, chunk.slug).read_text(encoding="utf-8") if rec.chunk_txt(chunk.index, chunk.slug).exists() else ""
+        if not chunk_summary.strip() or quality.is_hallucination_or_noise(chunk_text, chunk_summary):
+            continue  # Skip adding hallucinations to graph
+        if chunk.quality < 25 or chunk.completeness < 25:
+            continue  # Skip adding low-quality nodes to graph
         graph.update(
             rec.graph_json,
             {
